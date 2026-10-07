@@ -12,6 +12,24 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - `CHANGELOG.md` sebagai catatan perubahan proyek.
 - `parseIntRange()` di firmware: parser integer ketat yang menolak teks non-angka,
   overflow, dan nilai di luar rentang.
+- **Firmware dipisah per profil** (Phase 2). Struktur baru:
+  - `firmware/common/limits.h` — konstanta bersama (ROWS/COLS/MAX_LAYERS/`RGB_COUNT`/`RGB_INDEX`/APP_SLOTS).
+  - `firmware/common/macropad_core.h` — seluruh logika yang sama untuk kedua board
+    (keymap, action, protocol serial, scan matrix, encoder, storage).
+  - `firmware/HID_Keypad_Prototype/HID_Keypad_Prototype.ino` — 1 knob, LED status GPIO12.
+  - `firmware/HID_Keypad_Final/HID_Keypad_Final.ino` — 2 knob, RGB SK6812, divider 100k/100k.
+
+  Pergantian profil kini berarti membuka sketsh yang lain, bukan mengubah
+  `#define HW_PROFILE`. Blok hardware yang tetap sama
+  (RGB/vdiv/`hwPeripheralsInit`) dipakai verbatim di kedua sketsh dan dibedakan
+  oleh guard `#if HAS_*`, sehingga tidak ada logika profil yang terduplikasi.
+- `RGB_COUNT` dan `RGB_INDEX` dipindah ke `common/limits.h` karena menggambarkan
+  jumlah key dan urutan rantai, bukan properti hardware board tertentu.
+
+### Removed
+- `firmware/HID_Keypad/HID_Keypad.ino` (monolit 1056 baris). Digantikan tiga file di atas;
+  salinan utuh tersimpan di git pada commit `3c020d2` dan dapat dipulihkan dengan
+  `git show 3c020d2:firmware/HID_Keypad/HID_Keypad.ino`.
 
 ### Changed
 - Firmware RGB: label key di halaman RGB app diganti dari `R<row> C<col>` menjadi
