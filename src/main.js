@@ -155,7 +155,11 @@ function log(msg, cls) {
   logBox.appendChild(line);
   logBox.scrollTop = logBox.scrollHeight;
 }
-function escapeHtml(s) { return s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
+// Escape 5 karakter HTML termasuk tanda kutip tunggal. Semua pemanggilan saat ini
+// memakai konteks atribut berkutip ganda, tapi escapes ' menjaga aman bila nanti
+// ada yang memakainya di atribut berkutip tunggal.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]); }
 
 // ==================== ROUTER HALAMAN ====================
 function switchPage(name, navOverride) {
@@ -645,7 +649,14 @@ function syncGlobalToggles() {
   el('masterEnabledToggle').checked = presetsData.masterEnabled;
   if (el('globalAdaptiveToggle')) el('globalAdaptiveToggle').checked = presetsData.masterEnabled;
   if (el('globalRgbToggle')) el('globalRgbToggle').checked = rgb.enabled;
-  if (el('sleepTimeoutSelect')) el('sleepTimeoutSelect').disabled = false;
+  // Firmware belum punya perintah sleep sama sekali, jadi kontrol ini dikunci
+  // dengan penjelasan. Sebelumnya di-enable tapi tanpa handler, jadi user
+  // bisa memilih nilai lalu replikasi terjadi diam-diam tanpa efek apa pun.
+  const sleepSel = el('sleepTimeoutSelect');
+  if (sleepSel) {
+    sleepSel.disabled = true;
+    sleepSel.title = 'Belum didukung firmware (perintah sleep belum ada)';
+  }
 }
 
 // Dummy battery indicator (sampai firmware final mengirim EVT:BATT asli)
@@ -1590,13 +1601,3 @@ listen('tray-quit', async () => {
   if (!(await confirmUnsaved(true))) return;
   await invoke('quit_app');
 });
-
-// DEBUG ONLY — hapus/comment kalau sudah tidak dipakai
-// window.__debug = {
-//   setMatrix(r, c) {
-//     ROWS = r; COLS = c;
-//     mapping = Array.from({ length: CAP_LAYERS }, () => Array.from({ length: ROWS }, () => Array(COLS).fill(null)));
-//     renderGrid();
-//     el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
-//   }
-// };

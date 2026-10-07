@@ -664,6 +664,34 @@ ActionType parseActionType(const String& s) {
   return ACTION_NONE;
 }
 
+// Parse integer secara ketat. String::toInt() Arduino mengembalikan 0 untuk teks
+// non-numerik ("abc" -> 0) dan nilai besar terpotong diam-diam saat di-cast ke
+// uint8_t (256 -> 0). Akibatnya indeks salah bisa lolos validasi dan menulis ke
+// layer/key/knob yang keliru tanpa error. Fungsi ini menolak teks non-angka,
+// overflow, dan nilai di luar [minV, maxV].
+bool parseIntRange(const String &s, long minV, long maxV, long &out) {
+  int len = s.length();
+  if (len == 0) return false;
+  int i = 0;
+  bool neg = false;
+  if (s[0] == '-' || s[0] == '+') {
+    neg = (s[0] == '-');
+    i = 1;
+    if (len == 1) return false;
+  }
+  long v = 0;
+  for (; i < len; i++) {
+    char c = s[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + (c - '0');
+    if (v > 100000000L) return false;   // guard overflow
+  }
+  if (neg) v = -v;
+  if (v < minV || v > maxV) return false;
+  out = v;
+  return true;
+}
+
 void dumpEncoderConfig() {
   Serial.printf("ENC_BEGIN:count=%d\n", NUM_ENCODERS);
   for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
@@ -722,9 +750,10 @@ void handleSerialCommand(String cmd) {
   if (cmd.startsWith("SLOT:")) {
     int c2 = cmd.indexOf(':', 5);
     if (c2 < 0) { Serial.println("[ERROR] Format SLOT tidak lengkap"); return; }
-    int n = cmd.substring(5, c2).toInt();
+    long nL;
+    if (!parseIntRange(cmd.substring(5, c2), 0, APP_SLOTS - 1, nL)) { Serial.println("[ERROR] Slot di luar batas"); return; }
+    int n = (int)nL;
     String op = cmd.substring(c2 + 1);
-    if (n < 0 || n >= APP_SLOTS) { Serial.println("[ERROR] Slot di luar batas"); return; }
     if (op == "NEW") resetCfgStruct(slotCfg[n]);
     else if (op != "USE") { Serial.println("[ERROR] Op SLOT harus NEW/USE"); return; }
     slotCfg[n].currentLayer = 0;
@@ -775,12 +804,12 @@ void handleSerialCommand(String cmd) {
     int idx3 = cmd.indexOf(':', idx2 + 1);
     if (idx1 < 0 || idx2 < 0 || idx3 < 0) { Serial.println("[ERROR] Format SETENC tidak lengkap"); return; }
 
-    uint8_t encIdx = cmd.substring(7, idx1).toInt();
+    long encIdxL;
+    if (!parseIntRange(cmd.substring(7, idx1), 0, NUM_ENCODERS - 1, encIdxL)) { Serial.println("[ERROR] Index encoder di luar batas"); return; }
+    uint8_t encIdx = (uint8_t)encIdxL;
     String which = cmd.substring(idx1 + 1, idx2);
     String typeStr = cmd.substring(idx2 + 1, idx3);
     String value = cmd.substring(idx3 + 1);
-
-    if (encIdx >= NUM_ENCODERS) { Serial.println("[ERROR] Index encoder di luar batas"); return; }
 
     KeyAction newAction;
     newAction.type = parseActionType(typeStr);
@@ -825,9 +854,10 @@ void handleSerialCommand(String cmd) {
   if (cmd.startsWith("RENAMELAYER:")) {
     int idx1 = cmd.indexOf(':', 12);
     if (idx1 < 0) { Serial.println("[ERROR] Format RENAMELAYER tidak lengkap"); return; }
-    uint8_t layer = cmd.substring(12, idx1).toInt();
+    long layerL;
+    if (!parseIntRange(cmd.substring(12, idx1), 0, activeCfg->layerCount - 1, layerL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    uint8_t layer = (uint8_t)layerL;
     String name = cmd.substring(idx1 + 1);
-    if (layer >= activeCfg->layerCount) { Serial.println("[ERROR] Layer index tidak valid"); return; }
     strncpy(activeCfg->layerNames[layer], name.c_str(), NAME_LEN - 1);
     activeCfg->layerNames[layer][NAME_LEN - 1] = '\0';
     Serial.printf("[OK] Layer %d diganti nama jadi \"%s\"\n", layer, activeCfg->layerNames[layer]);
@@ -842,18 +872,18 @@ void handleSerialCommand(String cmd) {
   }
 
   if (cmd.startsWith("LAYER:")) {
-    uint8_t l = cmd.substring(6).toInt();
-    if (l < activeCfg->layerCount) {
-      activeCfg->currentLayer = l;
-      Serial.printf("[LAYER] Pindah manual ke layer %d\n", activeCfg->currentLayer);
-      broadcastLayerChanged();
-    } else Serial.println("[ERROR] Layer index tidak valid");
+    long lL;
+    if (!parseIntRange(cmd.substring(6), 0, activeCfg->layerCount - 1, lL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    activeCfg->currentLayer = (uint8_t)lL;
+    Serial.printf("[LAYER] Pindah manual ke layer %d\n", activeCfg->currentLayer);
+    broadcastLayerChanged();
     return;
   }
 
   if (cmd.startsWith("DUMP:")) {
-    uint8_t layer = cmd.substring(5).toInt();
-    if (layer >= activeCfg->layerCount) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    long layerL;
+    if (!parseIntRange(cmd.substring(5), 0, activeCfg->layerCount - 1, layerL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    uint8_t layer = (uint8_t)layerL;
     Serial.printf("DUMP_BEGIN:%d\n", layer);
     for (uint8_t r = 0; r < ROWS; r++)
       for (uint8_t c = 0; c < COLS; c++) {
@@ -869,13 +899,15 @@ void handleSerialCommand(String cmd) {
     int idx3 = cmd.indexOf(':', idx2 + 1), idx4 = cmd.indexOf(':', idx3 + 1);
     if (idx1 < 0 || idx2 < 0 || idx3 < 0 || idx4 < 0) { Serial.println("[ERROR] Format SET tidak lengkap"); return; }
 
-    uint8_t layer = cmd.substring(4, idx1).toInt();
-    uint8_t row   = cmd.substring(idx1 + 1, idx2).toInt();
-    uint8_t col   = cmd.substring(idx2 + 1, idx3).toInt();
+    long layerL, rowL, colL;
+    if (!parseIntRange(cmd.substring(4, idx1), 0, activeCfg->layerCount - 1, layerL) ||
+        !parseIntRange(cmd.substring(idx1 + 1, idx2), 0, ROWS - 1, rowL) ||
+        !parseIntRange(cmd.substring(idx2 + 1, idx3), 0, COLS - 1, colL)) {
+      Serial.println("[ERROR] Index di luar batas"); return;
+    }
+    uint8_t layer = (uint8_t)layerL, row = (uint8_t)rowL, col = (uint8_t)colL;
     String typeStr = cmd.substring(idx3 + 1, idx4);
     String value  = cmd.substring(idx4 + 1);
-
-    if (layer >= activeCfg->layerCount || row >= ROWS || col >= COLS) { Serial.println("[ERROR] Index di luar batas"); return; }
 
     activeCfg->layerMap[layer][row][col].type = parseActionType(typeStr);
     strncpy(activeCfg->layerMap[layer][row][col].value, value.c_str(), MACRO_MAX_LEN - 1);
@@ -889,11 +921,13 @@ void handleSerialCommand(String cmd) {
     int idx1 = cmd.indexOf(':', 4), idx2 = cmd.indexOf(':', idx1 + 1);
     if (idx1 < 0 || idx2 < 0) { Serial.println("[ERROR] Format GET tidak lengkap"); return; }
 
-    uint8_t layer = cmd.substring(4, idx1).toInt();
-    uint8_t row   = cmd.substring(idx1 + 1, idx2).toInt();
-    uint8_t col   = cmd.substring(idx2 + 1).toInt();
-
-    if (layer >= activeCfg->layerCount || row >= ROWS || col >= COLS) { Serial.println("[ERROR] Index di luar batas"); return; }
+    long layerL, rowL, colL;
+    if (!parseIntRange(cmd.substring(4, idx1), 0, activeCfg->layerCount - 1, layerL) ||
+        !parseIntRange(cmd.substring(idx1 + 1, idx2), 0, ROWS - 1, rowL) ||
+        !parseIntRange(cmd.substring(idx2 + 1), 0, COLS - 1, colL)) {
+      Serial.println("[ERROR] Index di luar batas"); return;
+    }
+    uint8_t layer = (uint8_t)layerL, row = (uint8_t)rowL, col = (uint8_t)colL;
 
     KeyAction a = activeCfg->layerMap[layer][row][col];
     Serial.printf("L%d R%d C%d -> type=%d value=%s\n", layer, row, col, a.type, a.value);
@@ -928,8 +962,9 @@ void handleSerialCommand(String cmd) {
     if (cmd == "RGB:ON")  { rgbPower(true);  Serial.println("[OK] RGB on");  return; }
     if (cmd == "RGB:OFF") { rgbPower(false); Serial.println("[OK] RGB off"); return; }
     if (cmd.startsWith("RGB:BRI:")) {
-      int b = cmd.substring(8).toInt();
-      if (b < 0 || b > 255) { Serial.println("[ERROR] Brightness 0-255"); return; }
+      long bL;
+      if (!parseIntRange(cmd.substring(8), 0, 255, bL)) { Serial.println("[ERROR] Brightness 0-255"); return; }
+      int b = (int)bL;
       rgbBrightness = (uint8_t)b; strip.setBrightness(rgbBrightness); rgbRender();
       Serial.printf("[OK] RGB brightness %d\n", b);
       return;
@@ -985,7 +1020,7 @@ void setup() {
   delay(300);
   USB.productName("MacroPad3x3");
   USB.manufacturerName("DIY Macropad");
-  USB.serialNumber("MACROPAD-proto");
+  USB.serialNumber("MACROPAD-" HW_PROFILE_NAME);
   USB.begin();
   Keyboard.begin();
   ConsumerControl.begin();
