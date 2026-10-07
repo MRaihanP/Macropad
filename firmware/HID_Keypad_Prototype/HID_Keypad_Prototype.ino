@@ -33,6 +33,8 @@
 #define HAS_STATUS_LED  1
 #define HAS_RGB         0
 #define HAS_VDIV        0
+#define HAS_VBUS_SENSE  0    // prototipe tidak punya divider VBUS
+#define HAS_CHG_STAT    0    // prototipe tidak punya charger MCP73831
 
 // ---- Matrix ----
 const uint8_t ROW_PINS[ROWS] = {1, 2, 4};
@@ -148,6 +150,40 @@ void hwPeripheralsInit() {
 #if HAS_VDIV
   vdivInit();
 #endif
+#if HAS_VBUS_SENSE
+  vbusInit();
+#endif
+#if HAS_CHG_STAT
+  chgStatInit();
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// SIMULASI (prototipe)
+// ---------------------------------------------------------------------------
+// Prototipe tidak punya baterai, charger, maupun deteksi VBUS, tapi companion app
+// harus tetap bisa menguji seluruh alur UI. Fungsi di bawah memberi angka dummy
+// dengan FORMAT PESAN YANG SAMA PERSIS dengan firmware FINAL, jadi saat board FINAL
+// siap dipakai tidak ada perubahan sama sekali di sisi app.
+bool usbHostConnected() { return true; }   // prototipe selalu disambung lewat USB
+
+uint32_t readBatteryMv(uint32_t* pinMvOut) {
+  static uint32_t mv = 4100;
+  static unsigned long lastTick = 0;
+  unsigned long now = millis();
+  if (lastTick == 0) lastTick = now;
+  if ((long)(now - lastTick) >= 60000) {      // turun 10 mV per menit
+    lastTick = now;
+    if (mv > 3400) mv -= 10;
+  }
+  if (pinMvOut) *pinMvOut = mv / 2;           // divider 100k/100k -> pin = setengah tegangan
+  return mv;
+}
+
+// Prototipe tidak punya MCP73831. Nilai di sini membuat app menampilkan status
+// "tidak mengecas" seperti board FINAL yang tersambung USB tanpa charger.
+// Untuk menguji jalur "sedang mengecas", ganti sementara ke CHARGE_CHARGING.
+ChargeState readChargeState() { return CHARGE_COMPLETE; }
 }
 
 #include "../common/macropad_core.h"

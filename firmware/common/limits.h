@@ -29,3 +29,18 @@ const int8_t RGB_INDEX[ROWS][COLS] = {
 };
 #define APP_SLOTS 6
 
+// Status baterai/charger. Dibaca firmware FINAL dari VBUS (divider) + STAT MCP73831.
+// Profil PROTOTYPE memakai nilai simulasi lewat fungsi yang sama, sehingga app
+// menerima format pesan identik tanpa perubahan saat hardware FINAL siap.
+enum ChargeState : uint8_t {
+  CHARGE_NONE = 0,     // charger tidak terpasang / tidak mengecas
+  CHARGE_CHARGING,     // sedang mengecas
+  CHARGE_COMPLETE      //Cas selesai (VBUS ada, STAT high-Z)
+};
+
+// Antarmuka yang harus disediakan setiap profil. Definisi implementasi ada di
+// sketsh masing-masing (FINAL: hardware; PROTOTYPE: simulasi).
+uint32_t readBatteryMv(uint32_t* pinMvOut);
+ChargeState readChargeState();
+bool usbHostConnected();   // true bila device tersambung ke PC (VBUS ada)
+

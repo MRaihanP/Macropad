@@ -32,6 +32,8 @@
 #define HAS_STATUS_LED  0    // GPIO12 dipakai knob 2; indikator pakai RGB
 #define HAS_RGB         1
 #define HAS_VDIV        1
+#define HAS_VBUS_SENSE  1    // deteksi USB tersambung via divider 68k/100k (GPIO21)
+#define HAS_CHG_STAT    1    // status charger MCP73831 (GPIO18)
 
 #if HAS_RGB
   #include <Adafruit_NeoPixel.h>
@@ -52,6 +54,7 @@ const uint8_t ENC_A_PINS[NUM_ENCODERS]   = {10, 13};
 #define RGB_EN_PIN              15     // gate MOSFET power RGB
 #define RGB_EN_ACTIVE_HIGH      1      // TODO: konfirmasi polaritas
 #define RGB_FLASH_MS            150
+#define RGB_DEFAULT_BRIGHTNESS  40     // 0-255, sengaja rendah untuk membatasi arus
 #endif
 
 // ---- Voltage divider baterai 100k/100k ----
@@ -62,6 +65,22 @@ const uint8_t ENC_A_PINS[NUM_ENCODERS]   = {10, 13};
 #define VDIV_R_TOP_OHM       100000UL
 #define VDIV_R_BOTTOM_OHM    100000UL
 #define VDIV_SETTLE_MS       5
+#endif
+
+// ---- Deteksi VBUS: USB tersambung atau tidak ----
+// Dipakai untuk memutuskan apakah BLE perlu dinyalakan (hemat baterai), dan
+// sebagai penentu bersama status charger.
+#if HAS_VBUS_SENSE
+#define VBUS_READ_PIN             21
+#define VBUS_R_TOP_OHM            68000UL
+#define VBUS_R_BOTTOM_OHM         100000UL
+#define VBUS_PRESENT_THRESHOLD_MV 2000     // 5V USB -> ~2,98V di pin; tanpa USB -> ~0V
+#endif
+
+// ---- Charger MCP73831: pin STATUS ----
+// STAT open-drain: LOW saat charging, high-Z (HIGH lewat pull-up) saat selesai.
+#if HAS_CHG_STAT
+#define CHG_STAT_PIN 18
 #endif
 
 USBHIDKeyboard Keyboard;
@@ -155,6 +174,48 @@ uint32_t readBatteryMv(uint32_t* pinMvOut) {
 }
 #endif
 
+#if HAS_VBUS_SENSE
+void vbusInit() {
+  // Divider VBUS selalu tersambung (tanpa pin enable), jadi cukup set pin analog.
+  pinMode(VBUS_READ_PIN, INPUT);
+  analogSetPinAttenuation(VBUS_READ_PIN, ADC_11db);
+}
+
+// 68k atas / 100k bawah -> VBUS 5V jadi ~2,98V di pin. Itu menyentuh batas rentang
+// ADC 11dB (~3,1V) sehingga pembacaan bisa saturate pada VBUS tinggi.
+// Untuk deteksi "USB tersambung atau tidak" itu tidak masalah: yang dibutuhkan hanya
+// membedakan ~0V dari ~3V, bukan pengukuran akurat.
+// TODO: bila nanti butuh tegangan VBUS yang akurat, turunkan resistor bawah atau
+// tambahkan pin enable agar divider bisa dimatikan (beban kontinu ~30 uA sekarang).
+uint32_t readVbusMv() {
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < 8; i++) { sum += analogReadMilliVolts(VBUS_READ_PIN); delayMicroseconds(200); }
+  uint32_t pinMv = sum / 8;
+  return pinMv * (VBUS_R_TOP_OHM + VBUS_R_BOTTOM_OHM) / VBUS_R_BOTTOM_OHM;
+}
+
+bool vbusPresent() { return readVbusMv() >= VBUS_PRESENT_THRESHOLD_MV; }
+
+// Sumber kebenaran "USB tersambung". Nanti dipakai untuk menyalakan/mematikan BLE
+// sesuai kebijakan hemat baterai.
+bool usbHostConnected() { return vbusPresent(); }
+#endif
+
+#if HAS_CHG_STAT
+void chgStatInit() {
+  // MCP73831 STAT adalah open-drain: saat charging pin ini di-tarik LOW, saat charge
+  // selesai pin dilepas (high-Z) lalu dibaca HIGH lewat pull-up.
+  pinMode(CHG_STAT_PIN, INPUT_PULLUP);
+}
+
+ChargeState readChargeState() {
+  // VBUS dan STAT dipakai bersama karena STAT saja tidak bisa membedakan
+  // "charge selesai" dari "charger tidak terpasang".
+  if (!vbusPresent()) return CHARGE_NONE;
+  return (digitalRead(CHG_STAT_PIN) == LOW) ? CHARGE_CHARGING : CHARGE_COMPLETE;
+}
+#endif
+
 void hwPeripheralsInit() {
 #if HAS_STATUS_LED
   pinMode(STATUS_LED_PIN, OUTPUT);
@@ -165,6 +226,12 @@ void hwPeripheralsInit() {
 #endif
 #if HAS_VDIV
   vdivInit();
+#endif
+#if HAS_VBUS_SENSE
+  vbusInit();
+#endif
+#if HAS_CHG_STAT
+  chgStatInit();
 #endif
 }
 
