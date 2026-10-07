@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macro Pad Configurator</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-toggle-row">
+      <button class="icon-btn" id="btnToggleSidebar" title="Buka/tutup panel">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-page="home" title="Home">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg></span>
+        <span class="nav-label">Home</span>
+      </div>
+      <div class="nav-item" data-page="adaptive" title="Adaptive Key Bind">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span>
+        <span class="nav-label">Adaptive Key Bind</span>
+      </div>
+      <div class="nav-item" data-page="rgb" title="RGB Setting">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.4.3.6.8.6 1.3V16h5.8v-.8c0-.5.2-1 .6-1.3A6 6 0 0 0 12 3Z"/></svg></span>
+        <span class="nav-label">RGB Setting</span>
+      </div>
+    </nav>
+    <nav class="sidebar-nav sidebar-bottom">
+      <div class="nav-item" data-page="settings" title="Setting">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></span>
+        <span class="nav-label">Setting</span>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="shell">
+  <div class="content">
+
+    <header>
+      <div>
+        <h1>Macro Pad Configurator</h1>
+        <div class="sub">ESP32-S3 · 3×3 matrix + encoder · Native App</div>
+      </div>
+      <div class="status">
+        <label class="autostart" id="autostartLabel"><input type="checkbox" id="autostartToggle"><span>Jalankan saat Windows start</span></label>
+        <select id="portSelect"></select>
+        <button class="small" id="btnRefreshPorts">↻</button>
+        <span class="dot" id="dot"></span>
+        <span id="statusText">Not connected</span>
+        <span class="batt" id="battInd" title="Baterai">
+          <svg viewBox="0 0 30 14" width="30" height="14" fill="none" aria-hidden="true">
+            <rect x="0.75" y="0.75" width="25.5" height="12.5" rx="3.5" stroke="currentColor" stroke-width="1.5"/>
+            <rect x="27.5" y="4.5" width="2" height="5" rx="1" fill="currentColor"/>
+            <rect id="battFill" class="batt-fill" x="3" y="3" width="21" height="8" rx="1.5"/>
+            <polygon id="battBolt" class="batt-bolt" points="15.5,1.5 9.5,8 13.5,8 12,12.5 18.5,5.8 14.3,5.8" style="display:none;"/>
+          </svg>
+          <span id="battPct">85%</span>
+        </span>
+        <button id="btnConnect" class="primary">Connect</button>
+      </div>
+    </header>
+
+    <!-- ============ PAGE: HOME ============ -->
+    <div id="page-home" class="page">
+      <div id="presetEditBanner" class="preset-edit-banner" style="display:none;">
+        <span>Mengedit preset: <strong id="presetEditName">—</strong></span>
+        <span style="flex:1;"></span>
+        <button class="small primary" id="btnPresetEditDone">✓ Selesai &amp; Simpan</button>
+        <button class="small" id="btnPresetEditCancel">Batal</button>
+      </div>
+      <div id="app" style="display:none;">
+
+        <div class="dashboard">
+
+          <div class="dash-left">
+            <div class="device-meta-card">
+              <div class="device-meta-row"><span>Device</span><span id="deviceNameLabel">—</span></div>
+              <div class="device-meta-row"><span>Matrix</span><span id="deviceMatrixLabel">— × —</span></div>
+              <div class="device-meta-row"><span>Knob</span><span id="deviceEncLabel">—</span></div>
+              <div class="device-meta-row"><span>Preset Aktif</span><span id="deviceActivePresetLabel">Default</span></div>
+            </div>
+            <div class="device-card">
+              <div class="device-card-title">Layout Tombol — <span id="deviceLayerLabel">Layer 0</span></div>
+              <div class="grid" id="grid"></div>
+              <div class="enc-list" id="encList"></div>
+            </div>
+          </div>
+
+          <div class="dash-right">
+
+            <div class="dash-layertools">
+              <div class="tabs" id="tabs"></div>
+              <div class="layer-row">
+                <div class="layer-tools">
+                  <button class="small" id="btnAddLayer">+ Layer</button>
+                  <button class="small" id="btnDelLayer">− Delete</button>
+                  <button class="small" id="btnRenameLayer">✎ Rename</button>
+                </div>
+                <div class="action-row">
+                  <button id="btnRefresh">Load</button>
+                  <button id="btnReset">Reset</button>
+                  <button class="primary" id="btnSave">Save</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="dash-settings">
+              <div class="panel edit-panel-wrap" id="editPanel" style="display:none;">
+                <h2 id="editTitle">Edit</h2>
+                <div class="row">
+                  <select id="editType">
+                    <option value="0">NONE — kosong</option>
+                    <option value="1">KEY — satu karakter</option>
+                    <option value="2">COMBO — kombinasi tombol</option>
+                    <option value="3">TEXT — teks panjang</option>
+                    <option value="4">CONSUMER — media/volume</option>
+                    <option value="5">APP — buka aplikasi (via companion)</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <input type="text" id="editValue" placeholder="mis. a / CTRL+C / hello world">
+                </div>
+                <div class="consumer-grid row" id="consumerButtons">
+                  <button data-val="VOLUP">Vol +</button>
+                  <button data-val="VOLDOWN">Vol −</button>
+                  <button data-val="MUTE">Mute</button>
+                  <button data-val="PLAYPAUSE">Play/Pause</button>
+                  <button data-val="NEXT">Next</button>
+                  <button data-val="PREV">Prev</button>
+                </div>
+                <div id="appPicker" style="display:none;">
+                  <div class="row">
+                    <input type="text" id="appSearch" placeholder="Cari aplikasi...">
+                    <button class="small" id="btnAddExe">+ Tambah .exe</button>
+                    <button class="small" id="btnRescanApps">↻ Scan ulang</button>
+                  </div>
+                  <div class="app-list" id="appList"></div>
+                  <div class="row app-meta-row">
+                    <span class="hint" id="appMeta">—</span>
+                    <label class="hint app-ttl">Pindai ulang tiap
+                      <select id="appTtl">
+                        <option value="1">1 hari</option>
+                        <option value="3">3 hari</option>
+                        <option value="7">7 hari</option>
+                        <option value="14">14 hari</option>
+                        <option value="30">30 hari</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="hint">Aksi APP dibuka oleh companion app di PC (jalan di tray). Kalau app ini tidak berjalan, device otomatis mengetik nama aplikasi lewat Windows Search.</div>
+                </div>
+                <div class="hint" id="recordHint">Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi.</div>
+                <div class="row" style="margin-top:12px;">
+                  <button class="primary" id="btnApply">Terapkan ke device</button>
+                  <button id="btnCancel">Batal</button>
+                </div>
+              </div>
+
+              <div class="panel log-panel">
+                <h2>Log</h2>
+                <div class="log" id="log"></div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ============ PAGE: ADAPTIVE KEY BIND (Tahap C) ============ -->
+    <div id="page-adaptive" class="page" style="display:none;">
+      <div class="adaptive-header">
+        <div>
+          <h2 style="margin:0;">Adaptive Key Bind</h2>
+          <div class="hint">Pindah preset otomatis saat aplikasi tertentu jadi window aktif.</div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle-switch">
+            <input type="checkbox" id="masterEnabledToggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="toggle-label-text">Aktifkan fitur</span>
+        </div>
+      </div>
+
+      <div id="presetList" class="preset-list"></div>
+
+      <button class="add-preset-bar" id="btnAddPreset">+ Tambah preset</button>
+    </div>
+
+    <!-- ============ PAGE: SETTING ============ -->
+    <div id="page-settings" class="page" style="display:none;">
+      <div class="adaptive-header">
+        <div>
+          <h2 style="margin:0;">Setting</h2>
+          <div class="hint">Pengaturan aplikasi companion.</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Fitur Global</h2>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Adaptive Key Bind</div>
+            <div class="hint">Pindah preset otomatis mengikuti aplikasi aktif.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="globalAdaptiveToggle"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">RGB</div>
+            <div class="hint" id="globalRgbHint">Hubungkan device dengan RGB untuk mengubah ini.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="globalRgbToggle"><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Notifikasi</h2>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Notifikasi dasar</div>
+            <div class="hint">Koneksi, perpindahan layer, dan perpindahan preset.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="notifyBasicToggle"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Notifikasi per key</div>
+            <div class="hint">Tombol dan knob yang ditekan. Tampil selama 1 detik.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="notifyKeysToggle"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Notifikasi baterai</div>
+            <div class="hint">Start Charging, Charge Complete, Battery Low, dan CHARGE NOW.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="notifyBatteryToggle"><span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Tes notifikasi</div>
+            <div class="hint">Tampilkan contoh notifikasi di layar.</div>
+          </div>
+          <button class="small btn-icon" id="btnTestNotif">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            <span>Tes</span>
+          </button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Daya (wireless)</h2>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">Tidur otomatis</div>
+            <div class="hint" id="sleepHint">Hanya tersedia saat device FINAL terhubung.</div>
+          </div>
+          <select id="sleepTimeoutSelect">
+            <option value="0">Nonaktif</option>
+            <option value="60">1 menit</option>
+            <option value="120">2 menit</option>
+            <option value="300">5 menit</option>
+            <option value="600">10 menit</option>
+            <option value="1800">30 menit</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ PAGE: RGB SETTING ============ -->
+    <div id="page-rgb" class="page" style="display:none;">
+      <div class="adaptive-header">
+        <div>
+          <h2 style="margin:0;">RGB Setting</h2>
+          <div class="hint">Pencahayaan per-key. Pengaturan ini dikendalikan lewat companion app.</div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle-switch"><input type="checkbox" id="rgbEnabledToggle"><span class="toggle-slider"></span></label>
+          <span class="toggle-label-text">Aktifkan RGB</span>
+        </div>
+      </div>
+
+      <div class="dashboard" id="rgbDash">
+        <div class="dash-left">
+          <div class="device-card">
+            <div class="device-card-title">Peta RGB — klik key untuk mengatur warnanya</div>
+            <div class="grid" id="rgbGrid"></div>
+            <div class="hint" style="text-align:center;">Knob tidak terlihat di sini, fokus ke grid tombol.</div>
+          </div>
+        </div>
+        <div class="dash-right">
+          <div class="panel">
+            <h2>Pencahayaan</h2>
+            <div class="rgb-slider-row"><span>Kecerahan</span><input type="range" id="rgbBri" min="0" max="100" value="78"><span id="rgbBriVal" class="rgb-val">78%</span></div>
+            <div class="hint">100% di app = batas maksimal aman firmware (~60% PWM LED).</div>
+            <div class="rgb-slider-row"><span>Kecepatan</span><input type="range" id="rgbSpeed" min="0" max="255" value="128"><span id="rgbSpeedVal" class="rgb-val">50%</span></div>
+          </div>
+
+          <div class="panel" id="rgbKeyCard" style="display:none;">
+            <h2 id="rgbKeyTitle">Warna key</h2>
+            <input type="color" id="rgbColorPicker" value="#10605A">
+            <div class="hint">Mengubah warna key otomatis masuk mode Custom per Key.</div>
+          </div>
+
+          <div class="panel">
+            <h2>Mode Lighting</h2>
+            <div class="rgb-preset-list" id="rgbPresetList"></div>
+            <div id="cpModeWrap" style="margin-top:8px;">
+              <input type="color" id="rgbModeColor" value="#10605A">
+              <div class="hint">Warna pilihan untuk mode lighting yang mendukung warna.</div>
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="primary" id="btnRgbSave">Simpan ke device</button>
+            <button id="btnRgbReset">Reset ke default</button>
+            <span class="hint" id="rgbSaveState"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-box">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-actions" id="modalActions"></div>
+  </div>
+</div>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>

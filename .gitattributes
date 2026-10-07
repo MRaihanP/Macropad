@@ -1,0 +1,12 @@
+# Normalisasi line ending.
+# Default: git mendeteksi CRLF di working copy Windows.
+* text=auto
+
+# Firmware Arduino: pertahankan LF agar diff tidak berubah seluruhnya
+# saat tooling baca/tulis file, dan aman untuk Arduino IDE.
+firmware/** text eol=lf
+
+# Aset biner: jangan pernah disentuh
+*.png binary
+*.ico binary
+*.icns binary
