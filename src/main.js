@@ -381,7 +381,7 @@ el('appTtl').onchange = () => invoke('apps_set_ttl', { days: parseInt(el('appTtl
 let presetsData = { masterEnabled: false, presets: [] };
 let editingPresetId = null;
 let bindableAppsCache = null;
-let pendingDumpResolve = null;
+const dumpWaiters = new Map();   // layer -> { resolve, timer }
 
 function presetColor(seed) {
   let hash = 0;
@@ -559,13 +559,41 @@ el('btnAddPreset').onclick = async () => {
 };
 
 // ---- Masuk/keluar mode edit preset (reuse Home sepenuhnya) ----
-function waitForDump() { return new Promise(resolve => { pendingDumpResolve = resolve; }); }
+// Waiter DUMP dipeta per layer, bukan satu slot global. Dengan satu slot, dump
+// latar belakang (mis. dari EVT:LAYER:) yang selesai lebih dulu akan me-resolve
+// waiter packer, sehingga packCurrentAsPresetLayers() membaca mapping yang belum
+// terisi penuh dan menyimpan preset setengah jadi ke disk.
+//
+// Tiap layer boleh punya BANYAK waiter (Set, bukan satu entri): kalau hanya satu
+// entri per layer, waiter kedua akan menggantikan yang pertama tanpa
+// me-resolve-nya, sehingga pemanggil pertama menggantung selamanya.
+// Tiap waiter juga punya timeout supaya tidak menggantung kalau device menjawab
+// [ERROR] alih-alih DUMP_END (mis. layerCount UI basi setelah RESET di luar app).
+function waitForDump(layer, timeoutMs) {
+  const key = (layer === undefined || layer === null || Number.isNaN(layer)) ? currentLayer : layer;
+  return new Promise((resolve) => {
+    const entry = { resolve: null, timer: null };
+    entry.resolve = (okFlag) => {
+      if (entry.timer) clearTimeout(entry.timer);
+      const set = dumpWaiters.get(key);
+      if (set) { set.delete(entry); if (!set.size) dumpWaiters.delete(key); }
+      resolve(okFlag);
+    };
+    entry.timer = setTimeout(() => {
+      log('[ERROR] Timeout menunggu DUMP_END untuk layer ' + key, 'err');
+      entry.resolve(false);
+    }, timeoutMs || 3000);
+    if (!dumpWaiters.has(key)) dumpWaiters.set(key, new Set());
+    dumpWaiters.get(key).add(entry);
+  });
+}
 
 async function fetchAllLayersForPacking() {
   for (let l = 0; l < layerCount; l++) {
-    await sendLine('LAYER:' + l);
-    await sleep(50);
-    const waiter = waitForDump();
+    // Tidak mengirim LAYER: dan tidak perlu jeda. DUMP:<n> membaca layer n tanpa
+    // memindahkan layer aktif device, jadi layer yang sedang dipakai user tidak
+    // ikut berubah. Timeout mencegah menggantung jika device tidak menjawab.
+    const waiter = waitForDump(l, 3000);
     await sendLine('DUMP:' + l);
     await waiter;
   }
@@ -1119,6 +1147,8 @@ function handleLine(line) {
     const n = parseInt(line.substring(10));
     lastDeviceLayerEventAt = Date.now(); // dipakai nanti buat pause auto-switch
     if (Number.isInteger(n) && n >= 0 && n < CAP_LAYERS && n !== currentLayer) {
+      // Device sudah pindah layer dengan sendirinya (long-press knob), jadi jangan
+      // kirim LAYER: balik - cukup baca isinya.
       currentLayer = n;
       renderTabs();
       loadLayer(n);
@@ -1129,7 +1159,11 @@ function handleLine(line) {
   if (line.startsWith('DUMP_BEGIN:')) { dumpInProgress = true; dumpParseLayer = parseInt(line.substring(11)); return; }
   if (line === 'DUMP_END') {
     dumpInProgress = false; renderGrid();
-    if (pendingDumpResolve) { pendingDumpResolve(); pendingDumpResolve = null; }
+    // Resolve waiter milik layer yang benar-benar didump.
+    const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
+    dumpParseLayer = NaN;
+    const set = dumpWaiters.get(done);
+    if (set) [...set].forEach(e => e.resolve(true));
     return;
   }
   if (dumpInProgress) {
@@ -1346,7 +1380,7 @@ function renderTabs() {
     t.className = 'tab' + (l === currentLayer ? ' active' : '');
     t.textContent = layerNames[l] || ('Layer ' + l);
     t.style.touchAction = 'none';
-    t.onclick = () => { if (tabDragMoved) return; currentLayer = l; renderTabs(); loadLayer(l); };
+    t.onclick = () => { if (tabDragMoved) return; switchLayer(l); };
     t.onpointerdown = (e) => startTabDrag(e, t, l);
     tabs.appendChild(t);
   }
@@ -1538,10 +1572,25 @@ function openEditor(kind, params) {
   if (type === 5) openAppPicker();
 }
 
+// Baca isi layer l ke UI TANPA memindahkan layer aktif device.
+//
+// DUMP:<n> di firmware sudah bisa membaca layer mana pun tanpa berganti layer, dan
+// setiap perintah tulis (SET:<layer>:...) menyebut nomornya secara eksplisit. Jadi
+// jalur baca tidak perlu mengirim LAYER: sama sekali - mengirimnya hanya akan
+// memindahkan layer yang sedang dipakai user di device.
+// Ganti layer sungguhan ditangani switchLayer().
 async function loadLayer(l) {
   mapping[l] = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
-  await sendLine('LAYER:' + l);
   await sendLine('DUMP:' + l);
+}
+
+// Ganti layer aktif di device DAN muat isinya ke UI. Dipakai saat user menekan tab
+// layer. Jalur baca (EVT:LAYER:, refresh, connect) cukup loadLayer().
+async function switchLayer(l) {
+  currentLayer = l;
+  renderTabs();
+  await sendLine('LAYER:' + l);
+  await loadLayer(l);
 }
 
 // ==================== REKAM DARI KEYBOARD — OTOMATIS & KONTINU ====================

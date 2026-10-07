@@ -9,7 +9,25 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
-#### Phase 4 — transport reliability
+#### Phase 5 — kontrak protokol
+- Waiter `DUMP` dipetakan per layer (`dumpWaiters`), bukan satu slot global, dan tiap
+  waiter punya **timeout** 3 detik. Sebelumnya satu slot global dipakai bersama: dump
+  latar belakang yang selesai lebih dulu akan me-resolve waiter packer, sehingga
+  `packCurrentAsPresetLayers()` membaca mapping belum terisi dan menulis preset setengah
+  jadi ke disk. Tanpa timeout, `fetchAllLayersForPacking()` juga bisa menggantung
+  selamanya kalau device menjawab `[ERROR]` alih-alih `DUMP_END`.
+- `loadLayer(l)` sekarang **hanya membaca** (`DUMP:<n>`), dan `switchLayer(l)` terpisah
+  untuk penggantian layer sungguhan (klik tab layer). Firmware sudah bisa mendump layer
+  mana pun tanpa berpindah layer, dan `SET:<layer>:...` menyebut nomornya eksplisit,
+  jadi jalur baca tidak perlu mengirim `LAYER:` sama sekali — dikirimnya hanya memindahkan
+  layer yang sedang dipakai user.
+
+### Fixed
+- **Waiter DUMP yang tergantikan menggantung selamanya**: satu entri waiter per layer
+  menggantikan yang lama tanpa me-resolve-nya. Sekarang tiap layer memakai `Set`, jadi
+  beberapa pemohon bisa menunggu layer yang sama dan semuanya selesai pada `DUMP_END` pertama.
+
+#### Phase 4 — transport reliability (lanjutan)
 - App: handle unlisten dari `port.listen()` kini disimpan dan dipanggil saat
   `disconnect()`, `handleDeviceLost()`, dan `probeWhoAmI()`. Plugin serial tidak
   memanggilnya sendiri saat `stopListening()`, sehingga setiap reconnect/probe
