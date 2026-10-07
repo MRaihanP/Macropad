@@ -34,6 +34,21 @@ const RGB_FW_BRI_CAP = Math.round(255 * 0.6);
 const briToPct = v => Math.max(0, Math.min(100, Math.round(v / RGB_FW_BRI_CAP * 100)));
 const pctToBri = p => Math.round(Math.max(0, Math.min(100, p)) / 100 * RGB_FW_BRI_CAP);
 let rgb = { enabled: true, mode: 0, random: false, color: [16,96,90], bri: 200, speed: 128, keys: [], sel: null, dirty: false };
+// Kemampuan hardware device, dibaca dari HWINFO. Penting karena firmware PROTOTYPE
+// mengirim angka SIMULASI untuk baterai/RGB; app harus menandai agar data palsu
+// tidak dibaca sebagai data hardware sungguhan.
+let deviceProfile = { connected: false };
+function renderDeviceProfileBadge() {
+  const b = el('hwProfileBadge'); if (!b) return;
+  const sim = deviceProfile.simulated === 1 || battUI.simulated;
+  if (!deviceProfile.profile) { b.style.display = 'none'; return; }
+  b.style.display = 'inline-flex';
+  b.textContent = sim ? `${deviceProfile.profile} - DATA SIMULASI` : deviceProfile.profile;
+  b.classList.toggle('sim', !!sim);
+  b.title = sim
+    ? 'Firmware prototipe mengirim angka simulasi untuk baterai/RGB. Format pesan sama dengan board final, jadi app tidak perlu diubah.'
+    : 'Data dibaca langsung dari hardware';
+}
 const RGB_MODES = [
   { id: 0, name: 'Static Light', desc: 'Satu warna untuk semua key', color: true, random: false, speed: false },
   { id: 1, name: 'Custom per Key', desc: 'Warna tiap key diatur dari peta di kiri', color: false, random: false, speed: false },
@@ -659,17 +674,29 @@ function syncGlobalToggles() {
   }
 }
 
-// Dummy battery indicator (sampai firmware final mengirim EVT:BATT asli)
-let battUI = { pct: 85, charging: false };
+// Status baterai & charger. Sumbernya firmware lewat EVT:BATT / EVT:CHG - bukan
+// angka buatan app. Pada board PROTOTYPE firmware mengirim angka simulasi, dan
+// deviceProfile.simulated membuat UI menandai demikian supaya tidak tertukar
+// dengan data hardware asli.
+let battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
 function updateBatteryUI() {
   const ind = el('battInd'); if (!ind) return;
+  if (battUI.pct === null) {
+    el('battPct').textContent = '--';
+    el('battFill').style.transform = 'scaleX(0.02)';
+    el('battBolt').style.display = 'none';
+    ind.classList.remove('low', 'crit');
+    return;
+  }
   el('battPct').textContent = battUI.pct + '%';
-  el('battFill').style.transform = `scaleX(${Math.max(0.02, battUI.pct/100)})`;
+  el('battFill').style.transform = `scaleX(${Math.max(0.02, battUI.pct / 100)})`;
   ind.classList.toggle('low', battUI.pct <= 20 && battUI.pct > 10);
   ind.classList.toggle('crit', battUI.pct <= 10);
   el('battBolt').style.display = battUI.charging ? 'block' : 'none';
+  ind.title = battUI.simulated
+    ? `Data SIMULASI (firmware prototipe)${battUI.mv !== null ? ` - ${battUI.mv} mV` : ''}`
+    : (battUI.mv !== null ? `${battUI.mv} mV` : 'Baterai');
 }
-setInterval(() => { battUI.pct = battUI.pct > 5 ? battUI.pct - 1 : 100; battUI.charging = battUI.pct <= 10; updateBatteryUI(); }, 2000);
 setTimeout(updateBatteryUI, 0);
 function updateActivePresetLabel() {
   const label = el('deviceActivePresetLabel');
@@ -975,6 +1002,13 @@ function setConnected(state) {
   el('statusText').textContent = state ? 'Connected' : 'Not connected';
   el('btnConnect').textContent = state ? 'Disconnect' : 'Connect';
   el('app').style.display = state ? 'block' : 'none';
+  if (!state) {
+    // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus.
+    deviceProfile = { connected: false };
+    battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
+    renderDeviceProfileBadge();
+    updateBatteryUI();
+  }
 }
 
 async function sendLine(str) {
@@ -1077,6 +1111,67 @@ function handleLine(line) {
     if (p.length >= 3 && encConfig[encParseIdx]) encConfig[encParseIdx][p[0]] = { type: parseInt(p[1]), value: p.slice(2).join(',') };
     return;
   }
+  if (line.startsWith('HWINFO:')) {
+    deviceProfile = { connected: true };
+    line.substring(7).split(',').forEach(p => {
+      const eq = p.indexOf('='); if (eq < 0) return;
+      const k = p.substring(0, eq), v = p.substring(eq + 1);
+      deviceProfile[k] = /^-?\d+$/.test(v) ? parseInt(v) : v;
+    });
+    if (deviceProfile.encoders) { NUM_ENCODERS = deviceProfile.encoders; ensureEncConfigSize(); }
+    battUI.simulated = deviceProfile.simulated === 1;
+    log(`[HW] Profil ${deviceProfile.profile} - rgb=${deviceProfile.rgb} vdiv=${deviceProfile.vdiv} chg=${deviceProfile.chg}` + (battUI.simulated ? ' (data simulasi)' : ''));
+    renderDeviceProfileBadge();
+    updateBatteryUI();
+    return;
+  }
+  if (line.startsWith('EVT:BATT:')) {
+    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
+    if (kv.pct !== undefined) battUI.pct = parseInt(kv.pct);
+    if (kv.mv !== undefined) battUI.mv = parseInt(kv.mv);
+    if (kv.charging !== undefined) battUI.charging = kv.charging === '1';
+    if (kv.usb !== undefined) battUI.usb = kv.usb === '1';
+    if (kv.profile !== undefined) deviceProfile.profile = kv.profile;
+    updateBatteryUI();
+    return;
+  }
+  if (line.startsWith('EVT:CHG:')) {
+    const m = line.match(/state=(\d+)/);
+    if (m) {
+      battUI.chargeState = parseInt(m[1]);
+      battUI.charging = battUI.chargeState === 1;
+      updateBatteryUI();
+      const label = ['tidak mengecas', 'sedang mengecas', 'cas selesai'][battUI.chargeState] || 'tidak diketahui';
+      notify(`Baterai: ${label}`, 'batt');
+    }
+    return;
+  }
+  if (line.startsWith('RGB_DUMP:')) {
+    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
+    if (kv.enabled !== undefined) rgb.enabled = kv.enabled === '1';
+    if (kv.mode !== undefined) rgb.mode = parseInt(kv.mode);
+    if (kv.random !== undefined) rgb.random = kv.random === '1';
+    if (kv.bri !== undefined) rgb.bri = parseInt(kv.bri);
+    if (kv.speed !== undefined) rgb.speed = parseInt(kv.speed);
+    if (kv.dirty !== undefined) rgb.dirty = kv.dirty === '1';
+    if (kv.color) { const c = kv.color.split(':').map(parseInt); if (c.length === 3) rgb.color = c; }
+    rgb.keys = [];
+    renderRgbAll();
+    return;
+  }
+  if (line.startsWith('RGB_KEY:')) {
+    const p = line.substring(8).split(',');
+    if (p.length === 3) {
+      const r = parseInt(p[0]), c = parseInt(p[1]);
+      const col = p[2].split(':').map(parseInt);
+      if (r >= 0 && r < ROWS && c >= 0 && c < COLS && col.length === 3) {
+        ensureRgbKeys();
+        rgb.keys[r][c] = col;
+        renderRgbAll();
+      }
+    }
+    return;
+  }
   if (line === 'NAMES_BEGIN') { namesInProgress = true; return; }
   if (line === 'NAMES_END') { namesInProgress = false; renderTabs(); return; }
   if (namesInProgress) {
@@ -1134,7 +1229,16 @@ async function connect() {
   startPing();
   ignoreEvtUntil = Date.now() + 800;
   await sendLine('PING');
-  setTimeout(async () => { await sendLine('WHOAMI'); await sendLine('INFO'); await sendLine('DUMPENC'); }, 400);
+  // HWINFO wajib dikirim pertama: memberi tahu profile, jumlah knob, dan apakah angka
+// baterai/RGB yang akan datang adalah simulasi (prototipe) atau hardware asli.
+setTimeout(async () => {
+    await sendLine('WHOAMI');
+    await sendLine('HWINFO');
+    await sendLine('INFO');
+    await sendLine('DUMPENC');
+    await sendLine('BATT');
+    await sendLine('RGB:DUMP');
+  }, 400);
   return true;
 }
 
@@ -1496,8 +1600,10 @@ el('rgbBri').oninput = (e) => { const pct = parseInt(e.target.value); rgb.bri = 
 el('rgbSpeed').oninput = (e) => { rgb.speed = parseInt(e.target.value); el('rgbSpeedVal').textContent = Math.round(rgb.speed/255*100) + '%'; rgb.dirty = true; sendLine(`RGB:MODE:${rgb.mode}:${rgb.random?1:0}:${rgb.color.join(':')}:${rgb.speed}`); renderRgbAll(); };
 el('rgbColorPicker').oninput = (e) => { if (!rgb.sel) { rgb.color = hexToRgb(e.target.value); sendLine(`RGB:ALL:${rgb.color.join(':')}`); syncRgbDotColors(); } else { ensureRgbKeys(); rgb.keys[rgb.sel[0]][rgb.sel[1]] = hexToRgb(e.target.value); rgb.mode = 1; sendLine(`RGB:KEY:${rgb.sel[0]}:${rgb.sel[1]}:${rgb.keys[rgb.sel[0]][rgb.sel[1]].join(':')}`); renderRgbAll(); } };
 el('rgbModeColor').oninput = (e) => { rgb.color = hexToRgb(e.target.value); sendLine(`RGB:MODE:${rgb.mode}:${rgb.random?1:0}:${rgb.color.join(':')}:${rgb.speed}`); syncRgbDotColors(); renderRgbKeyCard(); };
-el('btnRgbSave').onclick = async () => { await sendLine('RGB:SAVE'); rgb.dirty = false; el('rgbSaveState').textContent = 'Tersimpan di device'; };
-el('btnRgbReset').onclick = async () => { if (confirm('Reset RGB ke default?')) { await sendLine('RGB:RESET'); await sendLine('RGB:SAVE'); await sendLine('RGB:DUMP'); } };
+// Flag dirty dibaca dari device (RGB_DUMP:dirty=), bukan asumsi lokal.
+// Setelah SAVE kita minta ulang dump supaya status "tersimpan" berasal dari device.
+el('btnRgbSave').onclick = async () => { await sendLine('RGB:SAVE'); await sendLine('RGB:DUMP'); };
+el('btnRgbReset').onclick = async () => { if (confirm('Reset RGB ke default?')) { await sendLine('RGB:RESET'); await sendLine('RGB:DUMP'); } };
 renderRgbAll(); syncGlobalToggles();
 
 // ==================== AUTOSTART (toggle; auto-aktif sekali di build rilis, diatur Rust) ====================

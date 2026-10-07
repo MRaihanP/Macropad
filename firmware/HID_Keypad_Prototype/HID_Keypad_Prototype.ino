@@ -36,6 +36,11 @@
 #define HAS_VBUS_SENSE  0    // prototipe tidak punya divider VBUS
 #define HAS_CHG_STAT    0    // prototipe tidak punya charger MCP73831
 
+// Prototipe tidak punya baterai/RGB/charger sungguhan, jadi angka yang dikirim ke
+// companion app adalah simulasi. App membaca flag ini lewat HWINFO untuk menampilkan
+// badge "SIMULASI" supaya data palsu tidak tertukar dengan data hardware asli.
+#define HW_DATA_SIMULATED 1
+
 // ---- Matrix ----
 const uint8_t ROW_PINS[ROWS] = {1, 2, 4};
 const uint8_t COL_PINS[COLS] = {5, 6, 7};
@@ -184,6 +189,31 @@ uint32_t readBatteryMv(uint32_t* pinMvOut) {
 // "tidak mengecas" seperti board FINAL yang tersambung USB tanpa charger.
 // Untuk menguji jalur "sedang mengecas", ganti sementara ke CHARGE_CHARGING.
 ChargeState readChargeState() { return CHARGE_COMPLETE; }
+
+// ---------------------------------------------------------------------------
+// RGB hooks - prototipe
+// ---------------------------------------------------------------------------
+// Tidak ada LED fisik pada prototipe, jadi apply hanya menyiapkan state (RGB:DUMP
+// tetap melaporkan nilai yang benar). Persist tetap ditulis ke Preferences supaya
+// jalur simpan/muat bisa diuji di prototipe sebelum board FINAL ada.
+void rgbApplyState() {
+  // tidak ada LED fisik pada prototipe
+}
+
+void rgbPersist() {
+  prefs.begin("rgbcfg", false);
+  prefs.putBytes("state", &rgbState, sizeof(rgbState));
+  prefs.end();
+}
+
+void rgbRestore() {
+  prefs.begin("rgbcfg", true);
+  size_t n = prefs.getBytesLength("state");
+  if (n == sizeof(rgbState)) {
+    RgbState tmp;
+    if (prefs.getBytes("state", &tmp, sizeof(tmp)) == sizeof(tmp)) rgbState = tmp;
+  }
+  prefs.end();
 }
 
 #include "../common/macropad_core.h"

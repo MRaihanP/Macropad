@@ -425,6 +425,80 @@ void checkEncoder() {
 }
 
 // =================== SERIAL COMMAND PARSER ===================
+// =================== RGB: STATE + LAPORAN BATERAI (bersama) ===================
+RgbState rgbState;
+
+void rgbStateReset() {
+  rgbState.enabled = true;
+  rgbState.mode    = 0;
+  rgbState.random  = 0;
+  rgbState.speed   = 128;
+  rgbState.bri     = 200;
+  rgbState.color[0] = 0x10; rgbState.color[1] = 0x60; rgbState.color[2] = 0x5A;
+  for (uint8_t r = 0; r < ROWS; r++)
+    for (uint8_t c = 0; c < COLS; c++) {
+      rgbState.keys[r][c][0] = 0x10;
+      rgbState.keys[r][c][1] = 0x60;
+      rgbState.keys[r][c][2] = 0x5A;
+    }
+  rgbState.dirty = false;
+}
+
+void rgbDump() {
+  Serial.printf("RGB_DUMP:enabled=%d,mode=%d,random=%d,bri=%d,speed=%d,color=%d:%d:%d,dirty=%d\n",
+                rgbState.enabled ? 1 : 0, rgbState.mode, rgbState.random, rgbState.bri, rgbState.speed,
+                rgbState.color[0], rgbState.color[1], rgbState.color[2], rgbState.dirty ? 1 : 0);
+  for (uint8_t r = 0; r < ROWS; r++)
+    for (uint8_t c = 0; c < COLS; c++)
+      Serial.printf("RGB_KEY:%d,%d,%d:%d:%d\n", r, c,
+                    rgbState.keys[r][c][0], rgbState.keys[r][c][1], rgbState.keys[r][c][2]);
+  Serial.println("RGB_DUMP_END");
+}
+
+uint8_t battPercentFromMv(uint32_t mv) {
+  static const uint16_t mvTab[]  = {4200, 4100, 4000, 3900, 3800, 3700, 3600, 3400};
+  static const uint8_t  pctTab[] = { 100,   90,   80,   65,   50,   30,   15,    0};
+  const uint8_t n = sizeof(mvTab) / sizeof(mvTab[0]);
+  if (mv >= mvTab[0]) return 100;
+  for (uint8_t i = 0; i + 1 < n; i++) {
+    if (mv >= mvTab[i + 1]) {
+      uint32_t span = mvTab[i] - mvTab[i + 1];
+      uint32_t into = mv - mvTab[i + 1];
+      if (span == 0) return pctTab[i];
+      return (uint8_t)(pctTab[i + 1] + (into * (pctTab[i] - pctTab[i + 1])) / span);
+    }
+  }
+  return 0;
+}
+
+const unsigned long BATT_REPORT_INTERVAL_MS = 5000;
+unsigned long lastBattReportMs = 0;
+ChargeState lastChargeState = CHARGE_NONE;
+bool battStateValid = false;
+
+// Laporkan baterai + status charger. Nilai diambil lewat antarmuka profil, jadi
+// PROTOTYPE mengirim angka simulasi dan FINAL mengirim angka hardware dengan
+// format pesan yang sama persis.
+void reportBatt() {
+  ChargeState cs = readChargeState();
+  bool chargeChanged = !battStateValid || (cs != lastChargeState);
+  unsigned long now = millis();
+  if (!chargeChanged && (long)(now - lastBattReportMs) < (long)BATT_REPORT_INTERVAL_MS) return;
+
+  lastBattReportMs = now;
+  lastChargeState = cs;
+  battStateValid = true;
+
+  uint32_t pinMv = 0;
+  uint32_t battMv = readBatteryMv(&pinMv);
+  Serial.printf("EVT:BATT:pct=%d,mv=%lu,charging=%d,usb=%d,profile=%s\n",
+                battPercentFromMv(battMv), (unsigned long)battMv,
+                (cs == CHARGE_CHARGING) ? 1 : 0,
+                usbHostConnected() ? 1 : 0, HW_PROFILE_NAME);
+  if (chargeChanged)
+    Serial.printf("EVT:CHG:state=%d\n", (int)cs);
+}
+
 ActionType parseActionType(const String& s) {
   if (s == "KEY") return ACTION_KEY;
   if (s == "COMBO") return ACTION_COMBO;
@@ -705,45 +779,59 @@ void handleSerialCommand(String cmd) {
   }
 
   if (cmd == "HWINFO") {
-    Serial.printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbCount=%d,vdiv=%d\n", HW_PROFILE_NAME, NUM_ENCODERS,
-                  HAS_STATUS_LED, HAS_RGB,
-#if HAS_RGB
-                  RGB_COUNT,
-#else
-                  0,
-#endif
-                  HAS_VDIV);
+    // rgbSlots tetap RGB_COUNT di kedua profil: di FINAL itu jumlah LED fisik,
+    // di PROTOTYPE itu jumlah key yang disimulasikan. App memakai angka yang sama
+    // untuk menandai "RGB 1".."RGB 9" di kedua board.
+    Serial.printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\n",
+                  HW_PROFILE_NAME, NUM_ENCODERS, HAS_STATUS_LED, HAS_RGB, RGB_COUNT,
+                  HAS_VDIV, HAS_CHG_STAT, HW_DATA_SIMULATED);
     return;
   }
 
   if (cmd == "BATT") {
-#if HAS_VDIV
     uint32_t pinMv = 0;
     uint32_t battMv = readBatteryMv(&pinMv);
-    Serial.printf("BATT:pin_mv=%lu,batt_mv=%lu\n", (unsigned long)pinMv, (unsigned long)battMv);
-#else
-    Serial.println("[ERROR] Voltage divider tidak ada di profil " HW_PROFILE_NAME);
-#endif
+    ChargeState cs = readChargeState();
+    Serial.printf("BATT:pin_mv=%lu,batt_mv=%lu,pct=%d,charging=%d,usb=%d\n",
+                  (unsigned long)pinMv, (unsigned long)battMv, battPercentFromMv(battMv),
+                  (cs == CHARGE_CHARGING) ? 1 : 0, usbHostConnected() ? 1 : 0);
     return;
   }
 
   if (cmd.startsWith("RGB:")) {
-#if HAS_RGB
-    if (cmd == "RGB:ON")  { rgbPower(true);  Serial.println("[OK] RGB on");  return; }
-    if (cmd == "RGB:OFF") { rgbPower(false); Serial.println("[OK] RGB off"); return; }
+    if (cmd == "RGB:ON")  { rgbState.enabled = true;  rgbApplyState(); Serial.println("[OK] RGB on");  return; }
+    if (cmd == "RGB:OFF") { rgbState.enabled = false; rgbApplyState(); Serial.println("[OK] RGB off"); return; }
+
+    if (cmd.startsWith("RGB:EN:")) {
+      long en;
+      if (!parseIntRange(cmd.substring(7), 0, 1, en)) { Serial.println("[ERROR] Format RGB:EN:0|1"); return; }
+      rgbState.enabled = (en == 1);
+      rgbState.dirty = true;
+      rgbApplyState();
+      Serial.printf("[OK] RGB %s\n", rgbState.enabled ? "on" : "off");
+      return;
+    }
     if (cmd.startsWith("RGB:BRI:")) {
       long bL;
       if (!parseIntRange(cmd.substring(8), 0, 255, bL)) { Serial.println("[ERROR] Brightness 0-255"); return; }
-      int b = (int)bL;
-      rgbBrightness = (uint8_t)b; strip.setBrightness(rgbBrightness); rgbRender();
-      Serial.printf("[OK] RGB brightness %d\n", b);
+      rgbState.bri = (uint8_t)bL;
+      rgbState.dirty = true;
+      rgbApplyState();
+      Serial.printf("[OK] RGB brightness %d\n", rgbState.bri);
       return;
     }
     if (cmd.startsWith("RGB:ALL:")) {
       int r, g, b;
       if (sscanf(cmd.c_str() + 8, "%d:%d:%d", &r, &g, &b) != 3 || r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { Serial.println("[ERROR] Format RGB:ALL:r:g:b"); return; }
-      for (uint8_t i = 0; i < RGB_COUNT; i++) rgbBase[i] = RGB32(r, g, b);
-      rgbRender();
+      rgbState.color[0] = (uint8_t)r; rgbState.color[1] = (uint8_t)g; rgbState.color[2] = (uint8_t)b;
+      for (uint8_t rr = 0; rr < ROWS; rr++)
+        for (uint8_t cc = 0; cc < COLS; cc++) {
+          rgbState.keys[rr][cc][0] = (uint8_t)r;
+          rgbState.keys[rr][cc][1] = (uint8_t)g;
+          rgbState.keys[rr][cc][2] = (uint8_t)b;
+        }
+      rgbState.dirty = true;
+      rgbApplyState();
       Serial.println("[OK] RGB semua diset");
       return;
     }
@@ -751,15 +839,47 @@ void handleSerialCommand(String cmd) {
       int row, col, r, g, b;
       if (sscanf(cmd.c_str() + 8, "%d:%d:%d:%d:%d", &row, &col, &r, &g, &b) != 5 || row < 0 || row >= ROWS || col < 0 || col >= COLS ||
           r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { Serial.println("[ERROR] Format RGB:KEY:row:col:r:g:b"); return; }
-      rgbBase[RGB_INDEX[row][col]] = RGB32(r, g, b);
-      rgbRender();
+      rgbState.keys[row][col][0] = (uint8_t)r;
+      rgbState.keys[row][col][1] = (uint8_t)g;
+      rgbState.keys[row][col][2] = (uint8_t)b;
+      rgbState.dirty = true;
+      rgbApplyState();
       Serial.printf("[OK] RGB %d (R%d C%d) diset\n", (int)RGB_INDEX[row][col] + 1, row, col);
       return;
     }
+    if (cmd.startsWith("RGB:MODE:")) {
+      // Format: RGB:MODE:<mode>:<random>:<r>:<g>:<b>:<speed>
+      int mode, rnd, r, g, b, speed;
+      if (sscanf(cmd.c_str() + 9, "%d:%d:%d:%d:%d:%d", &mode, &rnd, &r, &g, &b, &speed) != 6 ||
+          mode < 0 || mode > 8 || (rnd != 0 && rnd != 1) ||
+          r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255 || speed < 0 || speed > 255) {
+        Serial.println("[ERROR] Format RGB:MODE:mode:random:r:g:b:speed"); return;
+      }
+      rgbState.mode   = (uint8_t)mode;
+      rgbState.random = (uint8_t)rnd;
+      rgbState.color[0] = (uint8_t)r; rgbState.color[1] = (uint8_t)g; rgbState.color[2] = (uint8_t)b;
+      rgbState.speed = (uint8_t)speed;
+      rgbState.dirty = true;
+      rgbApplyState();
+      Serial.printf("[OK] RGB mode %d\n", rgbState.mode);
+      return;
+    }
+    if (cmd == "RGB:SAVE") {
+      rgbPersist();
+      rgbState.dirty = false;
+      Serial.println("[OK] RGB disimpan");
+      return;
+    }
+    if (cmd == "RGB:RESET") {
+      rgbStateReset();
+      rgbApplyState();
+      rgbPersist();
+      rgbDump();
+      Serial.println("[OK] RGB reset ke default");
+      return;
+    }
+    if (cmd == "RGB:DUMP") { rgbDump(); return; }
     Serial.println("[ERROR] Command RGB tidak dikenal");
-#else
-    Serial.println("[ERROR] RGB tidak ada di profil " HW_PROFILE_NAME);
-#endif
     return;
   }
 
@@ -815,6 +935,9 @@ void setup() {
   }
 
   hwPeripheralsInit();
+  rgbStateReset();
+  rgbRestore();
+  rgbApplyState();
 }
 
 void loop() {
@@ -823,4 +946,5 @@ void loop() {
   checkSerialInput();
   updateLed();
   updateRgb();
+  reportBatt();
 }

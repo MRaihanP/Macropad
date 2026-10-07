@@ -254,6 +254,12 @@ input[readonly] { color: var(--accent); cursor: default; }
 /* Animasi preview dijalankan lewat Web Animations API (main.js), bukan CSS,
    supaya tidak bisa dimatikan oleh rule stylesheet atau prefers-reduced-motion. */
 .batt { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 0.78rem; font-family: var(--mono); }
+/* Badge profil hardware. Muncul hanya setelah HWINFO diterima. "SIMULASI" berarti
+   angka baterai/RGB berasal dari firmware prototipe, bukan hardware sungguhan. */
+.hw-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+  font-size: 0.66rem; font-family: var(--mono); letter-spacing: .03em;
+  border: 1px solid var(--line); color: var(--muted); background: var(--panel-hi); }
+.hw-badge.sim { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-dim); }
 .batt-fill { fill: var(--accent); transform-box: fill-box; transform-origin: left center; transition: transform .6s ease, fill .3s ease; }
 .batt-bolt { fill: var(--text); stroke: var(--bg); stroke-width: 0.8; }
 .batt.low .batt-fill { fill: #f2a154; }

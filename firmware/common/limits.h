@@ -44,3 +44,31 @@ uint32_t readBatteryMv(uint32_t* pinMvOut);
 ChargeState readChargeState();
 bool usbHostConnected();   // true bila device tersambung ke PC (VBUS ada)
 
+// ---------------------------------------------------------------------------
+// State RGB - dimiliki CORE, bukan backend hardware.
+// ---------------------------------------------------------------------------
+// Alasannya: RGB:DUMP harus bisa melaporkan state yang sedang aktif apa pun, dan
+// firmware PROTOTYPE (tanpa LED) maupun FINAL (strip nyata) harus memakai protocol
+// yang persis sama. Backend hardware tiap profil hanya mengimplementasikan tiga
+// hook di bawah; selebihnya diurus di core.
+struct RgbState {
+  bool    enabled;
+  uint8_t mode;      // 0..8, lihat tabel mode di companion app
+  uint8_t random;    // 1 = warna acak tiap siklus
+  uint8_t speed;     // 0..255
+  uint8_t bri;       // 0..255
+  uint8_t color[3];  // warna global untuk mode non per-key
+  uint8_t keys[ROWS][COLS][3];  // warna per tombol (mode 1)
+  bool    dirty;     // ada perubahan yang belum disimpan ke flash
+};
+
+extern RgbState rgbState;
+
+// Hook yang WAJIB diimplementasikan oleh setiap sketsh profil (setelah#include core).
+void rgbApplyState();   // pushes state di atas ke hardware LED
+void rgbPersist();      // simpan ke flash
+void rgbRestore();      // muat dari flash saat boot
+
+// Konversi tegangan baterai ke persen memakai kurva LiPo kasar.
+uint8_t battPercentFromMv(uint32_t mv);
+

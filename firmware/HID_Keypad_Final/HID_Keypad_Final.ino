@@ -35,6 +35,9 @@
 #define HAS_VBUS_SENSE  1    // deteksi USB tersambung via divider 68k/100k (GPIO21)
 #define HAS_CHG_STAT    1    // status charger MCP73831 (GPIO18)
 
+// Semua angka yang dikirim ke companion app di board ini berasal dari hardware sungguhan.
+#define HW_DATA_SIMULATED 0
+
 #if HAS_RGB
   #include <Adafruit_NeoPixel.h>
 #endif
@@ -236,4 +239,49 @@ void hwPeripheralsInit() {
 }
 
 #include "../common/macropad_core.h"
+
+// ---------------------------------------------------------------------------
+// RGB hooks - FINAL (meny cairkan state RGB ke strip SK6812 sungguhan)
+// ---------------------------------------------------------------------------
+// Mesine efek animasi (breathing/rainbow/wave/snake) belum ada; yang di sini baru
+// menerjemahkan mode ke warna per LED. Ditandai TODO agar tidak disalahpahami
+// sebagai "efek sudah selesai".
+void rgbApplyState() {
+#if HAS_RGB
+  if (!rgbPowered) rgbPower(true);
+  rgbBrightness = rgbState.bri;
+  strip.setBrightness(rgbBrightness);
+
+  if (rgbState.mode == 1) {
+    for (uint8_t r = 0; r < ROWS; r++)
+      for (uint8_t c = 0; c < COLS; c++) {
+        int8_t i = RGB_INDEX[r][c];
+        if (i < 0 || i >= RGB_COUNT) continue;
+        rgbBase[i] = RGB32(rgbState.keys[r][c][0], rgbState.keys[r][c][1], rgbState.keys[r][c][2]);
+      }
+  } else {
+    uint32_t flat = RGB32(rgbState.color[0], rgbState.color[1], rgbState.color[2]);
+    for (uint8_t i = 0; i < RGB_COUNT; i++) rgbBase[i] = flat;
+  }
+  rgbRender();
+#else
+  // profil ini tidak punya RGB
+#endif
+}
+
+void rgbPersist() {
+  prefs.begin("rgbcfg", false);
+  prefs.putBytes("state", &rgbState, sizeof(rgbState));
+  prefs.end();
+}
+
+void rgbRestore() {
+  prefs.begin("rgbcfg", true);
+  size_t n = prefs.getBytesLength("state");
+  if (n == sizeof(rgbState)) {
+    RgbState tmp;
+    if (prefs.getBytes("state", &tmp, sizeof(tmp)) == sizeof(tmp)) rgbState = tmp;
+  }
+  prefs.end();
+}
 
