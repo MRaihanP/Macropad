@@ -14,6 +14,26 @@ const MODIFIER_NAMES = ['CTRL', 'SHIFT', 'ALT', 'GUI'];
 
 let port = null;
 let lineBuffer = "";
+// Handle unlisten dari port.listen(). Plugin serial tidak memanggilnya sendiri saat
+// stopListening(), jadi tanpa disimpan di sini setiap reconnect/probe menambah satu
+// listener baru. Akibatnya satu chunk dari device diproses N kali dan tiap baris
+// terkirim berganda -> desync protokol.
+let portUnlisten = null;
+// Batas aman untuk buffer baris. Kalau device atau derau tidak pernah mengirim
+// newline, buffer akan tumbuh tanpa batas selama sesi.
+const LINE_BUFFER_MAX = 64 * 1024;
+
+function resetParserState() {
+  lineBuffer = '';
+  dumpInProgress = false;
+  dumpEncInProgress = false;
+  namesInProgress = false;
+}
+function releasePortListener() {
+  const u = portUnlisten;
+  portUnlisten = null;
+  if (u) { try { u(); } catch (e) { log('[ERROR] Gagal lepas listener: ' + e, 'err'); } }
+}
 let currentLayer = 0, layerCount = 4, maxLayers = CAP_LAYERS;
 let mapping = Array.from({ length: CAP_LAYERS }, () => Array.from({ length: ROWS }, () => Array(COLS).fill(null)));
 let layerNames = Array(CAP_LAYERS).fill(null);
@@ -24,6 +44,9 @@ function ensureEncConfigSize() {
 }
 let selected = null;
 let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
+// Layer yang sedang di-dump, dibaca dari DUMP_BEGIN:<n>. Dipakai supaya isi dump
+// masuk ke layer asalnya, bukan ke currentLayer yang mungkin sudah berubah.
+let dumpParseLayer = NaN;
 let recording = false, recordTokens = [];
 let dirty = false;
 let ignoreEvtUntil = 0;
@@ -866,7 +889,7 @@ async function refreshPorts(paths, quiet) {
 }
 
 async function probeWhoAmI(path) {
-  let temp;
+  let temp, tempUnlisten = null, probeTimer = null;
   try {
     temp = new SerialPort({ path, baudRate: 115200, size: 1024 });
     await temp.open();
@@ -874,17 +897,24 @@ async function probeWhoAmI(path) {
     await temp.setRequestToSend(true);
     await temp.startListening();
 
-    return await new Promise(async (resolve) => {
+    const result = await new Promise((resolve) => {
       let done = false;
-      await temp.listen((data) => {
-        if (!done && data.includes('WHOAMI:MacroPad')) { done = true; resolve(true); }
-      });
-      await temp.write('WHOAMI\n');
-      setTimeout(() => { if (!done) { done = true; resolve(false); } }, 700);
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      // listen() mengembalikan UnlistenFn; WAJIB disimpan dan dipanggil, kalau tidak
+      // setiap probe menambah listener permanen pada event read port tersebut.
+      tempUnlisten = null;
+      temp.listen((data) => { if (data.includes('WHOAMI:MacroPad')) finish(true); })
+        .then((u) => { tempUnlisten = u; })
+        .catch(() => finish(false));
+      temp.write('WHOAMI\n').catch(() => finish(false));
+      probeTimer = setTimeout(() => finish(false), 700);
     });
+    return result;
   } catch (e) {
     return false;
   } finally {
+    if (probeTimer) clearTimeout(probeTimer);
+    if (tempUnlisten) { try { tempUnlisten(); } catch (e) {} }
     try { if (temp) { await temp.stopListening(); await temp.close(); } } catch (e) {}
   }
 }
@@ -959,11 +989,12 @@ async function handleDeviceLost() {
   notify('Device terputus', 'disconnect');
   const p = port, lostPath = portPath;
   port = null; portPath = null; dirty = false; // RAM device hilang bersama daftar port; tidak ada yang tertunda
-  lineBuffer = ''; dumpInProgress = false; dumpEncInProgress = false; namesInProgress = false;
+  resetParserState();
   resetAdaptiveRuntimeState();
   stopPing();
   resetEditorState();
   setConnected(false);
+  releasePortListener();
   try { await Promise.race([(async () => { await p.stopListening(); await p.close(); })(), sleep(1000)]); } catch (e) {}
   // Path ini mungkin tidak pernah "hilang" dari enumerasi OS (nomor COM sama, cabut-colok cepat),
   // jadi selain menunggu pollPorts mendeteksi lewat added/removed, langsung coba lagi path ini juga.
@@ -1022,6 +1053,15 @@ async function sendLine(str) {
 
 function handleIncomingChunk(data) {
   lineBuffer += data;
+  // Kalau tidak ada newline sama sekali, buffer tumbuh tanpa batas dan handleLine
+  // tidak pernah dipanggil sehingga tidak ada yang bisa pulih. Buang sisa dan reset
+  // parser, lalu lanjut dari newline terakhir agar koneksi berikutnya tetap sinkron.
+  if (lineBuffer.length > LINE_BUFFER_MAX) {
+    log('[ERROR] Buffer baris melebihi ' + LINE_BUFFER_MAX + ' byte, parser di-reset', 'err');
+    resetParserState();
+    const nl = lineBuffer.lastIndexOf('\n');
+    lineBuffer = nl >= 0 ? lineBuffer.slice(nl + 1) : '';
+  }
   let idx;
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {
     handleLine(lineBuffer.slice(0, idx));
@@ -1078,7 +1118,7 @@ function handleLine(line) {
   if (line.startsWith('EVT:LAYER:')) {
     const n = parseInt(line.substring(10));
     lastDeviceLayerEventAt = Date.now(); // dipakai nanti buat pause auto-switch
-    if (!Number.isNaN(n) && n !== currentLayer) {
+    if (Number.isInteger(n) && n >= 0 && n < CAP_LAYERS && n !== currentLayer) {
       currentLayer = n;
       renderTabs();
       loadLayer(n);
@@ -1086,7 +1126,7 @@ function handleLine(line) {
     return;
   }
 
-  if (line.startsWith('DUMP_BEGIN:')) { dumpInProgress = true; return; }
+  if (line.startsWith('DUMP_BEGIN:')) { dumpInProgress = true; dumpParseLayer = parseInt(line.substring(11)); return; }
   if (line === 'DUMP_END') {
     dumpInProgress = false; renderGrid();
     if (pendingDumpResolve) { pendingDumpResolve(); pendingDumpResolve = null; }
@@ -1094,7 +1134,21 @@ function handleLine(line) {
   }
   if (dumpInProgress) {
     const p = line.split(',');
-    if (p.length >= 4) mapping[currentLayer][parseInt(p[0])][parseInt(p[1])] = { type: parseInt(p[2]), value: p.slice(3).join(',') };
+    // Semua index dari device harus divalidasi. Tanpa ini, baris korup seperti
+    // "99,0,1,x" membuat mapping[..][99] undefined dan penugasannya melempar
+    // TypeError DI DALAM callback serial, yang ditangkap plugin dan ditelan. Akibatnya
+    // parser mati di tengah stream dan semua baris berikutnya dimakan sebagai payload
+    // DUMP - desync permanen sampai reconnect.
+    if (p.length >= 4) {
+      const r = parseInt(p[0]), c = parseInt(p[1]);
+      const layer = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
+      if (Number.isInteger(r) && Number.isInteger(c) && r >= 0 && r < ROWS && c >= 0 && c < COLS
+          && mapping[layer] && mapping[layer][r] && Number.isInteger(parseInt(p[2]))) {
+        mapping[layer][r][c] = { type: parseInt(p[2]), value: p.slice(3).join(',') };
+      } else {
+        log('[ERROR] Baris DUMP tidak valid, dilewati: ' + line, 'err');
+      }
+    }
     return;
   }
   if (line.startsWith('ENC_BEGIN')) {
@@ -1106,9 +1160,18 @@ function handleLine(line) {
   }
   if (line === 'ENC_END') { dumpEncInProgress = false; renderEncoderList(); return; }
   if (dumpEncInProgress) {
-    if (line.startsWith('IDX:')) { encParseIdx = parseInt(line.substring(4)); return; }
+    if (line.startsWith('IDX:')) {
+      const i = parseInt(line.substring(4));
+      encParseIdx = (Number.isInteger(i) && i >= 0 && i < NUM_ENCODERS) ? i : -1;
+      return;
+    }
     const p = line.split(',');
-    if (p.length >= 3 && encConfig[encParseIdx]) encConfig[encParseIdx][p[0]] = { type: parseInt(p[1]), value: p.slice(2).join(',') };
+    // Allowlist kunci: tanpa ini device bisa mengirim kunci sembarang (mis. "__proto__")
+    // yang menjadi prototype assignment pada objek encoder.
+    const ENC_KEYS = ['CW', 'CCW', 'BTN'];
+    if (p.length >= 3 && encParseIdx >= 0 && encConfig[encParseIdx] && ENC_KEYS.includes(p[0])) {
+      encConfig[encParseIdx][p[0]] = { type: parseInt(p[1]), value: p.slice(2).join(',') };
+    }
     return;
   }
   if (line.startsWith('HWINFO:')) {
@@ -1176,18 +1239,26 @@ function handleLine(line) {
   if (line === 'NAMES_END') { namesInProgress = false; renderTabs(); return; }
   if (namesInProgress) {
     const idx = line.indexOf(',');
-    if (idx > -1) layerNames[parseInt(line.substring(0, idx))] = line.substring(idx + 1);
+    if (idx > -1) {
+      const n = parseInt(line.substring(0, idx));
+      if (Number.isInteger(n) && n >= 0 && n < maxLayers) layerNames[n] = line.substring(idx + 1);
+      else log('[ERROR] Baris NAMES tidak valid, dilewati: ' + line, 'err');
+    }
     return;
   }
   if (line.startsWith('INFO:')) {
+    // Nilai dari device tidak boleh dipercaya buta: parseInt("abc") = NaN, dan
+    // ROWS = NaN membuat Array.from({length: NaN}) -> [] sehingga renderGrid melempar
+    // Cannot read properties of undefined.
+    const num = (v, lo, hi, cur) => { const n = parseInt(v); return (Number.isInteger(n) && n >= lo && n <= hi) ? n : cur; };
     line.substring(5).split(',').forEach(p => {
       const [k, v] = p.split('=');
-      if (k === 'layerCount') layerCount = parseInt(v);
-      if (k === 'currentLayer') currentLayer = parseInt(v);
-      if (k === 'maxLayers') maxLayers = parseInt(v);
-      if (k === 'rows') ROWS = parseInt(v);
-      if (k === 'cols') COLS = parseInt(v);
-      if (k === 'encoders') { NUM_ENCODERS = parseInt(v); ensureEncConfigSize(); el('deviceEncLabel').textContent = String(NUM_ENCODERS); }
+      if (k === 'layerCount') layerCount = num(v, 1, CAP_LAYERS, layerCount);
+      if (k === 'currentLayer') currentLayer = num(v, 0, layerCount - 1, currentLayer);
+      if (k === 'maxLayers') maxLayers = num(v, 1, CAP_LAYERS, maxLayers);
+      if (k === 'rows') ROWS = num(v, 1, 16, ROWS);
+      if (k === 'cols') COLS = num(v, 1, 16, COLS);
+      if (k === 'encoders') { NUM_ENCODERS = num(v, 1, 8, NUM_ENCODERS); ensureEncConfigSize(); el('deviceEncLabel').textContent = String(NUM_ENCODERS); }
       el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
     });
     renderTabs(); loadLayer(currentLayer); sendLine('DUMPNAMES');
@@ -1214,7 +1285,7 @@ async function connect() {
     await port.setDataTerminalReady(true);
     await port.setRequestToSend(true);
     await port.startListening();
-    await port.listen((data) => handleIncomingChunk(data));
+    portUnlisten = await port.listen((data) => handleIncomingChunk(data));
   } catch (e) {
     log('[ERROR] Gagal membuka port: ' + e, 'err');
     port = null; return false;
@@ -1250,6 +1321,12 @@ async function disconnect(manual) {
     log('[LOG] Auto-reconnect dijeda. Klik Connect atau ↻ untuk mengaktifkan lagi.');
   }
   stopPing();
+  // Parser state harus ikut dibersihkan di jalur manual, sama seperti di
+  // handleDeviceLost(). Sebelumnya Disconnect manual meninggalkan baris parsial di
+  // lineBuffer dan dumpInProgress = true, sehingga byte pertama device berikutnya
+  // menempel pada baris rusak itu.
+  resetParserState();
+  releasePortListener();
   try { if (port) { await port.stopListening(); await port.close(); } } catch (e) {}
   port = null; portPath = null;
   resetAdaptiveRuntimeState();

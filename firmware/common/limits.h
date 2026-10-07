@@ -65,8 +65,9 @@ struct RgbState {
 extern RgbState rgbState;
 
 // Hook yang WAJIB diimplementasikan oleh setiap sketsh profil (setelah#include core).
+// Hook yang WAJIB diimplementasikan oleh setiap sketsh profil (setelah #include core).
 void rgbApplyState();   // pushes state di atas ke hardware LED
-void rgbPersist();      // simpan ke flash
+bool rgbPersist();      // simpan ke flash; false bila gagal
 void rgbRestore();      // muat dari flash saat boot
 
 // Konversi tegangan baterai ke persen memakai kurva LiPo kasar.

@@ -9,6 +9,45 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
+#### Phase 4 — transport reliability
+- App: handle unlisten dari `port.listen()` kini disimpan dan dipanggil saat
+  `disconnect()`, `handleDeviceLost()`, dan `probeWhoAmI()`. Plugin serial tidak
+  memanggilnya sendiri saat `stopListening()`, sehingga setiap reconnect/probe
+  menambah satu listener dan satu chunk device diproses berkali-kali.
+- App: `probeWhoAmI()` tidak lagi memakai `new Promise(async ...)` yang bisa menggantung
+  selamanya; timer probe kini selalu dibersihkan dan error `listen`/`write` ditangani.
+- App: `resetParserState()` dipakai bersama oleh `disconnect()` dan `handleDeviceLost()`.
+- Firmware: `serialLine[SERIAL_LINE_MAX]` (512 byte) menggantikan `String serialBuffer`.
+  String lama tumbuh tanpa batas dan O(n²); baris tanpa newline bisa menghabiskan heap
+  (Arduino ESP32 memanggil `abort()` saat `malloc` gagal). Baris kepanjangan kini
+  dibuang dengan pesan error dan parser tetap sinkron.
+- Firmware: `handleSerialCommand()` menerima `const String&` (semuanya hanya perbandingan
+  dan pembacaan, tanpa mutasi), memangkas satu alokasi heap per perintah.
+- Firmware: `saveConfigToFlash()` dan `rgbPersist()` sekarang mengembalikan `bool` dan
+  benar-benar mengecek `prefs.begin()` serta `putBytes()`.
+
+### Fixed
+- **Desync protokol setelah reconnect**: `disconnect()` manual tidak pernah me-reset
+  `lineBuffer`/`dumpInProgress`/`dumpEncInProgress`/`namesInProgress` (hanya
+  `handleDeviceLost()` yang melakukannya). Byte pertama device berikutnya menempel pada
+  baris parsial dan diparse sebagai payload DUMP.
+- **`lineBuffer` tumbuh tanpa batas**: tidak ada batas panjang dan tidak ada jalur resync.
+- **`TypeError` di dalam callback serial mematikan parser**: baris device dengan indeks
+  di luar jangkauan membuat `mapping[..][99]` undefined, dan penugasannya melempar di dalam
+  callback plugin yang coba-coba ditelan. Akibatnya `dumpInProgress` tetap `true` dan
+  semua baris berikutnya dimakan sebagai payload DUMP — desync permanen sampai reconnect.
+  Kini semua indeks tervalidasi dan baris buruk dilewati dengan log.
+- **Prototype pollution dari output device**: kunci encoder kini memakai allowlist
+  (`CW`/`CCW`/`BTN`), jadi kunci seperti `__proto__` tidak lagi menjadi prototype assignment.
+- **`NaN` dari `INFO:` merusak render**: `parseInt("abc")` menghasilkan `NaN`, dan
+  `ROWS = NaN` membuat `Array.from({length: NaN})` -> `[]` sehingga `renderGrid` melempar.
+ - Field numerik `INFO:` kini dibatasi rentang dan nilai di luar itu diabaikan.
+- `EVT:LAYER:` tidak lagi bisa menyetel `currentLayer` ke nilai di luar jangkauan.
+- Isi `DUMP:` kini ditulis ke layer yang disebut di `DUMP_BEGIN:<n>`, bukan ke
+  `currentLayer` yang mungkin sudah berubah. Isi dump tidak lagi bisa menimpa layer lain.
+- **Nilai macro ber-spasi/trailing**: `cmd.trim()` dihapus (wajib setelah `const String&`),
+  sekaligus membuat nilai `TEXT` yang diakhiri spasi tidak ikut terpotong.
+
 #### Phase 3 — data baterai & RGB berasal dari firmware, bukan dari app
 - State RGB dipindahkan ke **core** (`RgbState` di `common/limits.h`), bukan lagi milik
   backend hardware. Karena itu `RGB:DUMP` bisa melaporkan state aktif apa pun, dan

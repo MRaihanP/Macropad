@@ -78,7 +78,7 @@ unsigned long ledFlashUntil = 0;
 const unsigned long LED_FLASH_DURATION_MS = 150;
 
 // =================== SERIAL COMMAND BUFFER ===================
-String serialBuffer = "";
+// Buffer baris didefinisikan di dekat checkSerialInput() (bagian bawah berkas ini).
 
 // =================== ISR ENCODER (satu fungsi untuk semua knob, dibedakan lewat arg) ===================
 void IRAM_ATTR handleEncoderISR(void* arg) {
@@ -182,11 +182,24 @@ void resetCfgStruct(MacroConfig& c) {
 void resetAppCfg() { resetCfgStruct(appCfg); }
 
 // =================== PENYIMPANAN FLASH (NVS) — SELALU ke cfg, tidak lewat activeCfg ===================
-void saveConfigToFlash() {
-  prefs.begin("macropad", false);
-  prefs.putBytes("cfg", &cfg, sizeof(cfg));
+// Return true bila benar-benar tersimpan. Dulu nilai balik diabaikan dan "[FLASH]
+// Config tersimpan" dicetak tanpa syarat, padahal putBytes() mengembalikan 0 saat
+// NVS penuh atau error - app lalu menganggap SAVE sukses dan membersihkan dirty flag,
+// sehingga edit user hilang tanpa jejak.
+bool saveConfigToFlash() {
+  if (!prefs.begin("macropad", false)) {
+    Serial.println("[ERROR] SAVE gagal: tidak bisa membuka partisi NVS");
+    return false;
+  }
+  size_t w = prefs.putBytes("cfg", &cfg, sizeof(cfg));
   prefs.end();
+  if (w != sizeof(cfg)) {
+    Serial.printf("[ERROR] SAVE gagal: hanya %u dari %u byte tersimpan\n",
+                  (unsigned)w, (unsigned)sizeof(cfg));
+    return false;
+  }
   Serial.println("[FLASH] Config tersimpan");
+  return true;
 }
 
 void loadConfigFromFlash() {
@@ -547,8 +560,12 @@ void dumpEncoderConfig() {
   Serial.println("ENC_END");
 }
 
-void handleSerialCommand(String cmd) {
-  cmd.trim();
+// cmd tidak pernah dimutasi di dalam fungsi ini (semua pemakaiannya hanya ==,
+// startsWith, indexOf, substring, c_str), jadi diambil lewat const reference untuk
+// cmd tidak pernah dimutasi di dalam fungsi ini (semua pemakaiannya hanya ==,
+// startsWith, indexOf, substring, c_str), jadi diambil lewat const reference untuk
+// memangkas satu alokasi String per perintah.
+void handleSerialCommand(const String& cmd) {
   if (cmd.length() == 0) return;
 
   lastHostSeenMs = millis();
@@ -865,9 +882,12 @@ void handleSerialCommand(String cmd) {
       return;
     }
     if (cmd == "RGB:SAVE") {
-      rgbPersist();
-      rgbState.dirty = false;
-      Serial.println("[OK] RGB disimpan");
+      if (rgbPersist()) {
+        rgbState.dirty = false;
+        Serial.println("[OK] RGB disimpan");
+      } else {
+        Serial.println("[ERROR] RGB gagal disimpan");
+      }
       return;
     }
     if (cmd == "RGB:RESET") {
@@ -886,11 +906,40 @@ void handleSerialCommand(String cmd) {
   Serial.println("[ERROR] Command tidak dikenal");
 }
 
+// Buffer baris serial.
+//
+// Sebelumnya dipakai Arduino String yang tumbuh tanpa batas dan O(n^2): tiap byte
+// memicu realloc, dan baris yang tidak pernah diakhiri newline akan menumpuk sampai
+// kehabisan heap (Arduino ESP32 memanggil abort(), bukan return NULL, saat malloc
+// gagal - perangkat mati dan reload config berjalan). Ahora itu, queue RX USB CDC
+// hanya 4096 byte dan checkSerialInput tidak berjalan saat ada blokir, jadi saat
+// upload batch preset byte bisa hilang dan baris berikutnya menempel ke baris
+// terpotong -> desync protokol.
+#define SERIAL_LINE_MAX 512
+char serialLine[SERIAL_LINE_MAX];
+uint16_t serialLineLen = 0;
+bool serialOverflow = false;
+
+void serialLineReset() { serialLineLen = 0; serialOverflow = false; }
+
 void checkSerialInput() {
   while (Serial.available()) {
     char c = Serial.read();
-    if (c == '\n') { handleSerialCommand(serialBuffer); serialBuffer = ""; }
-    else if (c != '\r') serialBuffer += c;
+    if (c == '\n') {
+      if (serialOverflow) {
+        Serial.println("[ERROR] Baris terlalu panjang, dilewati");
+      } else if (serialLineLen > 0) {
+        serialLine[serialLineLen] = '\0';
+        handleSerialCommand(String(serialLine));
+      }
+      serialLineReset();
+    } else if (c != '\r') {
+      if (serialLineLen < SERIAL_LINE_MAX - 1) {
+        serialLine[serialLineLen++] = c;
+      } else {
+        serialOverflow = true;   // buang diam-diam sampai newline berikutnya
+      }
+    }
   }
 }
 

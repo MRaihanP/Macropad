@@ -269,10 +269,11 @@ void rgbApplyState() {
 #endif
 }
 
-void rgbPersist() {
-  prefs.begin("rgbcfg", false);
-  prefs.putBytes("state", &rgbState, sizeof(rgbState));
+bool rgbPersist() {
+  if (!prefs.begin("rgbcfg", false)) return false;
+  size_t w = prefs.putBytes("state", &rgbState, sizeof(rgbState));
   prefs.end();
+  return (w == sizeof(rgbState));
 }
 
 void rgbRestore() {
