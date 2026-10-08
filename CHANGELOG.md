@@ -9,39 +9,49 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
-### Fixed
-- **Arah rotary encoder kadang terbalik satu langkah** ("diputar ke kiri kadang
-  terbaca kanan"). Penyebabnya ISR lama hanya bereaksi saat pin A LOW lalu membaca B
-  pada saat itu juga. Saat pantulan (bounce) pada detent, B sudah berubah ketika A LOW
-  untuk kedua kalinya, sehingga satu putaran terbaca sebagai arah yang terbalik.
-  Diganti **state machine quadrature penuh**: setiap perubahan A/B disimpan sebagai
-  state 2-bit, arah diambil dari tabel transisi, transisi tidak valid (A dan B berubah
-  bersamaan) diabaikan, dan langkah baru baru diumumkan setelah 4 transisi searah
-  (= 1 detent). ISR sekarang dipasang pada **kedua pin** A dan B; sebelumnya hanya
-  pin A sehingga separuh transisi quadrature tidak pernah terlihat. Arah CW sengaja
-  dibuat sama dengan cara lama (A LOW + B HIGH = CW) supaya tidak perlu membalik
-  kiri/kanan pada knob mana pun.
-- `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh
-  test wiring sebelum commit.
-
-### Fixed
-- **Warna RGB dari device tidak pernah ter-parse dengan benar.** Kode memakai
-  `.split(':').map(parseInt)`, dan `map` meneruskan **index sebagai argumen kedua** —
-  yang oleh `parseInt(value, radix)` dibaca sebagai basis. Jadi `"20:30"` diparse dengan
-  radix 1 dan 2 (tidak valid) dan menghasilkan `NaN`, sehingga `RGB_DUMP:...color=...`
-  dan `RGB_KEY:...` mengisi warna dengan `[10, NaN, NaN]`. Gejalanya diam-diam: warna
-  yang dibaca dari device tidak pernah terpakai. Diganti `parseRgbTriple()` yang
-  memakai radix 10 dan menolak nilai di luar 0..255.
+### Added
+- **Test modul `serial-transport.js` yang mengimpor modul sungguhan** dengan stub plugin
+  serial (dipasang lewat `node:module` `registerHooks`, tanpa mengubah berkas sumber).
+  Sekarang alur yang tadinya mustahil diuji bisa diperiksa: urutan handshake saat connect,
+  pemotongan baris di tengah potongan, pelepasan listener saat disconnect, `clearDirty`
+  hanya pada jalur device hilang, dan connect gagal tidak meninggalkan state setengah jadi.
+- **Test modul `device-state.js` yang meng-import-nya secara langsung** (sebelumnya test
+  harus menyalin potongan kode keluar dari `main.js` sebagai teks). Karena itu validasi
+  indeks device akhirnya bisa diuji menyeluruh, termasuk kasus yang belum pernah diuji:
+  indeks negatif, `Infinity`, `1.5`, nilai non-numerik, dan percobaan prototype pollution
+  lewat `__proto__` dan `constructor`.
+- Test wiring parser: memastikan `main.js` meneruskan semua baris device ke mutator dan
+  **tidak** menulis langsung ke `mapping`/`encConfig` dari output serial.
+- Unit test Rust untuk `find_app()` (6 test). Ini test pertama di repo ini; sebelumnya
+  tidak punya test sama sekali.
+- Capability terpisah `capabilities/overlay.json` untuk jendela notifikasi, dengan izin
+  seminimal mungkin (`core:event:allow-listen`). Sebelumnya jendela overlay tidak punya
+  capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 3: seluruh urusan port serial dipindah ke `src/serial-transport.js`**
+  (364 baris). Isinya: buka/tutup port, enumerasi & dropdown COM, probe `WHOAMI`,
+  auto-connect/reconnect beserta retry terbatas, polling daftar port, ping, framing baris
+  (pisah newline + batas 64 KB), serta pengiriman `sendLine`/`sendBatch`.
+  `main.js` turun dari 1733 ke 1465 baris.
+- Transport **tidak tahu apa pun soal isi config, layer, atau preset** dan tidak memanggil
+  fungsi `main.js` secara langsung. Semua sisi aplikasi disuntikkan lewat satu titik,
+  `initTransport({ onLine, onConnected, onDisconnected, onDeviceLost, clearDirty, notify })`,
+  sehingga tidak ada siklus import dan ketergantungan dua arah terlihat jelas di satu tempat.
+- Flag framing (`dumpInProgress`, `dumpEncInProgress`, `namesInProgress`) pindah ke transport
+  sebagai live binding, ditulis lewat setter karena `import` tidak bisa di-assign dari luar modul.
+- `connect()` kini menerima path opsional (`connect('COM7')`) alih-alih selalu membaca
+  dropdown. `tryAutoConnect` sudah mengisi dropdown sebelum memanggilnya, jadi hasilnya sama,
+  tapi sekarang tidak bergantung pada urutan penulisan elemen DOM.
+- Objek `port` tidak lagi terekspos ke `main.js`; pemeriksaan koneksi memakai `isConnected()`.
+  Tombol Connect memakai `isAutoBusy()` dan `enableAutoReconnect()`.
 - **Refactor Tahap 2: halaman RGB dipindah ke `src/rgb-page.js`** dan helper DOM ke
   `src/dom.js` (`el`, `log`, `escapeHtml`) supaya tidak diduplikasi di setiap modul.
-  Transport serial disuntikkan lewat `setRgbTransport()` untuk menghindari siklus
-  import antara `main.js` dan `rgb-page.js`. Parser `RGB_DUMP`/`RGB_KEY` pindah ke
-  `handleRgbLine()`. `main.js` turun dari 1841 ke 1733 baris.
+  Transport serial disuntikkan lewat `setRgbTransport()` untuk menghindari siklus import
+  antara `main.js` dan `rgb-page.js`. Parser `RGB_DUMP`/`RGB_KEY` pindah ke `handleRgbLine()`.
+  `main.js` turun dari 1841 ke 1733 baris.
 - `dom.js`: `logBox` kini dicari saat dipakai, bukan di level modul, sehingga modul bisa
   diimpor di luar browser (test Node) tanpa perlu stub DOM saat import.
-- **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.**
 - **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.** `main.js` punya
   77 `let`/`const` global, dan keadaan yang dilaporkan device (`ROWS`, `COLS`,
   `NUM_ENCODERS`, `currentLayer`, `layerCount`, `maxLayers`, `mapping`, `layerNames`,
@@ -57,34 +67,48 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   Nilai diekspor sebagai **live binding**, jadi kode yang hanya membaca tidak berubah;
   kode yang menulis memakai setter. `main.js` turun dari 1864 ke 1841 baris dan dari 77
   ke 69 global.
-
-### Added
-- **Test modul `device-state.js` yang meng-import-nya secara langsung** (sebelumnya test
-  harus menyalin potongan kode keluar dari `main.js` sebagai teks). Karena itu validasi
-  indeks device akhirnya bisa diuji menyeluruh, termasuk kasus yang belum pernah diuji:
-  indeks negatif, `Infinity`, `1.5`, nilai non-numerik, dan percobaan prototype pollution
-  lewat `__proto__` dan `constructor`.
-- Test wiring parser: memastikan `main.js` meneruskan semua baris device ke mutator dan
-  **tidak** menulis langsung ke `mapping`/`encConfig` dari output serial.
-
-### Fixed
-- `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh test
-  wiring sebelum commit.
-- Notifikasi **baterai lemah** (`batt-low`, ≤20%) dan **baterai kritis** (`batt-crit`, ≤10%).
-  Sebelumnya tidak ada sama sekali padahal toggle "Notifikasi baterai" sudah menjanjikan
-  "Battery Low". Notifikasi hanya dibunyikan saat ambang baru dilewati, bukan tiap `EVT:BATT`
-  yang datang setiap 5 detik; ambang direset saat baterai naik atau mulai mengecas supaya
-  bisa berbunyi lagi di siklus berikutnya.
-- Warna khusus untuk notifikasi baterai di overlay (`charge`, `charge-done`, `batt-low`,
-  `batt-crit`) supaya tidak tertukar dengan notifikasi dasar.
-
-### Changed
 - **Default semua aktif**: Adaptive Key Bind (`presetsData.masterEnabled`), notifikasi per
   key, dan notifikasi baterai. Ketiganya sudah punya persistensi — notifikasi lewat
   `localStorage` (`macropad.settings`), Adaptive lewat `presets.json` — jadi pilihan user
   bertahan setelah app ditutup.
 
 ### Fixed
+- **Meter baterai dan badge profil tidak lagi kosong saat device terputus.** Semula
+  `setConnected(false)` di `main.js` ikut membersihkan `battUI`; saat ekstraksi itu hilang
+  dari hook `onDisconnected`, sehingga tegangan dan persen baterai terakhir tetap terpakai
+  di UI seolah device masih hidup.
+- **Perubahan "belum disimpan" tidak lagi hilang saat Disconnect ditekan manual.** Flag
+  `dirty` sempat ikut dibersihkan di jalur manual, padahal pada disconnect manual device
+  tidak dicabut dan RAM device masih memegang perubahan yang belum disimpan ke flash.
+  Menyambung ulang ke device yang sama akan membuat app mengira tidak ada yang perlu
+  disimpan. `clearDirty` kini hanya dipanggil di `handleDeviceLost()`, di sana device
+  benar-benar hilang sehingga isinya ikut hilang.
+- **Warna RGB dari device tidak pernah ter-parse dengan benar.** Kode memakai
+  `.split(':').map(parseInt)`, dan `map` meneruskan **index sebagai argumen kedua** — yang
+  oleh `parseInt(value, radix)` dibaca sebagai basis. Jadi `"20:30"` diparse dengan radix 1
+  dan 2 (tidak valid) dan menghasilkan `NaN`, sehingga `RGB_DUMP:...color=...` dan
+  `RGB_KEY:...` mengisi warna dengan `[10, NaN, NaN]`. Gejalanya diam-diam: warna yang dibaca
+  dari device tidak pernah terpakai. Diganti `parseRgbTriple()` yang memakai radix 10 dan
+  menolak nilai di luar 0..255.
+- **Arah rotary encoder kadang terbalik satu langkah** ("diputar ke kiri kadang terbaca
+  kanan"). Penyebabnya ISR lama hanya bereaksi saat pin A LOW lalu membaca B pada saat itu
+  juga. Saat pantulan (bounce) pada detent, B sudah berubah ketika A LOW untuk kedua
+  kalinya, sehingga satu putaran terbaca sebagai arah yang terbalik. Diganti **state machine
+  quadrature penuh**: setiap perubahan A/B disimpan sebagai state 2-bit, arah diambil dari
+  tabel transisi, transisi tidak valid (A dan B berubah bersamaan) diabaikan, dan langkah
+  baru baru diumumkan setelah 4 transisi searah (= 1 detent). ISR sekarang dipasang pada
+  **kedua pin** A dan B; sebelumnya hanya pin A sehingga separuh transisi quadrature tidak
+  pernah terlihat. Arah CW sengaja dibuat sama dengan cara lama (A LOW + B HIGH = CW)
+  supaya tidak perlu membalik kiri/kanan pada knob mana pun.
+- `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh test
+  wiring sebelum commit.
+- **Notifikasi baterai lemah** (`batt-low`, ≤20%) dan **baterai kritis** (`batt-crit`, ≤10%)
+  ditambahkan. Sebelumnya tidak ada sama sekali padahal toggle "Notifikasi baterai" sudah
+  menjanjikan "Battery Low". Notifikasi hanya dibunyikan saat ambang baru dilewati, bukan
+  tiap `EVT:BATT` yang datang setiap 5 detik; ambang direset saat baterai naik atau mulai
+  mengecas supaya bisa berbunyi lagi di siklus berikutnya.
+- Warna khusus untuk notifikasi baterai di overlay (`charge`, `charge-done`, `batt-low`,
+  `batt-crit`) supaya tidak tertukar dengan notifikasi dasar.
 - **Notifikasi baterai sebenarnya tidak dikendalikan toggle "Notifikasi baterai".** Handler
   `EVT:CHG` mengirim dengan kind `'batt'`, yang tidak ada di daftar filter `notify()` —
   sehingga jatuh ke cabang "dasar" dan ikut mati saat toggle Notifikasi dasar dimatikan.
@@ -92,40 +116,11 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 - Teks petunjuk toggle "Notifikasi baterai" menyebut "CHARGE NOW" yang tidak pernah ada;
   diganti sesuai perilaku sebenarnya.
 - `presets_save` dari toggle Adaptive di halaman Home memakai `.catch(()=>{})` sehingga
-  kegagalan penyimpanan tidak kelihatan — user mengira toggle tersimpan padahal akan
-  kembali ke nilai lama setelah app ditutup. Sekarang errornya dicatat.
+  kegagalan penyimpanan tidak kelihatan — user mengira toggle tersimpan padahal akan kembali
+  ke nilai lama setelah app ditutup. Sekarang errornya dicatat.
 
 ### Added
 #### Fase sebelumnya
-- Unit test Rust untuk `find_app()` (6 test). Ini test pertama di repo ini; sebelumnya
-  tidak punya test sama sekali.
-- Capability terpisah `capabilities/overlay.json` untuk jendela notifikasi, dengan izin
-  seminimal mungkin (`core:event:allow-listen`). Sebelumnya jendela overlay tidak punya
-  capability apa pun — aman hanya secara kebetulan.
-
-#### Phase 6 — kurangi bekuannya firmware
-- **`blinkLedTimes()` jadi non-blocking** (`serviceLedBlink()`), jumlah kedipan dibatasi 4.
-  Dulu 8 layer = 8 × 240ms = **1,92 detik buta**; karena `scanMatrix()` hanya mengambil
-  sampel (bukan mengantre), setiap penekanan tombol pada periode itu hilang tanpa jejak.
-- **Gestur "buka aplikasi" jadi bertahap** (`serviceOpenApp()`). Dulu
-  `delay(80) + 450 + 450ms` ≈ 1 detik beku total; sekarang hanya `Keyboard.print()` di
-  library HID yang masih blocking (~1ms per karakter).
-- **Kedipan escape jadi non-blocking** (`serviceEscapeBlink()`), menggantikan
-  `delay(100) + delay(300)`.
-- Semua fungsi `service*` dipanggil dari `loop()`.
-
-#### Fase 3–5 — data dari device, transport, kontrak protokol
-- State RGB dipindahkan ke **core** (`RgbState` di `common/limits.h`) dengan tiga hook per
-  profil (`rgbApplyState`/`rgbPersist`/`rgbRestore`), sehingga `RGB:DUMP` bisa melaporkan
-  state aktif dan PROTOTYPE maupun FINAL memakai protocol identik.
-- `EVT:BATT` periodik (5 detik) + `EVT:CHG` saat status charger berubah;
-  `battPercentFromMv()` dengan kurva LiPo bertingkat.
-- `EVT:BATT:`, `EVT:CHG:`, `RGB_DUMP:`, `RGB_KEY:`, `HWINFO:` (dengan `rgbSlots`, `chg`,
-  `simulated`) kini diparse app; badge **SIMULASI** di header menandai angka firmware
-  prototipe agar tidak tertukar dengan data hardware asli.
-- Waiter `DUMP` dipetakan per layer dengan timeout 3 detik.
-- Batas panjang `lineBuffer` (64 KB) plus resync dari newline terakhir.
-
 ### Changed
 
 #### Fase 7

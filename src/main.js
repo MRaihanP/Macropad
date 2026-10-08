@@ -20,6 +20,17 @@ import {
   rgb, renderRgbAll, renderRgbKeyCard, renderRgbGrid, renderRgbPresets, syncRgbDotColors,
   handleRgbLine, initRgbPage, setRgbTransport, hexToRgb, rgbKeyName, ledIndex,
 } from "./rgb-page.js";
+// Seluruh urusan port serial (connect/reconnect, buffer baris, framing parser,
+// pengiriman perintah) dipisah ke modul sendiri. Yang diimpor di sini hanya yang
+// benar-benar dipakai main.js - sisanya dipanggil transport lewat hook initTransport()
+// sehingga isi config/layer/preset tidak bocor ke dalam modul transport.
+import {
+  initTransport, sendLine, sendBatch, connect, disconnect,
+  autoDetect, pollPorts,
+  dumpInProgress, dumpEncInProgress, namesInProgress,
+  setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
+  isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+} from "./serial-transport.js";
 
 const TYPE_NAMES = ["NONE", "KEY", "COMBO", "TEXT", "CONSUMER", "APP"];
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
@@ -27,36 +38,12 @@ const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVol
 const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
 const MODIFIER_NAMES = ['CTRL', 'SHIFT', 'ALT', 'GUI'];
 
-let port = null;
-let lineBuffer = "";
-// Handle unlisten dari port.listen(). Plugin serial tidak memanggilnya sendiri saat
-// stopListening(), jadi tanpa disimpan di sini setiap reconnect/probe menambah satu
-// listener baru. Akibatnya satu chunk dari device diproses N kali dan tiap baris
-// terkirim berganda -> desync protokol.
-let portUnlisten = null;
-// Batas aman untuk buffer baris. Kalau device atau derau tidak pernah mengirim
-// newline, buffer akan tumbuh tanpa batas selama sesi.
-const LINE_BUFFER_MAX = 64 * 1024;
-
-function resetParserState() {
-  lineBuffer = '';
-  dumpInProgress = false;
-  dumpEncInProgress = false;
-  namesInProgress = false;
-}
-function releasePortListener() {
-  const u = portUnlisten;
-  portUnlisten = null;
-  if (u) { try { u(); } catch (e) { log('[ERROR] Gagal lepas listener: ' + e, 'err'); } }
-}
 let selected = null;
-let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
 // Layer yang sedang di-dump, dibaca dari DUMP_BEGIN:<n>. Dipakai supaya isi dump
 // masuk ke layer asalnya, bukan ke currentLayer yang mungkin sudah berubah.
 let dumpParseLayer = NaN;
 let recording = false, recordTokens = [];
 let dirty = false;
-let ignoreEvtUntil = 0;
 let lastDeviceLayerEventAt = 0;
 
 // Kemampuan hardware device, dibaca dari HWINFO. Penting karena firmware PROTOTYPE
@@ -74,18 +61,6 @@ function renderDeviceProfileBadge() {
     ? 'Firmware prototipe mengirim angka simulasi untuk baterai/RGB. Format pesan sama dengan board final, jadi app tidak perlu diubah.'
     : 'Data dibaca langsung dari hardware';
 }
-// Auto-reconnect
-const LAST_PORT_KEY = 'macropad.lastPort';
-let portPath = null;                       // path port yang sedang terhubung
-let lastGoodPort = null;                   // port terakhir yang berhasil terhubung (dicoba duluan)
-try { lastGoodPort = localStorage.getItem(LAST_PORT_KEY); } catch (e) {}
-let autoReconnect = true;                  // false setelah user menekan Disconnect sendiri
-let autoBusy = false;                      // sedang probe/connect otomatis
-let pollBusy = false;
-let knownPorts = new Set();
-let pingTimer = null;
-let retryTimer = null;
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Overlay notifikasi (jendela terpisah di Rust, digambar oleh overlay.html)
 // kind: connect | disconnect | layer | preset | key | batt-low | batt-crit | charge | charge-done | info
@@ -121,7 +96,9 @@ function notify(text, kind = 'info', opts = {}) {
     if (!notifyErrShown) { notifyErrShown = true; log('[ERROR] Overlay: ' + e, 'err'); }
   });
 }
-let deviceWasLost = false;
+// deviceWasLost TIDAK dideklarasikan di sini: transport yang menandainya saat device
+// dicabut, dan main.js membacanya untuk membedakan notifikasi "Terhubung" vs
+// "Terhubung kembali". Dua salinan akan membuat yang di sini selalu false.
 
 // ==================== ROUTER HALAMAN ====================
 function switchPage(name, navOverride) {
@@ -325,7 +302,7 @@ async function loadPresets() {
 el('masterEnabledToggle').onchange = async (e) => {
   presetsData.masterEnabled = e.target.checked;
   await invoke('presets_save', { data: presetsData });
-  if (!presetsData.masterEnabled && currentActivePresetId && port && !editingPresetId) {
+  if (!presetsData.masterEnabled && currentActivePresetId && isConnected() && !editingPresetId) {
     await sendLine('CONTEXT:DEFAULT');
     currentActivePresetId = null;
     updateActivePresetLabel();
@@ -379,7 +356,7 @@ async function togglePresetEnabled(id, checked, checkboxEl) {
   preset.enabled = checked;
   await invoke('presets_save', { data: presetsData });
 
-  if (!checked && currentActivePresetId === id && port && !editingPresetId) {
+  if (!checked && currentActivePresetId === id && isConnected() && !editingPresetId) {
     await sendLine('CONTEXT:DEFAULT');
     currentActivePresetId = null;
     updateActivePresetLabel();
@@ -402,7 +379,7 @@ async function renamePreset(id) {
 async function deletePreset(id) {
   const preset = presetsData.presets.find(p => p.id === id);
 
-  if (currentActivePresetId === id && port && !editingPresetId) {
+  if (currentActivePresetId === id && isConnected() && !editingPresetId) {
     await sendLine('CONTEXT:DEFAULT');
     currentActivePresetId = null;
     updateActivePresetLabel();
@@ -550,7 +527,7 @@ function packCurrentAsPresetLayers() {
 }
 
 async function openPresetEditor(id) {
-  if (!port) { log('[ERROR] Hubungkan device dulu untuk edit preset', 'err'); return; }
+  if (!isConnected()) { log('[ERROR] Hubungkan device dulu untuk edit preset', 'err'); return; }
   const preset = presetsData.presets.find(p => p.id === id);
   if (!preset) return;
   editingPresetId = id;
@@ -747,21 +724,6 @@ function buildPresetLines(preset, slot) {
   return L;
 }
 
-// Kirim banyak baris dalam sedikit write (bukan 1 write per baris).
-async function sendBatch(lines) {
-  if (!port) return;
-  let chunk = '';
-  for (const ln of lines) {
-    if (chunk.length + ln.length + 1 > 900) { await writeRaw(chunk); chunk = ''; }
-    chunk += ln + '\n';
-  }
-  if (chunk) await writeRaw(chunk);
-}
-async function writeRaw(str) {
-  try { await port.write(str); }
-  catch (e) { log('[ERROR] Gagal kirim: ' + e, 'err'); await handleDeviceLost(); }
-}
-
 async function activatePresetRuntime(preset, exe) {
   const sig = presetSig(preset);
   let slot = slotTable.findIndex(s => s && s.id === preset.id);
@@ -785,7 +747,7 @@ async function activatePresetRuntime(preset, exe) {
 let pollInFlight = false;
 async function pollFocusedApp() {
   if (pollInFlight) return;
-  if (!presetsData.masterEnabled || !port || editingPresetId || autoSwitchBusy) return;
+  if (!presetsData.masterEnabled || !isConnected() || editingPresetId || autoSwitchBusy) return;
   pollInFlight = true;
   try {
     let exe;
@@ -829,213 +791,6 @@ function resetAdaptiveRuntimeState() {
 
 setInterval(pollFocusedApp, FOCUS_POLL_MS);
 
-// ==================== PORT LIST & KONEKSI ====================
-async function listPortPaths() {
-  const ports = await SerialPort.available_ports();
-  const list = Array.isArray(ports) ? ports : Object.keys(ports);
-  return list.map(p => typeof p === 'string' ? p : (p.path || p.name || JSON.stringify(p)));
-}
-
-// Isi dropdown. `paths` opsional (kalau sudah punya daftar), `quiet` = jangan log kalau kosong.
-async function refreshPorts(paths, quiet) {
-  try {
-    const list = paths || await listPortPaths();
-    knownPorts = new Set(list);
-    const sel = el('portSelect');
-    const keep = sel.value;
-    sel.innerHTML = '';
-    list.forEach(value => {
-      const opt = document.createElement('option');
-      opt.value = value; opt.textContent = value;
-      sel.appendChild(opt);
-    });
-    if (keep && list.includes(keep)) sel.value = keep;
-    if (list.length === 0 && !quiet) log('[LOG] Tidak ada port terdeteksi. Klik ↻ setelah colok device.', 'err');
-    return list;
-  } catch (e) { log('[ERROR] Gagal ambil daftar port: ' + e, 'err'); return []; }
-}
-
-async function probeWhoAmI(path) {
-  let temp, tempUnlisten = null, probeTimer = null;
-  try {
-    temp = new SerialPort({ path, baudRate: 115200, size: 1024 });
-    await temp.open();
-    await temp.setDataTerminalReady(true);
-    await temp.setRequestToSend(true);
-    await temp.startListening();
-
-    const result = await new Promise((resolve) => {
-      let done = false;
-      const finish = (v) => { if (!done) { done = true; resolve(v); } };
-      // listen() mengembalikan UnlistenFn; WAJIB disimpan dan dipanggil, kalau tidak
-      // setiap probe menambah listener permanen pada event read port tersebut.
-      tempUnlisten = null;
-      temp.listen((data) => { if (data.includes('WHOAMI:MacroPad')) finish(true); })
-        .then((u) => { tempUnlisten = u; })
-        .catch(() => finish(false));
-      temp.write('WHOAMI\n').catch(() => finish(false));
-      probeTimer = setTimeout(() => finish(false), 700);
-    });
-    return result;
-  } catch (e) {
-    return false;
-  } finally {
-    if (probeTimer) clearTimeout(probeTimer);
-    if (tempUnlisten) { try { tempUnlisten(); } catch (e) {} }
-    try { if (temp) { await temp.stopListening(); await temp.close(); } } catch (e) {}
-  }
-}
-
-// Cari MacroPad lalu connect. `only` = daftar port yang boleh di-probe (dipakai saat ada port BARU muncul,
-// supaya port lama yang bukan MacroPad tidak ikut di-probe ulang). Tanpa `only` = semua port.
-// Port terakhir yang berhasil selalu dicoba duluan.
-async function tryAutoConnect(verbose, only) {
-  if (autoBusy || port) return false;
-  autoBusy = true;
-  try {
-    const all = await refreshPorts(null, !verbose);
-    if (all.length === 0) { if (verbose) log('[AUTO] Tidak ada port sama sekali.', 'err'); return false; }
-    const paths = only ? all.filter(p => only.includes(p)) : all;
-    if (paths.length === 0) return false;
-    const ordered = [...paths].sort((a, b) => (b === lastGoodPort) - (a === lastGoodPort));
-
-    log('[AUTO] Mencari MacroPad...', null);
-    for (const path of ordered) {
-      const ok = await probeWhoAmI(path);
-      if (!ok) continue;
-      el('portSelect').value = path;
-      await sleep(400); // beri jeda, Windows perlu lepas handle port dulu
-      if (await connect()) { log('[AUTO] Terhubung otomatis ke ' + path, 'ok'); return true; }
-      log('[AUTO] Gagal reconnect ke ' + path + ', coba lagi...', 'err');
-      await sleep(400);
-      if (await connect()) { log('[AUTO] Terhubung otomatis ke ' + path + ' (percobaan ke-2)', 'ok'); return true; }
-    }
-    if (verbose) log('[AUTO] MacroPad tidak ditemukan otomatis. Pilih port manual, klik Connect.', 'err');
-    return false;
-  } finally { autoBusy = false; }
-}
-
-// Retry terbatas (maks. 2x, jeda 3 dtk lalu 6 dtk) untuk device yang baru muncul tapi belum siap menjawab
-// (mis. ESP32 masih booting saat Windows baru start). Bukan polling terus-menerus.
-function scheduleRetry(only, attempt = 1) {
-  clearTimeout(retryTimer);
-  if (attempt > 2) return;
-  retryTimer = setTimeout(async () => {
-    if (port || !autoReconnect) return;
-    const ok = await tryAutoConnect(false, only);
-    if (!ok) scheduleRetry(only, attempt + 1);
-  }, attempt * 3000);
-}
-
-// Tombol ↻ dan start awal
-async function autoDetect() {
-  autoReconnect = true;
-  clearTimeout(retryTimer);
-  if (port) { await refreshPorts(); return; }
-  const ok = await tryAutoConnect(true);
-  if (!ok && knownPorts.size) scheduleRetry([...knownPorts]);
-}
-
-// Tutup editor + hentikan perekaman keyboard. Tanpa ini listener keydown (preventDefault) tetap aktif
-// walau #app tersembunyi, dan mengunci keyboard setelah device terputus saat editor terbuka.
-function resetEditorState() {
-  stopRecordingContinuous();
-  recordTokens = [];
-  selected = null;
-  el('editPanel').style.display = 'none';
-}
-
-// Device tercabut / hilang: bersihkan state supaya reconnect bisa jalan.
-// Dipanggil baik dari pollPorts (path hilang dari daftar) maupun dari sendLine (gagal tulis) —
-// yang kedua perlu untuk kasus cabut-colok cepat ke nomor COM yang sama, dimana daftar port
-// tidak sempat kelihatan berubah di antara dua polling 2 detik.
-async function handleDeviceLost() {
-  if (!port) return;
-  log('[AUTO] Device terputus.', 'err');
-  deviceWasLost = true;
-  notify('Device terputus', 'disconnect');
-  const p = port, lostPath = portPath;
-  port = null; portPath = null; dirty = false; // RAM device hilang bersama daftar port; tidak ada yang tertunda
-  resetParserState();
-  resetAdaptiveRuntimeState();
-  stopPing();
-  resetEditorState();
-  setConnected(false);
-  releasePortListener();
-  try { await Promise.race([(async () => { await p.stopListening(); await p.close(); })(), sleep(1000)]); } catch (e) {}
-  // Path ini mungkin tidak pernah "hilang" dari enumerasi OS (nomor COM sama, cabut-colok cepat),
-  // jadi selain menunggu pollPorts mendeteksi lewat added/removed, langsung coba lagi path ini juga.
-  if (lostPath && autoReconnect) { knownPorts.delete(lostPath); scheduleRetry([lostPath]); }
-}
-
-// Pantau daftar port tiap 2 dtk (enumerasi murah). Probe HANYA jalan kalau ada port BARU muncul,
-// tidak pernah saat daftar tetap atau hanya berkurang.
-async function pollPorts() {
-  if (pollBusy) return;
-  pollBusy = true;
-  try {
-    const paths = await listPortPaths();
-    if (port && portPath && !paths.includes(portPath)) await handleDeviceLost();
-    if (autoBusy) return; // biarkan selesai; perubahan dihitung di putaran berikutnya
-    const added = paths.filter(p => !knownPorts.has(p));
-    const removed = [...knownPorts].some(p => !paths.includes(p));
-    if (!added.length && !removed) return;
-    await refreshPorts(paths, true);
-    if (added.length && !port && autoReconnect) {
-      const ok = await tryAutoConnect(false, added); // hanya port yang baru muncul
-      if (!ok) scheduleRetry(added);
-    }
-  } catch (e) {
-  } finally { pollBusy = false; }
-}
-
-function startPing() {
-  stopPing();
-  pingTimer = setInterval(() => { if (port) sendLine('PING'); }, 1500);
-}
-function stopPing() { clearInterval(pingTimer); pingTimer = null; }
-
-function setConnected(state) {
-  el('dot').classList.toggle('on', state);
-  el('statusText').textContent = state ? 'Connected' : 'Not connected';
-  el('btnConnect').textContent = state ? 'Disconnect' : 'Connect';
-  el('app').style.display = state ? 'block' : 'none';
-  if (!state) {
-    // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus.
-    deviceProfile = { connected: false };
-    battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
-    renderDeviceProfileBadge();
-    updateBatteryUI();
-  }
-}
-
-async function sendLine(str) {
-  if (!port) return;
-  try { await port.write(str + "\n"); }
-  catch (e) {
-    log('[ERROR] Gagal kirim: ' + e, 'err');
-    await handleDeviceLost(); // tulis gagal = koneksi sudah putus di level OS, jangan tunggu polling
-  }
-}
-
-function handleIncomingChunk(data) {
-  lineBuffer += data;
-  // Kalau tidak ada newline sama sekali, buffer tumbuh tanpa batas dan handleLine
-  // tidak pernah dipanggil sehingga tidak ada yang bisa pulih. Buang sisa dan reset
-  // parser, lalu lanjut dari newline terakhir agar koneksi berikutnya tetap sinkron.
-  if (lineBuffer.length > LINE_BUFFER_MAX) {
-    log('[ERROR] Buffer baris melebihi ' + LINE_BUFFER_MAX + ' byte, parser di-reset', 'err');
-    resetParserState();
-    const nl = lineBuffer.lastIndexOf('\n');
-    lineBuffer = nl >= 0 ? lineBuffer.slice(nl + 1) : '';
-  }
-  let idx;
-  while ((idx = lineBuffer.indexOf('\n')) >= 0) {
-    handleLine(lineBuffer.slice(0, idx));
-    lineBuffer = lineBuffer.slice(idx + 1);
-  }
-}
-
 function handleLine(line) {
   line = line.trim();
   if (!line) return;
@@ -1062,7 +817,7 @@ function handleLine(line) {
   if (Date.now() < quietOkUntil && (line.startsWith('[OK]') || line.startsWith('[LAYER]'))) return;
 
   if (line.startsWith('EVT:APP:')) {
-    if (Date.now() < ignoreEvtUntil) { log('[APP] Event lama diabaikan'); return; }
+    if (eventsSuppressed()) { log('[APP] Event lama diabaikan'); return; }
     const name = line.substring(8);
     invoke('launch_app', { name })
       .then(n => log('[APP] Membuka: ' + n, 'ok'))
@@ -1096,9 +851,9 @@ function handleLine(line) {
     return;
   }
 
-  if (line.startsWith('DUMP_BEGIN:')) { dumpInProgress = true; dumpParseLayer = parseInt(line.substring(11)); return; }
+  if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpParseLayer = parseInt(line.substring(11)); return; }
   if (line === 'DUMP_END') {
-    dumpInProgress = false; renderGrid();
+    setDumpInProgress(false); renderGrid();
     // Resolve waiter milik layer yang benar-benar didump.
     const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
     dumpParseLayer = NaN;
@@ -1123,12 +878,12 @@ function handleLine(line) {
     return;
   }
   if (line.startsWith('ENC_BEGIN')) {
-    dumpEncInProgress = true;
+    setDumpEncInProgress(true);
     const m = line.match(/count=(\d+)/);
     if (m && applyEncCount(parseInt(m[1]), log)) el('deviceEncLabel').textContent = String(NUM_ENCODERS);
     return;
   }
-  if (line === 'ENC_END') { dumpEncInProgress = false; renderEncoderList(); return; }
+  if (line === 'ENC_END') { setDumpEncInProgress(false); renderEncoderList(); return; }
   if (dumpEncInProgress) {
     if (line.startsWith('IDX:')) { applyEncIdx(parseInt(line.substring(4))); return; }
     const p = line.split(',');
@@ -1179,8 +934,8 @@ function handleLine(line) {
   }
   // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
   if (handleRgbLine(line, log)) return;
-  if (line === 'NAMES_BEGIN') { namesInProgress = true; return; }
-  if (line === 'NAMES_END') { namesInProgress = false; renderTabs(); return; }
+  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); return; }
+  if (line === 'NAMES_END') { setNamesInProgress(false); renderTabs(); return; }
   if (namesInProgress) {
     // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
     const idx = line.indexOf(',');
@@ -1217,63 +972,6 @@ function handleLine(line) {
   else log(line);
 }
 
-async function connect() {
-  const path = el('portSelect').value;
-  if (!path) { log('[ERROR] Pilih port dulu (klik ↻ kalau kosong)', 'err'); return false; }
-  try {
-    port = new SerialPort({ path, baudRate: 115200, size: 1024 });
-    await port.open();
-    await port.setDataTerminalReady(true);
-    await port.setRequestToSend(true);
-    await port.startListening();
-    portUnlisten = await port.listen((data) => handleIncomingChunk(data));
-  } catch (e) {
-    log('[ERROR] Gagal membuka port: ' + e, 'err');
-    port = null; return false;
-  }
-  portPath = path;
-  lastGoodPort = path;
-  try { localStorage.setItem(LAST_PORT_KEY, path); } catch (e) {}
-  setConnected(true);
-  notify(deviceWasLost ? 'Terhubung kembali' : 'Terhubung ke companion', 'connect');
-  deviceWasLost = false;
-    switchPage('home'); // sesuai poin 4: Home selalu tampil pas pertama kali connect
-  startPing();
-  ignoreEvtUntil = Date.now() + 800;
-  await sendLine('PING');
-  // HWINFO wajib dikirim pertama: memberi tahu profile, jumlah knob, dan apakah angka
-// baterai/RGB yang akan datang adalah simulasi (prototipe) atau hardware asli.
-setTimeout(async () => {
-    await sendLine('WHOAMI');
-    await sendLine('HWINFO');
-    await sendLine('INFO');
-    await sendLine('DUMPENC');
-    await sendLine('BATT');
-    await sendLine('RGB:DUMP');
-  }, 400);
-  return true;
-}
-
-async function disconnect(manual) {
-  if (manual) {
-    autoReconnect = false; // user sengaja memutus: jangan disambung otomatis lagi
-    deviceWasLost = false;
-    notify('Koneksi diputus', 'disconnect');
-    log('[LOG] Auto-reconnect dijeda. Klik Connect atau ↻ untuk mengaktifkan lagi.');
-  }
-  stopPing();
-  // Parser state harus ikut dibersihkan di jalur manual, sama seperti di
-  // handleDeviceLost(). Sebelumnya Disconnect manual meninggalkan baris parsial di
-  // lineBuffer dan dumpInProgress = true, sehingga byte pertama device berikutnya
-  // menempel pada baris rusak itu.
-  resetParserState();
-  releasePortListener();
-  try { if (port) { await port.stopListening(); await port.close(); } } catch (e) {}
-  port = null; portPath = null;
-  resetAdaptiveRuntimeState();
-  resetEditorState();
-  setConnected(false);
-}
 
 // ==================== RENDER: LAYER, GRID, ENCODER ====================
 let tabDragMoved = false;
@@ -1553,12 +1251,46 @@ document.querySelectorAll('#consumerButtons button').forEach(b => {
   b.onclick = () => { recordTokens = [b.dataset.val]; el('editValue').value = b.dataset.val; updateEditorFieldsVisibility(); };
 });
 
-// ==================== TOMBOL LAIN ====================
+// ==================== SAMBUNGKAN TRANSPORT ====================
+// serial-transport.js tidak tahu apa pun soal isi config, layer, atau preset, dan
+// juga tidak memanggil fungsi main.js secara langsung. Semua sisi aplikasi
+// disuntikkan di sini - titik pertemuan tunggal antara transport dan app.
+initTransport({
+  // Setiap baris dari device berakhir di sini. handleLine tetap milik main.js
+  // karena isinya banyak menyangkut layer, encoder, preset, dan notifikasi.
+  onLine: (line) => handleLine(line),
+  onConnected: () => {
+    // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
+    // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
+    notify(deviceWasLost ? 'Terhubung kembali' : 'Terhubung ke companion', 'connect');
+    switchPage('home');   // Home selalu tampil saat pertama kali connect
+  },
+  onDisconnected: () => {
+    // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus: profile
+    // (dan badge SIMULASI) serta meter baterai harus ikut kosong, kalau tidak user
+    // mengira device masih hidup dan tegangan terkahoir.
+    deviceProfile = { connected: false };
+    battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
+    renderDeviceProfileBadge();
+    updateBatteryUI();
+  },
+  // Saat koneksi putus, state yang BARU BOLEH ada di device hilang sekalian -
+  // tidak ada yang perlu "menunggu upload", karena isi RAM device ikut hilang.
+  // Yang tersisa hanya state lokal app (preset, editor, daftar aplikasi).
+  onDeviceLost: () => {
+    resetAdaptiveRuntimeState();
+    resetEditorState();
+  },
+  clearDirty: () => { dirty = false; },
+  notify: (text, kind) => notify(text, kind),
+  onAutoConnectOk: () => { },
+  onAutoConnectFail: () => { },
+});
 el('btnRefreshPorts').onclick = autoDetect;
 el('btnConnect').onclick = () => {
-  if (port) { disconnect(true); return; }
-  if (autoBusy) { log('[AUTO] Sedang mencari device, tunggu sebentar...'); return; }
-  autoReconnect = true;
+  if (isConnected()) { disconnect(true); return; }
+  if (isAutoBusy()) { log('[AUTO] Sedang mencari device, tunggu sebentar...'); return; }
+  enableAutoReconnect();
   connect();
 };
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
@@ -1674,7 +1406,7 @@ function whenRenderStalled(ms) {
 // Return true kalau boleh lanjut, false kalau user batal.
 let unsavedDialogOpen = false;
 async function confirmUnsaved(quitting) {
-  if (!dirty || !port) return true; // tanpa koneksi tidak ada yang bisa disimpan/dikembalikan
+  if (!dirty || !isConnected()) return true; // tanpa koneksi tidak ada yang bisa disimpan/dikembalikan
   if (unsavedDialogOpen) return false;
   unsavedDialogOpen = true;
   try {
