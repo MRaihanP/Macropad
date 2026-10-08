@@ -13,6 +13,13 @@ import {
   applyInfo, applyDumpRow, applyEncRow, applyName, applyLayerEvent, applyEncCount, applyEncIdx,
   reorderLayer,
 } from "./device-state.js";
+// Helper DOM dan seluruh logika halaman RGB dipisah ke modul sendiri. Halaman RGB
+// membaca state dari device (RGB_DUMP/RGB_KEY), bukan dari default app.
+import { el, log, escapeHtml } from "./dom.js";
+import {
+  rgb, renderRgbAll, renderRgbKeyCard, renderRgbGrid, renderRgbPresets, syncRgbDotColors,
+  handleRgbLine, initRgbPage, setRgbTransport, hexToRgb, rgbKeyName, ledIndex,
+} from "./rgb-page.js";
 
 const TYPE_NAMES = ["NONE", "KEY", "COMBO", "TEXT", "CONSUMER", "APP"];
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
@@ -52,11 +59,6 @@ let dirty = false;
 let ignoreEvtUntil = 0;
 let lastDeviceLayerEventAt = 0;
 
-// ==================== STATE UI RGB ====================
-const RGB_FW_BRI_CAP = Math.round(255 * 0.6);
-const briToPct = v => Math.max(0, Math.min(100, Math.round(v / RGB_FW_BRI_CAP * 100)));
-const pctToBri = p => Math.round(Math.max(0, Math.min(100, p)) / 100 * RGB_FW_BRI_CAP);
-let rgb = { enabled: true, mode: 0, random: false, color: [16,96,90], bri: 200, speed: 128, keys: [], sel: null, dirty: false };
 // Kemampuan hardware device, dibaca dari HWINFO. Penting karena firmware PROTOTYPE
 // mengirim angka SIMULASI untuk baterai/RGB; app harus menandai agar data palsu
 // tidak dibaca sebagai data hardware sungguhan.
@@ -72,68 +74,6 @@ function renderDeviceProfileBadge() {
     ? 'Firmware prototipe mengirim angka simulasi untuk baterai/RGB. Format pesan sama dengan board final, jadi app tidak perlu diubah.'
     : 'Data dibaca langsung dari hardware';
 }
-const RGB_MODES = [
-  { id: 0, name: 'Static Light', desc: 'Satu warna untuk semua key', color: true, random: false, speed: false },
-  { id: 1, name: 'Custom per Key', desc: 'Warna tiap key diatur dari peta di kiri', color: false, random: false, speed: false },
-  { id: 2, name: 'Breathing', desc: 'Warna menyala dan meredup pelan', color: true, random: true, speed: true },
-  { id: 3, name: 'Color Cycle', desc: 'Semua key berganti warna bersamaan', color: false, random: false, speed: true },
-  { id: 4, name: 'Rainbow', desc: 'Gradasi pelangi bergerak di atas key', color: false, random: false, speed: true },
-  { id: 5, name: 'Color Waves', desc: 'Gelombang cahaya menyapu secara diagonal', color: true, random: true, speed: true },
-  { id: 6, name: 'Snake', desc: 'Ular cahaya mengikuti urutan LED', color: true, random: true, speed: true },
-  { id: 7, name: 'Randomize', desc: 'Key menyala acak lalu memudar', color: true, random: true, speed: true },
-  { id: 8, name: 'React Light', desc: 'Langsung menyala saat key ditekan lalu memudar', color: true, random: false, speed: false }
-];
-// Peta posisi tombol [row][col] -> index LED di rantai, 0 = RGB 1 ... 8 = RGB 9.
-// Cermin dari RGB_INDEX di firmware (HID_Keypad.ino) supaya nama di app = LED fisik yang benar.
-const RGB_LED_INDEX = { '0,0':0, '0,1':1, '0,2':2, '1,0':5, '1,1':4, '1,2':3, '2,0':6, '2,1':7, '2,2':8 };
-function ledIndex(r, c) { const i = RGB_LED_INDEX[`${r},${c}`]; return i === undefined ? r * COLS + c : i; }
-function rgbKeyName(r, c) { const i = RGB_LED_INDEX[`${r},${c}`]; return i === undefined ? `R${r} C${c}` : `RGB ${i + 1}`; }
-// ---- Preview animasi (Web Animations API) ----
-// Dipakai imperative, bukan CSS animation, karena rule stylesheet (mis. rgb-off atau
-// prefers-reduced-motion) bisa mematikan animasi dan preview jadi diam. WAAPI tidak bisa
-// ditimpa dari CSS, jadi preview selalu terlihat selama rgb.enabled aktif.
-const RGB_KF = {
-  hue:   [{ filter: 'hue-rotate(0deg)' }, { filter: 'hue-rotate(360deg)' }],
-  breath:[{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(.42)', opacity: .22 }, { transform: 'scale(1)', opacity: 1 }],
-  wave:  [{ transform: 'scale(.45)', opacity: .18 }, { transform: 'scale(1)', opacity: 1 }, { transform: 'scale(.45)', opacity: .18 }],
-  snake: [{ transform: 'scale(.55)', opacity: .1 }, { transform: 'scale(.55)', opacity: .1, offset: .8 },
-          { transform: 'scale(1.12)', opacity: 1, offset: .88 }, { transform: 'scale(.55)', opacity: .1 }],
-  react: [{ transform: 'scale(.55)', opacity: .1 }, { transform: 'scale(.55)', opacity: .1, offset: .72 },
-          { transform: 'scale(1.15)', opacity: 1, offset: .78 }, { transform: 'scale(.6)', opacity: .22, offset: .9 },
-          { transform: 'scale(.55)', opacity: .1 }],
-  pulse: [{ opacity: 1 }, { opacity: .1 }, { opacity: 1 }],
-};
-const RGB_INF = { iterations: Infinity, fill: 'both' };
-let rgbAnims = [];
-function stopRgbAnims(){ rgbAnims.forEach(a => { try { a.cancel(); } catch(e){} }); rgbAnims = []; }
-// Bangun animasi untuk satu titik. Fase (delay negatif) mengikuti mode:
-// snake/react memakai urutan rantai LED, rainbow menggeser mendatar,
-// waves menyapu diagonal, randomize memakai seed per key.
-function rgbAnimFor(dot, mode, r, c) {
-  const led = ledIndex(r, c);
-  const play = (kf, dur, ease, delay) => { if (dot.animate) rgbAnims.push(dot.animate(kf, Object.assign({}, RGB_INF, { duration: dur, easing: ease, delay: delay || 0 }))); };
-  const hue = (dur, delay) => play(RGB_KF.hue, dur, 'linear', delay);
-  if (!rgb.enabled) return;
-  switch (mode) {
-    case 2: play(RGB_KF.breath, 2200, 'ease-in-out'); break;
-    case 3: hue(4000); break;
-    case 4: hue(3400, -led * 140); break;
-    case 5: hue(3800, -(r + c) * 160); play(RGB_KF.wave, 1900, 'ease-in-out', -(r + c) * 160); break;
-    case 6: hue(3000, -led * 200); play(RGB_KF.snake, 1600, 'linear', -led * 200); break;
-    case 7: hue(4000, -led * 370); play(RGB_KF.pulse, 1100 + (led % 5) * 220, 'ease-in-out', -led * 370); break;
-    case 8: hue(4000, -led * 290); play(RGB_KF.react, 2600, 'ease-out', -led * 290); break;
-  }
-}
-function ensureRgbKeys() { for (let r=0;r<ROWS;r++){ rgb.keys[r]=rgb.keys[r]||[]; for(let c=0;c<COLS;c++) rgb.keys[r][c]=rgb.keys[r][c] || [16,96,90]; } }
-function rgbCss(c){ return `rgb(${c[0]},${c[1]},${c[2]})`; }
-function rgbToHex(c){ return ('#'+c.map(x=>x.toString(16).padStart(2,'0')).join('')).toUpperCase(); }
-function hexToRgb(hex){ let h=hex.replace('#',''); if(h.length===3) h=h.split('').map(x=>x+x).join(''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
-function renderRgbGrid(){ ensureRgbKeys(); stopRgbAnims(); const g=el('rgbGrid'); g.style.gridTemplateColumns=`repeat(${COLS}, 1fr)`; g.classList.toggle('rgb-off',!rgb.enabled); g.innerHTML=''; for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){ const d=document.createElement('div'); d.className='cell rgb-cell'+((rgb.sel&&rgb.sel[0]===r&&rgb.sel[1]===c)?' sel':''); const bg = rgb.mode===1 ? rgbCss(rgb.keys[r][c]) : rgbCss(rgb.color); d.innerHTML=`<span class="rgb-dot" style="background:${bg}"></span><span class="val">${rgbKeyName(r,c)}</span>`; d.title=`Posisi tombol R${r} C${c}`; d.onclick=()=>{rgb.sel=[r,c]; renderRgbGrid(); renderRgbKeyCard();}; g.appendChild(d); rgbAnimFor(d.querySelector('.rgb-dot'), rgb.mode, r, c); } }
-function renderRgbKeyCard(){ const card=el('rgbKeyCard'); if(!rgb.sel){card.style.display='none'; return;} ensureRgbKeys(); card.style.display='block'; el('rgbKeyTitle').textContent=`Warna key ${rgbKeyName(rgb.sel[0], rgb.sel[1])}`; el('rgbColorPicker').value=rgbToHex(rgb.keys[rgb.sel[0]][rgb.sel[1]]); }
-function renderRgbPresets(){ const list=el('rgbPresetList'); list.innerHTML=''; RGB_MODES.forEach(m=>{ const row=document.createElement('div'); row.className='rgb-preset'+(rgb.mode===m.id?' active':''); row.innerHTML=`<div class="rgb-preset-name">${m.name}</div><div class="rgb-preset-desc">${m.desc}</div>`; row.onclick=()=>{rgb.mode=m.id; el('rgbSaveState').textContent='Belum disimpan'; sendLine(`RGB:MODE:${rgb.mode}:${rgb.random?1:0}:${rgb.color.join(':')}:${rgb.speed}`); renderRgbPresets(); renderRgbGrid();}; list.appendChild(row); }); el('cpModeWrap').style.display = (RGB_MODES[rgb.mode]?.color?1:0)?'block':'none'; }
-function syncRgbDotColors(){ const dots=el('rgbGrid').querySelectorAll('.rgb-dot'); dots.forEach((dot,i)=>{ const r=Math.floor(i/COLS), c=i%COLS; dot.style.background = rgb.mode===1 ? rgbCss(rgb.keys[r][c]) : rgbCss(rgb.color); }); }
-function renderRgbAll(){ el('rgbEnabledToggle').checked=rgb.enabled; el('rgbBri').value=briToPct(rgb.bri); el('rgbBriVal').textContent=briToPct(rgb.bri)+'%'; el('rgbSpeed').value=rgb.speed; el('rgbSpeedVal').textContent=Math.round(rgb.speed/255*100)+'%'; renderRgbGrid(); renderRgbKeyCard(); renderRgbPresets(); el('rgbSaveState').textContent = rgb.dirty ? 'Belum disimpan ke device' : ''; }
-
 // Auto-reconnect
 const LAST_PORT_KEY = 'macropad.lastPort';
 let portPath = null;                       // path port yang sedang terhubung
@@ -182,22 +122,6 @@ function notify(text, kind = 'info', opts = {}) {
   });
 }
 let deviceWasLost = false;
-
-const el = id => document.getElementById(id);
-const logBox = el('log');
-
-function log(msg, cls) {
-  const line = document.createElement('div');
-  if (cls) line.className = cls;
-  line.textContent = msg;
-  logBox.appendChild(line);
-  logBox.scrollTop = logBox.scrollHeight;
-}
-// Escape 5 karakter HTML termasuk tanda kutip tunggal. Semua pemanggilan saat ini
-// memakai konteks atribut berkutip ganda, tapi escapes ' menjaga aman bila nanti
-// ada yang memakainya di atribut berkutip tunggal.
-const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]); }
 
 // ==================== ROUTER HALAMAN ====================
 function switchPage(name, navOverride) {
@@ -1253,32 +1177,8 @@ function handleLine(line) {
     }
     return;
   }
-  if (line.startsWith('RGB_DUMP:')) {
-    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
-    if (kv.enabled !== undefined) rgb.enabled = kv.enabled === '1';
-    if (kv.mode !== undefined) rgb.mode = parseInt(kv.mode);
-    if (kv.random !== undefined) rgb.random = kv.random === '1';
-    if (kv.bri !== undefined) rgb.bri = parseInt(kv.bri);
-    if (kv.speed !== undefined) rgb.speed = parseInt(kv.speed);
-    if (kv.dirty !== undefined) rgb.dirty = kv.dirty === '1';
-    if (kv.color) { const c = kv.color.split(':').map(parseInt); if (c.length === 3) rgb.color = c; }
-    rgb.keys = [];
-    renderRgbAll();
-    return;
-  }
-  if (line.startsWith('RGB_KEY:')) {
-    const p = line.substring(8).split(',');
-    if (p.length === 3) {
-      const r = parseInt(p[0]), c = parseInt(p[1]);
-      const col = p[2].split(':').map(parseInt);
-      if (r >= 0 && r < ROWS && c >= 0 && c < COLS && col.length === 3) {
-        ensureRgbKeys();
-        rgb.keys[r][c] = col;
-        renderRgbAll();
-      }
-    }
-    return;
-  }
+  // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
+  if (handleRgbLine(line, log)) return;
   if (line === 'NAMES_BEGIN') { namesInProgress = true; return; }
   if (line === 'NAMES_END') { namesInProgress = false; renderTabs(); return; }
   if (namesInProgress) {
@@ -1721,21 +1621,13 @@ el('globalAdaptiveToggle').onchange = (e) => {
     .catch(err => log('[ERROR] Gagal menyimpan setting adaptive: ' + err, 'err'));
   syncGlobalToggles();
 };
-el('globalRgbToggle').checked = rgb.enabled;
-el('globalRgbToggle').onchange = (e) => { rgb.enabled = e.target.checked; sendLine('RGB:EN:' + (rgb.enabled?1:0)); renderRgbAll(); };
 el('btnTestNotif').onclick = () => notify('Tes notifikasi', 'connect', { force: true });
 setInterval(pollPorts, 2000);
 
-el('rgbEnabledToggle').checked = rgb.enabled;
-el('rgbEnabledToggle').onchange = (e) => { rgb.enabled = e.target.checked; sendLine('RGB:EN:' + (rgb.enabled ? 1 : 0)); renderRgbAll(); };
-el('rgbBri').oninput = (e) => { const pct = parseInt(e.target.value); rgb.bri = pctToBri(pct); el('rgbBriVal').textContent = pct + '%'; rgb.dirty = true; sendLine(`RGB:BRI:${rgb.bri}`); renderRgbAll(); };
-el('rgbSpeed').oninput = (e) => { rgb.speed = parseInt(e.target.value); el('rgbSpeedVal').textContent = Math.round(rgb.speed/255*100) + '%'; rgb.dirty = true; sendLine(`RGB:MODE:${rgb.mode}:${rgb.random?1:0}:${rgb.color.join(':')}:${rgb.speed}`); renderRgbAll(); };
-el('rgbColorPicker').oninput = (e) => { if (!rgb.sel) { rgb.color = hexToRgb(e.target.value); sendLine(`RGB:ALL:${rgb.color.join(':')}`); syncRgbDotColors(); } else { ensureRgbKeys(); rgb.keys[rgb.sel[0]][rgb.sel[1]] = hexToRgb(e.target.value); rgb.mode = 1; sendLine(`RGB:KEY:${rgb.sel[0]}:${rgb.sel[1]}:${rgb.keys[rgb.sel[0]][rgb.sel[1]].join(':')}`); renderRgbAll(); } };
-el('rgbModeColor').oninput = (e) => { rgb.color = hexToRgb(e.target.value); sendLine(`RGB:MODE:${rgb.mode}:${rgb.random?1:0}:${rgb.color.join(':')}:${rgb.speed}`); syncRgbDotColors(); renderRgbKeyCard(); };
-// Flag dirty dibaca dari device (RGB_DUMP:dirty=), bukan asumsi lokal.
-// Setelah SAVE kita minta ulang dump supaya status "tersimpan" berasal dari device.
-el('btnRgbSave').onclick = async () => { await sendLine('RGB:SAVE'); await sendLine('RGB:DUMP'); };
-el('btnRgbReset').onclick = async () => { if (confirm('Reset RGB ke default?')) { await sendLine('RGB:RESET'); await sendLine('RGB:DUMP'); } };
+// Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
+// tidak ada import bolak-balik antara main.js dan rgb-page.js.
+setRgbTransport(sendLine);
+initRgbPage();
 renderRgbAll(); syncGlobalToggles();
 
 // ==================== AUTOSTART (toggle; auto-aktif sekali di build rilis, diatur Rust) ====================

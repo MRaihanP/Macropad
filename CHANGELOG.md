@@ -24,7 +24,23 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 - `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh
   test wiring sebelum commit.
 
+### Fixed
+- **Warna RGB dari device tidak pernah ter-parse dengan benar.** Kode memakai
+  `.split(':').map(parseInt)`, dan `map` meneruskan **index sebagai argumen kedua** —
+  yang oleh `parseInt(value, radix)` dibaca sebagai basis. Jadi `"20:30"` diparse dengan
+  radix 1 dan 2 (tidak valid) dan menghasilkan `NaN`, sehingga `RGB_DUMP:...color=...`
+  dan `RGB_KEY:...` mengisi warna dengan `[10, NaN, NaN]`. Gejalanya diam-diam: warna
+  yang dibaca dari device tidak pernah terpakai. Diganti `parseRgbTriple()` yang
+  memakai radix 10 dan menolak nilai di luar 0..255.
+
 ### Changed
+- **Refactor Tahap 2: halaman RGB dipindah ke `src/rgb-page.js`** dan helper DOM ke
+  `src/dom.js` (`el`, `log`, `escapeHtml`) supaya tidak diduplikasi di setiap modul.
+  Transport serial disuntikkan lewat `setRgbTransport()` untuk menghindari siklus
+  import antara `main.js` dan `rgb-page.js`. Parser `RGB_DUMP`/`RGB_KEY` pindah ke
+  `handleRgbLine()`. `main.js` turun dari 1841 ke 1733 baris.
+- `dom.js`: `logBox` kini dicari saat dipakai, bukan di level modul, sehingga modul bisa
+  diimpor di luar browser (test Node) tanpa perlu stub DOM saat import.
 - **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.**
 - **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.** `main.js` punya
   77 `let`/`const` global, dan keadaan yang dilaporkan device (`ROWS`, `COLS`,
