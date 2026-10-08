@@ -1,5 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 // State device (dimensi matriks, layer, keymap, binding knob) tinggal di satu modul
 // dengan mutator tervalidasi. Nilai di-import sebagai live binding, jadi kode yang
@@ -51,6 +49,7 @@ import {
   renderTabs, renderGrid, renderEncoderList, loadLayer,
   resetEditorState, clearSelection, selected, stopRecordingContinuous,
 } from "./home-page.js";
+import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
 
 // Config di device berubah tapi belum disimpan ke flash. Dipakai dialog "Simpan
 // dulu?" saat keluar, dan disuntikkan ke home-page lewat initHomePage({ markDirty }).
@@ -116,6 +115,13 @@ initSidebar();
 initHomePage({ markDirty: () => { dirty = true; } });
 initEditorPanel();
 initAppPicker();
+
+// Tray & autostart. initTray() menyuntikkan flag "belum tersimpan" supaya modul tray
+// tidak perlu menyimpan salinannya.
+initTray({ isDirty: () => dirty, setDirty: (v) => { dirty = !!v; } });
+initAutostartToggle();
+initAutostart();
+initTrayHandlers();
 
 // Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
 // sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
@@ -244,104 +250,3 @@ setRgbTransport(sendLine);
 initRgbPage();
 renderRgbAll(); syncGlobalToggles();
 
-// ==================== AUTOSTART (toggle; auto-aktif sekali di build rilis, diatur Rust) ====================
-async function initAutostart() {
-  const t = el('autostartToggle');
-  try {
-    const s = await invoke('autostart_status');
-    t.checked = s.enabled;
-    t.disabled = !s.available;
-    el('autostartLabel').title = s.available ? '' : 'Hanya bisa diatur di build rilis (npm run tauri build)';
-  } catch (e) { t.disabled = true; log('[ERROR] Gagal membaca status autostart: ' + e, 'err'); }
-}
-el('autostartToggle').onchange = async (e) => {
-  const want = e.target.checked;
-  try {
-    await invoke('autostart_set', { value: want });
-    log(want ? '[LOG] Autostart aktif: app jalan di tray saat Windows start' : '[LOG] Autostart dimatikan', 'ok');
-  } catch (err) {
-    e.target.checked = !want;
-    log('[ERROR] Gagal mengubah autostart: ' + err, 'err');
-  }
-};
-initAutostart();
-
-// Deteksi render (compositor) benar-benar berhenti mengecat, bukan sekadar user lama mikir di depan modal.
-// requestAnimationFrame hanya jalan kalau compositor masih sehat; setInterval di bawah tidak bergantung
-// padanya, jadi tetap bisa mendeteksi walau paint sudah berhenti (JS-nya sendiri masih hidup).
-let lastFrameTs = performance.now();
-(function rafLoop(t) { lastFrameTs = t; requestAnimationFrame(rafLoop); })(lastFrameTs);
-
-// Selesai (resolve 'render-stalled') hanya kalau tidak ada frame ter-render selama `ms` berturut-turut.
-// Dipakai sebagai jaring pengaman X/Keluar: modal boleh menunggu selama apa pun selama render masih sehat,
-// baru dilepas otomatis kalau render benar-benar macet (mis. WebView2 gagal render/putih-hitam).
-function whenRenderStalled(ms) {
-  return new Promise((resolve) => {
-    const iv = setInterval(() => {
-      if (performance.now() - lastFrameTs > ms) { clearInterval(iv); resolve('render-stalled'); }
-    }, 500);
-  });
-}
-
-// ==================== TRAY: X = sembunyi ke tray, bukan keluar ====================
-// Dialog simpan dipakai untuk dua jalur: X (ke tray) dan menu tray "Keluar" saat jendela masih terbuka.
-// Return true kalau boleh lanjut, false kalau user batal.
-let unsavedDialogOpen = false;
-async function confirmUnsaved(quitting) {
-  if (!dirty || !isConnected()) return true; // tanpa koneksi tidak ada yang bisa disimpan/dikembalikan
-  if (unsavedDialogOpen) return false;
-  unsavedDialogOpen = true;
-  try {
-    await invoke('show_main_window'); // pastikan dialog terlihat (kasus Keluar dari tray)
-    const choice = await Promise.race([
-      showModalBase(
-        'Ada perubahan belum disimpan',
-        quitting
-          ? 'Konfigurasi di device sudah berubah tapi belum disimpan ke flash. Simpan dulu sebelum keluar?'
-          : 'Konfigurasi di device sudah berubah tapi belum disimpan ke flash. Simpan dulu sebelum app disembunyikan ke tray?',
-        [
-          { label: 'Cancel', value: 'cancel' },
-          { label: "Don't Save", value: 'discard' },
-          { label: 'Save', value: 'save', primary: true }
-        ]
-      ),
-      whenRenderStalled(3000)
-    ]);
-    if (choice === 'save') {
-      dirty = false;
-      await sendLine('SAVE');
-      return true;
-    }
-    if (choice === 'discard') {
-      // Kembalikan isi device ke isi flash supaya tidak menggantung setengah berubah
-      dirty = false;
-      await sendLine('LOAD');
-      if (!quitting) { await sendLine('INFO'); await sendLine('DUMPENC'); } // segarkan tampilan untuk saat jendela dibuka lagi
-      return true;
-    }
-    if (choice === 'render-stalled') {
-      // Render benar-benar berhenti (bukan user lama mikir): jangan biarkan X/Keluar nyangkut selamanya.
-      // Config di device TIDAK disentuh (tidak dipaksa save/discard) supaya tidak ada yang hilang salah waktu.
-      log('[LOG] Render tidak merespons, lanjut tanpa mengubah config di device.', 'err');
-      return true;
-    }
-    return false; // 'cancel' atau Escape
-  } finally {
-    unsavedDialogOpen = false;
-  }
-}
-
-const appWindow = getCurrentWindow();
-appWindow.onCloseRequested(async (event) => {
-  event.preventDefault(); // X tidak pernah menutup app; keluar lewat menu tray
-  if (!(await confirmUnsaved(false))) return;
-  stopRecordingContinuous();
-  el('editPanel').style.display = 'none';
-  clearSelection();
-  await invoke('hide_to_tray');
-});
-
-listen('tray-quit', async () => {
-  if (!(await confirmUnsaved(true))) return;
-  await invoke('quit_app');
-});

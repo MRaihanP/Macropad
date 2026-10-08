@@ -58,6 +58,31 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 8 (penutup Phase 8): tray & autostart dipindah ke `src/tray.js`**
+  (137 baris). `main.js` turun dari 347 ke **252 baris**.
+  - Berisi status autostart Windows, dialog "Simpan dulu?" untuk dua jalur (X dan menu
+    tray "Keluar"), penangan `onCloseRequested`, listener `tray-quit`, dan jaring
+    pengaman render-stalled.
+  - Flag "belum tersimpan" disuntikkan lewat `initTray({ isDirty, setDirty })` supaya
+    tray.js tidak menyimpan salinannya - dua salinan akan bisa berbeda diam-diam.
+  - Loop `requestAnimationFrame` ikut pindah. Ini bukan sekadar hiasan: tanpa loop itu,
+    `whenRenderStalled()` selalu resolve dan dialog akan melepas sendiri setelah 3 detik
+    walau user belum menjawab. `tray-diff.js` memverifikasi loop dan ambangnya.
+
+#### Ringkasan Phase 8
+- `main.js` dari 1864 ke **252 baris** (-86%), tanpa satu baris pun yang bisa dibuktikan
+  berubah perilakunya. Total `src/` naik dari 1864 ke 2861 baris karena komentar, test,
+  dan penanda batas tanggung jawab ikut menambah - tapi sekarang setiap modul punya satu
+  alasan jelas untuk ada.
+- 15 modul, digraf.import-nya **bebas siklus** (dicek otomatis, dan grafnya dicetak
+  supaya mudah diperiksa manual).
+- Empat test "bukti pemindahan": `handleLine-diff.js`, `shell-ui-diff.js`,
+  `home-page-diff.js`, `tray-diff.js`. Semuanya membandingkan kode lama dari git
+  dengan kode baru modul per modul dan gagal kalau ada selisih. Ini yang membuat
+  refactor berikutnya jauh lebih murah diperbaiki.
+- `startup-smoke-test.mjs` memuat `main.js` sungguhan, dan `no-lost-functions-test.js`
+  membandingkan daftar fungsi/konstanta top-level sebelum vs sesudah. Keduanya dibuat
+  setelah bug nyata, bukan karena suspectsi.
 - **Refactor Tahap 7: halaman Home dan daftar aplikasi dipisah** - `src/home-page.js`
   (340 baris) dan `src/app-picker.js` (113 baris). `main.js` turun dari 727 ke 347 baris.
   - `home-page.js` memegang tab layer (dengan drag-reorder), grid tombol, daftar binding
