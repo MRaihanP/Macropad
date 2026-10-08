@@ -16,7 +16,13 @@ const D = document.getElementById('dot');
 const X = document.getElementById('text');
 const BASE = 16, H = 44;
 let pendingHold = 3000;
-const COLORS = { connect: '#4ecdc4', disconnect: '#e8604c', layer: '#c792ea', preset: '#f2a154', key: '#7c9cf2', info: '#8b93a1' };
+const COLORS = {
+  connect: '#4ecdc4', disconnect: '#e8604c', layer: '#c792ea', preset: '#f2a154',
+  key: '#7c9cf2', info: '#8b93a1',
+  // Notifikasi baterai perlu warna sendiri supaya tidak tertukar dengan notifikasi dasar.
+  'charge': '#86d0a0', 'charge-done': '#4ecdc4',
+  'batt-low': '#f2a154', 'batt-crit': '#e8604c',
+};
 const EASE = 'cubic-bezier(.22,1,.36,1)';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

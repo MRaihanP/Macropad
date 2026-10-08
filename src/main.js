@@ -148,10 +148,10 @@ let retryTimer = null;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Overlay notifikasi (jendela terpisah di Rust, digambar oleh overlay.html)
-// kind: connect | disconnect | layer | preset | key | info
-// Setting notifikasi (disimpan di localStorage)
+// kind: connect | disconnect | layer | preset | key | batt-low | batt-crit | charge | charge-done | info
+// Setting notifikasi (disimpan di localStorage, jadi pilihan user bertahan setelah app ditutup)
 const SETTINGS_KEY = 'macropad.settings';
-const settings = { notifyBasic: true, notifyKeys: false, notifyBattery: false };
+const settings = { notifyBasic: true, notifyKeys: true, notifyBattery: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch (e) {}
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
 // Teks notifikasi per key = aksi yang di-bind pada tombol tersebut
@@ -378,7 +378,9 @@ el('btnRescanApps').onclick = () => openAppPicker(true);
 el('appTtl').onchange = () => invoke('apps_set_ttl', { days: parseInt(el('appTtl').value) });
 
 // ==================== ADAPTIVE KEY BIND — Manajemen Preset ====================
-let presetsData = { masterEnabled: false, presets: [] };
+// Adaptive Key Bind aktif secara bawaan. Disimpan ke presets.json lewat
+// presets_save, jadi pilihan user bertahan setelah app ditutup.
+let presetsData = { masterEnabled: true, presets: [] };
 let editingPresetId = null;
 let bindableAppsCache = null;
 const dumpWaiters = new Map();   // layer -> { resolve, timer }
@@ -391,7 +393,7 @@ function presetColor(seed) {
 
 async function loadPresets() {
   try { presetsData = await invoke('presets_get'); }
-  catch (e) { log('[ERROR] Gagal memuat preset: ' + e, 'err'); presetsData = { masterEnabled: false, presets: [] }; }
+  catch (e) { log('[ERROR] Gagal memuat preset: ' + e, 'err'); presetsData = { masterEnabled: true, presets: [] }; }
   el('masterEnabledToggle').checked = presetsData.masterEnabled;
   renderPresetList();
 }
@@ -730,6 +732,8 @@ function syncGlobalToggles() {
 // deviceProfile.simulated membuat UI menandai demikian supaya tidak tertukar
 // dengan data hardware asli.
 let battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
+// Level ambang baterai yang terakhir dinotifikasi ('low' | 'crit' | null).
+let battNotifLevel = null;
 function updateBatteryUI() {
   const ind = el('battInd'); if (!ind) return;
   if (battUI.pct === null) {
@@ -747,6 +751,17 @@ function updateBatteryUI() {
   ind.title = battUI.simulated
     ? `Data SIMULASI (firmware prototipe)${battUI.mv !== null ? ` - ${battUI.mv} mV` : ''}`
     : (battUI.mv !== null ? `${battUI.mv} mV` : 'Baterai');
+  // Notifikasi baterai lemah hanya saat ambang baru dil-crossing sekali, bukan
+  // setiap EVT:BATT (yang datang tiap 5 detik). Tanpa ini notifikasi muncul terus.
+  // Reset saat baterai naik lagi atau saat sedang mengecas supaya peringatan
+  // bisa berbunyi lagi di siklus berikutnya.
+  const lvl = battUI.pct <= 10 ? 'crit' : (battUI.pct <= 20 ? 'low' : 'ok');
+  if (battUI.charging || lvl === 'ok') battNotifLevel = null;
+  else if (lvl !== battNotifLevel) {
+    battNotifLevel = lvl;
+    if (lvl === 'crit') notify(`Baterai kritis: ${battUI.pct}%`, 'batt-crit', { hold: 8000 });
+    else notify(`Baterai lemah: ${battUI.pct}%`, 'batt-low', { hold: 6000 });
+  }
 }
 setTimeout(updateBatteryUI, 0);
 function updateActivePresetLabel() {
@@ -1237,11 +1252,16 @@ function handleLine(line) {
   if (line.startsWith('EVT:CHG:')) {
     const m = line.match(/state=(\d+)/);
     if (m) {
-      battUI.chargeState = parseInt(m[1]);
-      battUI.charging = battUI.chargeState === 1;
+      const st = parseInt(m[1]);
+      battUI.chargeState = st;
+      battUI.charging = st === 1;
       updateBatteryUI();
-      const label = ['tidak mengecas', 'sedang mengecas', 'cas selesai'][battUI.chargeState] || 'tidak diketahui';
-      notify(`Baterai: ${label}`, 'batt');
+      // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
+      // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
+      // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
+      if (st === 1) notify('Baterai: mulai mengecas', 'charge', { hold: 5000 });
+      else if (st === 2) notify('Baterai: cas selesai', 'charge-done', { hold: 5000 });
+      // state 0 (charger dicabut) sengaja tidak dinotifikasi supaya tidak membising.
     }
     return;
   }
@@ -1716,7 +1736,14 @@ el('notifyKeysToggle').onchange = e => { settings.notifyKeys = e.target.checked;
 el('notifyBatteryToggle').checked = settings.notifyBattery;
 el('notifyBatteryToggle').onchange = e => { settings.notifyBattery = e.target.checked; saveSettings(); };
 el('globalAdaptiveToggle').checked = presetsData.masterEnabled;
-el('globalAdaptiveToggle').onchange = (e) => { presetsData.masterEnabled = e.target.checked; invoke('presets_save', { data: presetsData }).catch(()=>{}); syncGlobalToggles(); };
+el('globalAdaptiveToggle').onchange = (e) => {
+  presetsData.masterEnabled = e.target.checked;
+  // Jangan ditelan diam-diam: kalau gagal, user mengira toggle tersimpan padahal
+  // akan kembali ke nilai lama setelah app ditutup.
+  invoke('presets_save', { data: presetsData })
+    .catch(err => log('[ERROR] Gagal menyimpan setting adaptive: ' + err, 'err'));
+  syncGlobalToggles();
+};
 el('globalRgbToggle').checked = rgb.enabled;
 el('globalRgbToggle').onchange = (e) => { rgb.enabled = e.target.checked; sendLine('RGB:EN:' + (rgb.enabled?1:0)); renderRgbAll(); };
 el('btnTestNotif').onclick = () => notify('Tes notifikasi', 'connect', { force: true });

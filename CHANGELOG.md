@@ -10,8 +10,33 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
+- Notifikasi **baterai lemah** (`batt-low`, ≤20%) dan **baterai kritis** (`batt-crit`, ≤10%).
+  Sebelumnya tidak ada sama sekali padahal toggle "Notifikasi baterai" sudah menjanjikan
+  "Battery Low". Notifikasi hanya dibunyikan saat ambang baru dilewati, bukan tiap `EVT:BATT`
+  yang datang setiap 5 detik; ambang direset saat baterai naik atau mulai mengecas supaya
+  bisa berbunyi lagi di siklus berikutnya.
+- Warna khusus untuk notifikasi baterai di overlay (`charge`, `charge-done`, `batt-low`,
+  `batt-crit`) supaya tidak tertukar dengan notifikasi dasar.
 
-#### Phase 7 — hardening
+### Changed
+- **Default semua aktif**: Adaptive Key Bind (`presetsData.masterEnabled`), notifikasi per
+  key, dan notifikasi baterai. Ketiganya sudah punya persistensi — notifikasi lewat
+  `localStorage` (`macropad.settings`), Adaptive lewat `presets.json` — jadi pilihan user
+  bertahan setelah app ditutup.
+
+### Fixed
+- **Notifikasi baterai sebenarnya tidak dikendalikan toggle "Notifikasi baterai".** Handler
+  `EVT:CHG` mengirim dengan kind `'batt'`, yang tidak ada di daftar filter `notify()` —
+  sehingga jatuh ke cabang "dasar" dan ikut mati saat toggle Notifikasi dasar dimatikan.
+  Sekarang memakai kind `charge` / `charge-done` yang memang dibaca filter.
+- Teks petunjuk toggle "Notifikasi baterai" menyebut "CHARGE NOW" yang tidak pernah ada;
+  diganti sesuai perilaku sebenarnya.
+- `presets_save` dari toggle Adaptive di halaman Home memakai `.catch(()=>{})` sehingga
+  kegagalan penyimpanan tidak kelihatan — user mengira toggle tersimpan padahal akan
+  kembali ke nilai lama setelah app ditutup. Sekarang errornya dicatat.
+
+### Added
+#### Fase sebelumnya
 - Unit test Rust untuk `find_app()` (6 test). Ini test pertama di repo ini; sebelumnya
   tidak punya test sama sekali.
 - Capability terpisah `capabilities/overlay.json` untuk jendela notifikasi, dengan izin
