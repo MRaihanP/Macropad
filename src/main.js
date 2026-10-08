@@ -2,11 +2,19 @@ import { SerialPort } from "tauri-plugin-serialplugin";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+// State device (dimensi matriks, layer, keymap, binding knob) tinggal di satu modul
+// dengan mutator tervalidasi. Nilai di-import sebagai live binding, jadi kode yang
+// hanya membaca tidak berubah; kode yang menulis wajib memakai setter dari sana.
+import {
+  CAP_LAYERS, ROWS, COLS, NUM_ENCODERS, currentLayer, layerCount, maxLayers,
+  mapping, layerNames, encConfig, encParseIdx,
+  setCurrentLayer, setNumEncoders, setMapping, setLayerNames, setEncParseIdx, resetEncParse,
+  ensureEncConfigSize, emptyLayer,
+  applyInfo, applyDumpRow, applyEncRow, applyName, applyLayerEvent, applyEncCount, applyEncIdx,
+  reorderLayer,
+} from "./device-state.js";
 
 const TYPE_NAMES = ["NONE", "KEY", "COMBO", "TEXT", "CONSUMER", "APP"];
-const CAP_LAYERS = 8;
-let ROWS = 3, COLS = 3;
-let NUM_ENCODERS = 1; // dilaporkan device lewat WHOAMI/INFO/DUMPENC, bukan di-hardcode
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
 const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVolumeMute: 'MUTE', MediaPlayPause: 'PLAYPAUSE', MediaTrackNext: 'NEXT', MediaTrackPrevious: 'PREV' };
 const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
@@ -33,14 +41,6 @@ function releasePortListener() {
   const u = portUnlisten;
   portUnlisten = null;
   if (u) { try { u(); } catch (e) { log('[ERROR] Gagal lepas listener: ' + e, 'err'); } }
-}
-let currentLayer = 0, layerCount = 4, maxLayers = CAP_LAYERS;
-let mapping = Array.from({ length: CAP_LAYERS }, () => Array.from({ length: ROWS }, () => Array(COLS).fill(null)));
-let layerNames = Array(CAP_LAYERS).fill(null);
-let encConfig = [{ CW: null, CCW: null, BTN: null }]; // array per index knob
-let encParseIdx = 0; // index knob yang lagi diisi saat parsing DUMPENC
-function ensureEncConfigSize() {
-  encConfig = Array.from({ length: NUM_ENCODERS }, () => ({ CW: null, CCW: null, BTN: null }));
 }
 let selected = null;
 let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
@@ -1163,10 +1163,9 @@ function handleLine(line) {
   if (line.startsWith('EVT:LAYER:')) {
     const n = parseInt(line.substring(10));
     lastDeviceLayerEventAt = Date.now(); // dipakai nanti buat pause auto-switch
-    if (Number.isInteger(n) && n >= 0 && n < CAP_LAYERS && n !== currentLayer) {
+    if (n !== currentLayer && applyLayerEvent(n)) {
       // Device sudah pindah layer dengan sendirinya (long-press knob), jadi jangan
       // kirim LAYER: balik - cukup baca isinya.
-      currentLayer = n;
       renderTabs();
       loadLayer(n);
     }
@@ -1190,39 +1189,28 @@ function handleLine(line) {
     // TypeError DI DALAM callback serial, yang ditangkap plugin dan ditelan. Akibatnya
     // parser mati di tengah stream dan semua baris berikutnya dimakan sebagai payload
     // DUMP - desync permanen sampai reconnect.
+    // Validasi lengkap (indeks, tipe, alokasi layer) ada di device-state.js.
+    // Nilai boleh mengandung koma (macro TEXT), jadi field terakhir adalah sisa baris.
     if (p.length >= 4) {
-      const r = parseInt(p[0]), c = parseInt(p[1]);
       const layer = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
-      if (Number.isInteger(r) && Number.isInteger(c) && r >= 0 && r < ROWS && c >= 0 && c < COLS
-          && mapping[layer] && mapping[layer][r] && Number.isInteger(parseInt(p[2]))) {
-        mapping[layer][r][c] = { type: parseInt(p[2]), value: p.slice(3).join(',') };
-      } else {
-        log('[ERROR] Baris DUMP tidak valid, dilewati: ' + line, 'err');
-      }
+      const applied = applyDumpRow(layer, parseInt(p[0]), parseInt(p[1]), parseInt(p[2]), p.slice(3).join(','), log);
+      if (!applied) log('[ERROR] Baris DUMP tidak valid, dilewati: ' + line, 'err');
     }
     return;
   }
   if (line.startsWith('ENC_BEGIN')) {
     dumpEncInProgress = true;
     const m = line.match(/count=(\d+)/);
-    if (m) { NUM_ENCODERS = parseInt(m[1]); ensureEncConfigSize(); el('deviceEncLabel').textContent = String(NUM_ENCODERS); }
-    encParseIdx = 0;
+    if (m && applyEncCount(parseInt(m[1]), log)) el('deviceEncLabel').textContent = String(NUM_ENCODERS);
     return;
   }
   if (line === 'ENC_END') { dumpEncInProgress = false; renderEncoderList(); return; }
   if (dumpEncInProgress) {
-    if (line.startsWith('IDX:')) {
-      const i = parseInt(line.substring(4));
-      encParseIdx = (Number.isInteger(i) && i >= 0 && i < NUM_ENCODERS) ? i : -1;
-      return;
-    }
+    if (line.startsWith('IDX:')) { applyEncIdx(parseInt(line.substring(4))); return; }
     const p = line.split(',');
-    // Allowlist kunci: tanpa ini device bisa mengirim kunci sembarang (mis. "__proto__")
-    // yang menjadi prototype assignment pada objek encoder.
-    const ENC_KEYS = ['CW', 'CCW', 'BTN'];
-    if (p.length >= 3 && encParseIdx >= 0 && encConfig[encParseIdx] && ENC_KEYS.includes(p[0])) {
-      encConfig[encParseIdx][p[0]] = { type: parseInt(p[1]), value: p.slice(2).join(',') };
-    }
+    // Allowlist kunci ada di applyEncRow - tanpa itu device bisa mengirim
+    // "__proto__" yang menjadi prototype assignment pada objek knob.
+    if (p.length >= 3) applyEncRow(encParseIdx, p[0], parseInt(p[1]), p.slice(2).join(','), log);
     return;
   }
   if (line.startsWith('HWINFO:')) {
@@ -1232,7 +1220,7 @@ function handleLine(line) {
       const k = p.substring(0, eq), v = p.substring(eq + 1);
       deviceProfile[k] = /^-?\d+$/.test(v) ? parseInt(v) : v;
     });
-    if (deviceProfile.encoders) { NUM_ENCODERS = deviceProfile.encoders; ensureEncConfigSize(); }
+    if (deviceProfile.encoders) setNumEncoders(deviceProfile.encoders);
     battUI.simulated = deviceProfile.simulated === 1;
     log(`[HW] Profil ${deviceProfile.profile} - rgb=${deviceProfile.rgb} vdiv=${deviceProfile.vdiv} chg=${deviceProfile.chg}` + (battUI.simulated ? ' (data simulasi)' : ''));
     renderDeviceProfileBadge();
@@ -1294,29 +1282,26 @@ function handleLine(line) {
   if (line === 'NAMES_BEGIN') { namesInProgress = true; return; }
   if (line === 'NAMES_END') { namesInProgress = false; renderTabs(); return; }
   if (namesInProgress) {
+    // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
     const idx = line.indexOf(',');
     if (idx > -1) {
-      const n = parseInt(line.substring(0, idx));
-      if (Number.isInteger(n) && n >= 0 && n < maxLayers) layerNames[n] = line.substring(idx + 1);
-      else log('[ERROR] Baris NAMES tidak valid, dilewati: ' + line, 'err');
+      if (!applyName(parseInt(line.substring(0, idx)), line.substring(idx + 1), log))
+        log('[ERROR] Baris NAMES tidak valid, dilewati: ' + line, 'err');
     }
     return;
   }
   if (line.startsWith('INFO:')) {
     // Nilai dari device tidak boleh dipercaya buta: parseInt("abc") = NaN, dan
-    // ROWS = NaN membuat Array.from({length: NaN}) -> [] sehingga renderGrid melempar
-    // Cannot read properties of undefined.
-    const num = (v, lo, hi, cur) => { const n = parseInt(v); return (Number.isInteger(n) && n >= lo && n <= hi) ? n : cur; };
+    // ROWS = NaN membuat Array.from({length: NaN}) -> [] sehingga renderGrid melempar.
+    // Validasi + penulisan ada di applyInfo() (device-state.js).
+    const kv = {};
     line.substring(5).split(',').forEach(p => {
-      const [k, v] = p.split('=');
-      if (k === 'layerCount') layerCount = num(v, 1, CAP_LAYERS, layerCount);
-      if (k === 'currentLayer') currentLayer = num(v, 0, layerCount - 1, currentLayer);
-      if (k === 'maxLayers') maxLayers = num(v, 1, CAP_LAYERS, maxLayers);
-      if (k === 'rows') ROWS = num(v, 1, 16, ROWS);
-      if (k === 'cols') COLS = num(v, 1, 16, COLS);
-      if (k === 'encoders') { NUM_ENCODERS = num(v, 1, 8, NUM_ENCODERS); ensureEncConfigSize(); el('deviceEncLabel').textContent = String(NUM_ENCODERS); }
-      el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
+      const eq = p.indexOf('='); if (eq < 0) return;
+      kv[p.substring(0, eq)] = p.substring(eq + 1);
     });
+    applyInfo(kv, { log });
+    el('deviceEncLabel').textContent = String(NUM_ENCODERS);
+    el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
     renderTabs(); loadLayer(currentLayer); sendLine('DUMPNAMES');
     return;
   }
@@ -1476,16 +1461,8 @@ function startTabDrag(e, tabEl, index) {
 
       // Optimistic update data lokal biar konsisten dgn urutan DOM baru,
       // sebelum device benar-benar konfirmasi lewat INFO
-      const name = layerNames[index];
-      const map = mapping[index];
-      if (targetRealIndex > index) {
-        for (let k = index; k < targetRealIndex; k++) { layerNames[k] = layerNames[k + 1]; mapping[k] = mapping[k + 1]; }
-      } else {
-        for (let k = index; k > targetRealIndex; k--) { layerNames[k] = layerNames[k - 1]; mapping[k] = mapping[k - 1]; }
-      }
-      layerNames[targetRealIndex] = name;
-      mapping[targetRealIndex] = map;
-      currentLayer = targetRealIndex;
+      reorderLayer(index, targetRealIndex);
+      setCurrentLayer(targetRealIndex);
       renderGrid();
 
       moveLayerTo(index, targetRealIndex); // sinkron ke device di background
@@ -1602,14 +1579,14 @@ function openEditor(kind, params) {
 // memindahkan layer yang sedang dipakai user di device.
 // Ganti layer sungguhan ditangani switchLayer().
 async function loadLayer(l) {
-  mapping[l] = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  mapping[l] = emptyLayer();
   await sendLine('DUMP:' + l);
 }
 
 // Ganti layer aktif di device DAN muat isinya ke UI. Dipakai saat user menekan tab
 // layer. Jalur baca (EVT:LAYER:, refresh, connect) cukup loadLayer().
 async function switchLayer(l) {
-  currentLayer = l;
+  setCurrentLayer(l);
   renderTabs();
   await sendLine('LAYER:' + l);
   await loadLayer(l);

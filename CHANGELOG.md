@@ -9,7 +9,35 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
+### Changed
+- **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.** `main.js` punya
+  77 `let`/`const` global, dan keadaan yang dilaporkan device (`ROWS`, `COLS`,
+  `NUM_ENCODERS`, `currentLayer`, `layerCount`, `maxLayers`, `mapping`, `layerNames`,
+  `encConfig`) ditulis dari lima tempat berbeda sekaligus. Semuanya kini hidup di satu
+  modul dengan **mutator tervalidasi**:
+  - `applyInfo()` — field numerik `INFO:` dibatasi rentang; nilai buruk dilaporkan, bukan
+    ditelan. Perubahan dimensi juga mengalokasikan ulang `mapping`.
+  - `applyDumpRow()` — indeks layer/baris/kolom/tipe divalidasi; nilai ber-koma tetap
+    utuh karena field terakhir adalah sisa baris.
+  - `applyEncRow()` — allowlist kunci `CW`/`CCW`/`BTN` (menutup prototype pollution).
+  - `applyName()`, `applyLayerEvent()`, `applyEncCount()`, `applyEncIdx()`.
+  - `reorderLayer()` — nama layer dan keymap digeser bersama, tidak terpisah.
+  Nilai diekspor sebagai **live binding**, jadi kode yang hanya membaca tidak berubah;
+  kode yang menulis memakai setter. `main.js` turun dari 1864 ke 1841 baris dan dari 77
+  ke 69 global.
+
 ### Added
+- **Test modul `device-state.js` yang meng-import-nya secara langsung** (sebelumnya test
+  harus menyalin potongan kode keluar dari `main.js` sebagai teks). Karena itu validasi
+  indeks device akhirnya bisa diuji menyeluruh, termasuk kasus yang belum pernah diuji:
+  indeks negatif, `Infinity`, `1.5`, nilai non-numerik, dan percobaan prototype pollution
+  lewat `__proto__` dan `constructor`.
+- Test wiring parser: memastikan `main.js` meneruskan semua baris device ke mutator dan
+  **tidak** menulis langsung ke `mapping`/`encConfig` dari output serial.
+
+### Fixed
+- `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh test
+  wiring sebelum commit.
 - Notifikasi **baterai lemah** (`batt-low`, ≤20%) dan **baterai kritis** (`batt-crit`, ≤10%).
   Sebelumnya tidak ada sama sekali padahal toggle "Notifikasi baterai" sudah menjanjikan
   "Battery Low". Notifikasi hanya dibunyikan saat ambang baru dilewati, bukan tiap `EVT:BATT`
