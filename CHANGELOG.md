@@ -10,6 +10,12 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
+- **Pemeriksaan di `startup-smoke-test.mjs` bahwa setiap fungsi `init*` benar-benar
+  dipanggil.** Dua kali dalam Phase 8 ada fungsi yang diekstrak ke modul tapi tidak
+  pernah dipanggil - `initAdaptivePage()` (polling auto-switch mati) dan
+  `initSidebar()` (toggle sidebar mati). Keduanya lolos build dan lolos 13 suite test,
+  karena tidak ada yang memanggil app-nya. Sekarang setiap `init*` yang dipisah ke
+  modul harus muncul sebagai pemanggilan di `main.js`, dan test gagal kalau tidak.
 - **Test `protocol-parser.js` yang mengurai baris device sungguhan** (15 seksi, format
   baris disalin persis dari `firmware/common/macropad_core.h`). Sekarang yang bisa
   diuji: `INFO:` dengan nilai di luar rentang ditolak tanpa jadi `NaN`, isi `DUMP:`
@@ -52,6 +58,26 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 6: shell UI dipisah jadi tiga modul** - `src/ui-notify.js` (61 baris,
+  notifikasi overlay + setting), `src/ui-modal.js` (74 baris, `showModalBase` /
+  `showPromptModal` / `showConfirmModal` + `clipUtf8`), dan `src/ui-router.js` (50 baris,
+  `switchPage` + sidebar). `main.js` turun dari 833 ke 727 baris.
+  - `settings` dan `saveSettings()` pindah ke `ui-notify.js`; halaman Setting dan parser
+    protokol membacanya dari sana.
+  - Pen-klik sidebar **sengaja diubah**: di `main.js` lama nav-item memanggil
+    `editingPresetId` dan `confirmLeavePresetEditor()` secara langsung, yang membuat
+    router bergantung pada adaptive. Sekarang keduanya jadi hook lewat `initRouter()`.
+    Ini satu-satunya bagian yang bukan perpindahan verbatim, dan test membuktikannya
+    secara semantik.
+- **`shell-ui-diff.js`**: membuktikan blok shell UI di `main.js` versi `885aac7` identik
+  dengan isi modul baru - `switchPage`, toggle sidebar, `showModalBase`,
+  `showPromptModal`, `showConfirmModal`, `clipUtf8`, `describeAction`, dan
+  `notifyBoundAction` semuanya identik setelah normalisasi; `notify()` identik setelah
+  spasi diratakan (penulisan ulang indentasi saja). Test juga memverifikasi kunci
+  `localStorage`, daftar kind yang difilter, dan default hold tidak berubah.
+- **`handleLine-diff.js` dan `shell-ui-diff.js` kini memakai commit eksplisit**, bukan
+  `HEAD`. Kalau pakai `HEAD`, begitu ekstraksi di-commit blok lama sudah tidak ada di
+  sana dan test akan salah melaporkan "blok tidak ditemukan" pada commit berikutnya.
 - **Refactor Tahap 5: parser protokol (handleLine) dipindah ke src/protocol-parser.js**
   (246 baris). Kontrak app<->firmware sekarang ada di satu modul yang bisa diuji tanpa
   browser. main.js turun dari 988 ke 833 baris.

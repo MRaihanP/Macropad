@@ -36,6 +36,11 @@ import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
 // Parser protokol: satu baris dari device -> aksi. Kontrak app<->firmware ada di
 // sini; main.js hanya menyuntikkan fungsi yang menyentuh layar.
 import { initProtocolParser, handleLine, deviceProfile, resetDeviceProfile } from "./protocol-parser.js";
+// Notifikasi overlay, modal, dan router halaman. Masing-masing mandiri; modal
+// dipakai juga oleh adaptive.js lewat hook initAdaptive().
+import { settings, saveSettings, notify, notifyBoundAction } from "./ui-notify.js";
+import { showModalBase, showPromptModal, showConfirmModal, clipUtf8 } from "./ui-modal.js";
+import { switchPage, initSidebar, initRouter } from "./ui-router.js";
 
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
 const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVolumeMute: 'MUTE', MediaPlayPause: 'PLAYPAUSE', MediaTrackNext: 'NEXT', MediaTrackPrevious: 'PREV' };
@@ -59,126 +64,6 @@ function renderDeviceProfileBadge() {
   b.title = sim
     ? 'Firmware prototipe mengirim angka simulasi untuk baterai/RGB. Format pesan sama dengan board final, jadi app tidak perlu diubah.'
     : 'Data dibaca langsung dari hardware';
-}
-
-// Overlay notifikasi (jendela terpisah di Rust, digambar oleh overlay.html)
-// kind: connect | disconnect | layer | preset | key | batt-low | batt-crit | charge | charge-done | info
-// Setting notifikasi (disimpan di localStorage, jadi pilihan user bertahan setelah app ditutup)
-const SETTINGS_KEY = 'macropad.settings';
-const settings = { notifyBasic: true, notifyKeys: true, notifyBattery: true };
-try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch (e) {}
-function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
-// Teks notifikasi per key = aksi yang di-bind pada tombol tersebut
-const CONSUMER_LABEL = { VOLUP: 'Volume +', VOLDOWN: 'Volume −', MUTE: 'Mute', PLAYPAUSE: 'Play/Pause', NEXT: 'Next', PREV: 'Prev' };
-function describeAction(type, value) {
-  const v = (value || '').trim();
-  switch (type) {
-    case 1: case 2: return v;                                          // KEY / COMBO: "1", "CTRL+C"
-    case 3: return v.length > 28 ? v.slice(0, 27) + '…' : v;           // TEXT: teksnya
-    case 4: return CONSUMER_LABEL[v.toUpperCase()] || v;               // CONSUMER: label media
-    case 5: return 'Open ' + v.replace(/\.exe$/i, '');                 // APP: "Open Discord"
-    default: return '';
-  }
-}
-function notifyBoundAction(type, value) {
-  const t = describeAction(type, value);
-  if (t) notify(t, 'key');                                             // tombol kosong: tidak ada notifikasi
-}
-let notifyErrShown = false;
-function notify(text, kind = 'info', opts = {}) {
-  if (!opts.force) {
-    if (kind === 'key' ? !settings.notifyKeys : (kind === 'batt-low' || kind === 'batt-crit' || kind === 'charge' || kind === 'charge-done') ? !settings.notifyBattery : !settings.notifyBasic) return;
-  }
-  const hold = opts.hold || (kind === 'key' ? 1000 : 3000);   // notifikasi per key hanya 1 detik
-  invoke('notify', { text, kind, hold }).catch(e => {
-    console.error('notify gagal:', e);
-    if (!notifyErrShown) { notifyErrShown = true; log('[ERROR] Overlay: ' + e, 'err'); }
-  });
-}
-// deviceWasLost TIDAK dideklarasikan di sini: transport yang menandainya saat device
-// dicabut, dan main.js membacanya untuk membedakan notifikasi "Terhubung" vs
-// "Terhubung kembali". Dua salinan akan membuat yang di sini selalu false.
-
-// ==================== ROUTER HALAMAN ====================
-function switchPage(name, navOverride) {
-  const navName = navOverride || name;
-  document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === navName));
-  document.querySelectorAll('.page').forEach(p => p.style.display = (p.id === 'page-' + name) ? 'block' : 'none');
-}
-document.querySelectorAll('.nav-item').forEach(item => {
-  item.onclick = async () => {
-    const target = item.dataset.page;
-    if (editingPresetId) {
-      if (target === 'adaptive') return; // sudah "di situ" secara konsep, no-op
-      await confirmLeavePresetEditor();
-      return;
-    }
-    switchPage(target);
-  };
-});
-el('btnToggleSidebar').onclick = () => {
-  el('sidebar').classList.toggle('collapsed');
-  try { localStorage.setItem('sidebarCollapsed', el('sidebar').classList.contains('collapsed')); } catch (e) {}
-};
-if (localStorage.getItem('sidebarCollapsed') !== 'false') el('sidebar').classList.add('collapsed');
-
-// ==================== MODAL (pengganti prompt()/confirm() bawaan browser) ====================
-function showModalBase(titleText, bodyHtml, buttons) {
-  return new Promise(resolve => {
-    const overlay = el('modalOverlay');
-    el('modalTitle').textContent = titleText;
-    el('modalBody').innerHTML = bodyHtml;
-    const actions = el('modalActions');
-    actions.innerHTML = '';
-    function close(value) { overlay.classList.remove('show'); document.removeEventListener('keydown', onKey); resolve(value); }
-    function onKey(e) {
-      if (e.key === 'Escape') close(null);
-      if (e.key === 'Enter') {
-        const okBtn = buttons.find(b => b.primary);
-        if (okBtn) close(okBtn.value);
-      }
-    }
-    buttons.forEach(btn => {
-      const b = document.createElement('button');
-      b.textContent = btn.label;
-      if (btn.primary) b.className = 'primary';
-      b.onclick = () => close(btn.value);
-      actions.appendChild(b);
-    });
-    document.addEventListener('keydown', onKey);
-    overlay.classList.add('show');
-    const input = el('modalInput');
-    if (input) { input.focus(); input.select(); }
-  });
-}
-
-async function showPromptModal(title, label, defaultValue) {
-  const bodyHtml = `<div>${escapeHtml(label)}</div><input type="text" id="modalInput" value="${escapeHtml(defaultValue)}">`;
-  const result = await showModalBase(title, bodyHtml, [
-    { label: 'Cancel', value: null },
-    { label: 'OK', value: 'ok', primary: true }
-  ]);
-  if (result !== 'ok') return null;
-  return el('modalInput').value;
-}
-
-function showConfirmModal(title, message, confirmLabel) {
-  return showModalBase(title, escapeHtml(message), [
-    { label: 'Cancel', value: false },
-    { label: confirmLabel || 'OK', value: true, primary: true }
-  ]);
-}
-
-// Firmware menyimpan maksimal 47 byte (MACRO_MAX_LEN 48 termasuk terminator). Potong per karakter utuh.
-function clipUtf8(s, maxBytes = 47) {
-  const enc = new TextEncoder();
-  let out = '', used = 0;
-  for (const ch of s) {
-    const n = enc.encode(ch).length;
-    if (used + n > maxBytes) break;
-    out += ch; used += n;
-  }
-  return out;
 }
 
 // ==================== DAFTAR APLIKASI (dikelola Rust: cache + TTL di file) ====================
@@ -602,6 +487,15 @@ initAdaptive({
 });
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);
+
+// Router butuh dua hal dari adaptive: saat mode edit preset, pindah halaman berarti
+// meninggalkan draft. Hook-nya dipasang lebih dulu, karena initSidebar() yang
+// memasang pen-klik sidebar memakainya.
+initRouter({
+  confirmLeavePresetEditor: () => confirmLeavePresetEditor(),
+  editingPreset: () => !!editingPresetId,
+});
+initSidebar();
 
 // Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
 // sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
