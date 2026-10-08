@@ -11,7 +11,7 @@ import {
   setCurrentLayer, setNumEncoders, setMapping, setLayerNames, setEncParseIdx, resetEncParse,
   ensureEncConfigSize, emptyLayer,
   applyInfo, applyDumpRow, applyEncRow, applyName, applyLayerEvent, applyEncCount, applyEncIdx,
-  reorderLayer,
+  reorderLayer, TYPE_NAMES,
 } from "./device-state.js";
 // Helper DOM dan seluruh logika halaman RGB dipisah ke modul sendiri. Halaman RGB
 // membaca state dari device (RGB_DUMP/RGB_KEY), bukan dari default app.
@@ -31,8 +31,19 @@ import {
   setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
   isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
 } from "./serial-transport.js";
+// Adaptive Key Bind: manajemen preset + runtime auto-switch.
+import {
+  initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
+  resetAdaptiveRuntimeState, confirmLeavePresetEditor,
+  suppressDeviceEcho, activePresetName, activePresetLayers, resolveDumpWaiters,
+  handleEscapeGesture,
+} from "./adaptive.js";
+// Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
+import {
+  initBatteryUi, battUI, updateBatteryUI, setBatteryFromKv, setChargeState,
+  markBatterySimulated, clearBattery,
+} from "./battery-ui.js";
 
-const TYPE_NAMES = ["NONE", "KEY", "COMBO", "TEXT", "CONSUMER", "APP"];
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
 const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVolumeMute: 'MUTE', MediaPlayPause: 'PLAYPAUSE', MediaTrackNext: 'NEXT', MediaTrackPrevious: 'PREV' };
 const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
@@ -278,342 +289,6 @@ el('btnAddExe').onclick = async () => {
 el('btnRescanApps').onclick = () => openAppPicker(true);
 el('appTtl').onchange = () => invoke('apps_set_ttl', { days: parseInt(el('appTtl').value) });
 
-// ==================== ADAPTIVE KEY BIND — Manajemen Preset ====================
-// Adaptive Key Bind aktif secara bawaan. Disimpan ke presets.json lewat
-// presets_save, jadi pilihan user bertahan setelah app ditutup.
-let presetsData = { masterEnabled: true, presets: [] };
-let editingPresetId = null;
-let bindableAppsCache = null;
-const dumpWaiters = new Map();   // layer -> { resolve, timer }
-
-function presetColor(seed) {
-  let hash = 0;
-  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return `hsl(${hash % 360}, 55%, 42%)`;
-}
-
-async function loadPresets() {
-  try { presetsData = await invoke('presets_get'); }
-  catch (e) { log('[ERROR] Gagal memuat preset: ' + e, 'err'); presetsData = { masterEnabled: true, presets: [] }; }
-  el('masterEnabledToggle').checked = presetsData.masterEnabled;
-  renderPresetList();
-}
-
-el('masterEnabledToggle').onchange = async (e) => {
-  presetsData.masterEnabled = e.target.checked;
-  await invoke('presets_save', { data: presetsData });
-  if (!presetsData.masterEnabled && currentActivePresetId && isConnected() && !editingPresetId) {
-    await sendLine('CONTEXT:DEFAULT');
-    currentActivePresetId = null;
-    updateActivePresetLabel();
-    log('[ADAPT] Fitur dimatikan, kembali ke Default Preset', null);
-  }
-};
-
-function renderPresetList() {
-  const box = el('presetList');
-  box.innerHTML = '';
-  if (presetsData.presets.length === 0) {
-    box.innerHTML = '<div class="hint">Belum ada preset. Klik "+ Tambah preset" di bawah.</div>';
-    return;
-  }
-  presetsData.presets.forEach(preset => {
-    const initial = (preset.name || '?').trim().charAt(0).toUpperCase() || '?';
-    const row = document.createElement('div');
-    row.className = 'preset-row';
-    row.innerHTML = `
-      <div class="preset-avatar" style="background:${presetColor(preset.name || preset.id)}">${escapeHtml(initial)}</div>
-      <div class="preset-info">
-        <div class="preset-name">${escapeHtml(preset.name)}</div>
-        <div class="preset-app">${escapeHtml(preset.exeName)}</div>
-      </div>
-      <div class="preset-actions">
-        <label class="toggle-switch"><input type="checkbox" class="preset-toggle-input" ${preset.enabled ? 'checked' : ''}><span class="toggle-slider"></span></label>
-        <button class="small preset-rename">✎</button>
-        <button class="small preset-delete">✕</button>
-      </div>`;
-    row.querySelector('.preset-info').onclick = () => openPresetEditor(preset.id);
-    row.querySelector('.preset-avatar').onclick = () => openPresetEditor(preset.id);
-    row.querySelector('.preset-toggle-input').onchange = (e) => togglePresetEnabled(preset.id, e.target.checked, e.target);
-    row.querySelector('.preset-rename').onclick = () => renamePreset(preset.id);
-    row.querySelector('.preset-delete').onclick = () => deletePreset(preset.id);
-    box.appendChild(row);
-  });
-}
-
-async function togglePresetEnabled(id, checked, checkboxEl) {
-  const preset = presetsData.presets.find(p => p.id === id);
-  if (!preset) return;
-  if (checked) {
-    const conflict = presetsData.presets.find(p => p.id !== id && p.enabled && p.exeName === preset.exeName);
-    if (conflict) {
-      const ok = await showConfirmModal('Ganti preset aktif',
-        `"${conflict.name}" sudah aktif untuk aplikasi yang sama. Aktifkan "${preset.name}" dan nonaktifkan "${conflict.name}"?`, 'Ganti');
-      if (!ok) { checkboxEl.checked = false; return; }
-      conflict.enabled = false;
-    }
-  }
-  preset.enabled = checked;
-  await invoke('presets_save', { data: presetsData });
-
-  if (!checked && currentActivePresetId === id && isConnected() && !editingPresetId) {
-    await sendLine('CONTEXT:DEFAULT');
-    currentActivePresetId = null;
-    updateActivePresetLabel();
-    log('[ADAPT] Preset dinonaktifkan selagi aktif, kembali ke Default Preset', null);
-  }
-
-  renderPresetList();
-}
-
-async function renamePreset(id) {
-  const preset = presetsData.presets.find(p => p.id === id);
-  if (!preset) return;
-  const name = await showPromptModal('Rename preset', 'Nama preset:', preset.name);
-  if (name === null || !name.trim()) return;
-  preset.name = name.trim();
-  await invoke('presets_save', { data: presetsData });
-  renderPresetList();
-}
-
-async function deletePreset(id) {
-  const preset = presetsData.presets.find(p => p.id === id);
-
-  if (currentActivePresetId === id && isConnected() && !editingPresetId) {
-    await sendLine('CONTEXT:DEFAULT');
-    currentActivePresetId = null;
-    updateActivePresetLabel();
-  }
-
-  if (!preset) return;
-  if (!(await showConfirmModal('Hapus preset', `Hapus preset "${preset.name}"? Tidak bisa dibatalkan.`, 'Hapus'))) return;
-  presetsData.presets = presetsData.presets.filter(p => p.id !== id);
-  await invoke('presets_save', { data: presetsData });
-  renderPresetList();
-}
-
-// ---- Picker aplikasi KHUSUS binding preset (Rust: scan_bindable_apps, exe name tanpa perlu app dibuka) ----
-async function getBindableApps(force) {
-  if (bindableAppsCache && !force) return bindableAppsCache;
-  bindableAppsCache = await invoke('scan_bindable_apps');
-  return bindableAppsCache;
-}
-
-function pickBindableApp() {
-  return new Promise(async (resolve) => {
-    const overlay = el('modalOverlay');
-    el('modalTitle').textContent = 'Pilih aplikasi untuk preset';
-    el('modalBody').innerHTML = `
-      <input type="text" id="bindAppSearch" placeholder="Cari aplikasi..." style="width:100%; margin-bottom:8px;">
-      <div class="app-list" id="bindAppList" style="max-height:240px;"></div>
-      <button class="small" id="btnBindAppBrowse" style="margin-top:8px;">Browse .exe manual...</button>`;
-    el('modalActions').innerHTML = '';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Batal';
-    cancelBtn.onclick = () => close(null);
-    el('modalActions').appendChild(cancelBtn);
-
-    function close(value) { overlay.classList.remove('show'); document.removeEventListener('keydown', onKey); resolve(value); }
-    function onKey(e) { if (e.key === 'Escape') close(null); }
-    document.addEventListener('keydown', onKey);
-
-    el('bindAppList').innerHTML = '<div class="hint">Memindai...</div>';
-    overlay.classList.add('show');
-    const apps = await getBindableApps();
-
-    function renderList(filter) {
-      const q = (filter || '').toLowerCase();
-      const listEl = el('bindAppList');
-      listEl.innerHTML = '';
-      const matches = apps.filter(a => a.name.toLowerCase().includes(q)).slice(0, 80);
-      if (matches.length === 0) { listEl.innerHTML = '<div class="hint">Tidak ada yang cocok.</div>'; return; }
-      matches.forEach(a => {
-        const b = document.createElement('button');
-        b.className = 'app-item';
-        b.textContent = a.name;
-        b.onclick = () => close({ name: a.name, exeName: a.exeName });
-        listEl.appendChild(b);
-      });
-    }
-    renderList('');
-    el('bindAppSearch').oninput = (e) => renderList(e.target.value);
-    el('btnBindAppBrowse').onclick = async () => {
-      try {
-        const picked = await invoke('apps_pick_exe');
-        if (picked) close({ name: picked.name, exeName: picked.path.split(/[\\/]/).pop() });
-      } catch (e) {}
-    };
-  });
-}
-
-el('btnAddPreset').onclick = async () => {
-  const picked = await pickBindableApp();
-  if (!picked) return;
-  const name = await showPromptModal('Nama preset', 'Nama preset:', picked.name);
-  if (name === null || !name.trim()) return;
-  const id = 'preset_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-  const conflict = presetsData.presets.find(p => p.enabled && p.exeName === picked.exeName);
-  const newPreset = { id, name: name.trim(), exeName: picked.exeName, enabled: !conflict, layers: [] };
-  presetsData.presets.push(newPreset);
-  await invoke('presets_save', { data: presetsData });
-  if (conflict) log(`[PRESET] "${newPreset.name}" dibuat nonaktif — "${conflict.name}" sudah aktif untuk app yang sama.`, null);
-  renderPresetList();
-  openPresetEditor(id);
-};
-
-// ---- Masuk/keluar mode edit preset (reuse Home sepenuhnya) ----
-// Waiter DUMP dipeta per layer, bukan satu slot global. Dengan satu slot, dump
-// latar belakang (mis. dari EVT:LAYER:) yang selesai lebih dulu akan me-resolve
-// waiter packer, sehingga packCurrentAsPresetLayers() membaca mapping yang belum
-// terisi penuh dan menyimpan preset setengah jadi ke disk.
-//
-// Tiap layer boleh punya BANYAK waiter (Set, bukan satu entri): kalau hanya satu
-// entri per layer, waiter kedua akan menggantikan yang pertama tanpa
-// me-resolve-nya, sehingga pemanggil pertama menggantung selamanya.
-// Tiap waiter juga punya timeout supaya tidak menggantung kalau device menjawab
-// [ERROR] alih-alih DUMP_END (mis. layerCount UI basi setelah RESET di luar app).
-function waitForDump(layer, timeoutMs) {
-  const key = (layer === undefined || layer === null || Number.isNaN(layer)) ? currentLayer : layer;
-  return new Promise((resolve) => {
-    const entry = { resolve: null, timer: null };
-    entry.resolve = (okFlag) => {
-      if (entry.timer) clearTimeout(entry.timer);
-      const set = dumpWaiters.get(key);
-      if (set) { set.delete(entry); if (!set.size) dumpWaiters.delete(key); }
-      resolve(okFlag);
-    };
-    entry.timer = setTimeout(() => {
-      log('[ERROR] Timeout menunggu DUMP_END untuk layer ' + key, 'err');
-      entry.resolve(false);
-    }, timeoutMs || 3000);
-    if (!dumpWaiters.has(key)) dumpWaiters.set(key, new Set());
-    dumpWaiters.get(key).add(entry);
-  });
-}
-
-async function fetchAllLayersForPacking() {
-  for (let l = 0; l < layerCount; l++) {
-    // Tidak mengirim LAYER: dan tidak perlu jeda. DUMP:<n> membaca layer n tanpa
-    // memindahkan layer aktif device, jadi layer yang sedang dipakai user tidak
-    // ikut berubah. Timeout mencegah menggantung jika device tidak menjawab.
-    const waiter = waitForDump(l, 3000);
-    await sendLine('DUMP:' + l);
-    await waiter;
-  }
-}
-
-function packCurrentAsPresetLayers() {
-  const layers = [];
-  for (let l = 0; l < layerCount; l++) {
-    const keys = [];
-    for (let r = 0; r < ROWS; r++) {
-      const row = [];
-      for (let c = 0; c < COLS; c++) {
-        const d = (mapping[l] && mapping[l][r] && mapping[l][r][c]) || { type: 0, value: '' };
-        row.push({ type: d.type, value: d.value || '' });
-      }
-      keys.push(row);
-    }
-    const encCw = [], encCcw = [], encBtn = [];
-    for (let i = 0; i < NUM_ENCODERS; i++) {
-      const e = encConfig[i] || {};
-      encCw.push(e.CW ? { type: e.CW.type, value: e.CW.value } : { type: 0, value: '' });
-      encCcw.push(e.CCW ? { type: e.CCW.type, value: e.CCW.value } : { type: 0, value: '' });
-      encBtn.push(e.BTN ? { type: e.BTN.type, value: e.BTN.value } : { type: 0, value: '' });
-    }
-    layers.push({ name: layerNames[l] || ('Layer ' + l), keys, encCw, encCcw, encBtn });
-  }
-  return layers;
-}
-
-async function openPresetEditor(id) {
-  if (!isConnected()) { log('[ERROR] Hubungkan device dulu untuk edit preset', 'err'); return; }
-  const preset = presetsData.presets.find(p => p.id === id);
-  if (!preset) return;
-  editingPresetId = id;
-  currentActivePresetId = null; // sedang DIEDIT, bukan lagi "auto-matched" — biar label & poll loop tidak bingung
-  updateActivePresetLabel();
-  el('presetEditName').textContent = preset.name;
-  el('presetEditBanner').style.display = 'flex';
-  el('btnSave').style.display = 'none'; // SAVE (flash) tidak relevan selagi edit App Preset
-
-  switchPage('home', 'adaptive'); // tampilkan Home, tapi highlight sidebar tetap di Adaptive
-
-  await sendLine('CONTEXT:APP:NEW');
-  await replayPresetLayers(preset);
-  await sendLine('LAYER:0');
-  await sendLine('INFO');
-  await sendLine('DUMPENC');
-}
-
-async function exitPresetEditor() {
-  editingPresetId = null;
-  el('presetEditBanner').style.display = 'none';
-  el('btnSave').style.display = '';
-  resetEditorState();
-  await sendLine('CONTEXT:DEFAULT');
-  await sendLine('INFO');
-  await sendLine('DUMPENC');
-  switchPage('adaptive');
-  renderPresetList();
-
-  updateActivePresetLabel();
-}
-
-async function confirmLeavePresetEditor() {
-  if (!dirty) { await exitPresetEditor(); return; }
-  const choice = await showModalBase(
-    'Ada perubahan belum disimpan',
-    'Preset ini punya perubahan yang belum disimpan. Simpan dulu sebelum keluar?',
-    [
-      { label: 'Cancel', value: 'cancel' },
-      { label: "Don't Save", value: 'discard' },
-      { label: 'Save', value: 'save', primary: true }
-    ]
-  );
-  if (choice === 'save') {
-    const preset = presetsData.presets.find(p => p.id === editingPresetId);
-    if (preset) {
-      await fetchAllLayersForPacking();
-      preset.layers = packCurrentAsPresetLayers();
-      await invoke('presets_save', { data: presetsData });
-      log(`[PRESET] "${preset.name}" tersimpan`, 'ok');
-    }
-    dirty = false;
-    await exitPresetEditor();
-  } else if (choice === 'discard') {
-    dirty = false;
-    await exitPresetEditor();
-  }
-  // 'cancel'/Escape: tidak melakukan apapun, tetap di editor
-}
-
-el('btnPresetEditDone').onclick = async () => {
-  if (!editingPresetId) return;
-  const preset = presetsData.presets.find(p => p.id === editingPresetId);
-  if (preset) {
-    await fetchAllLayersForPacking();
-    preset.layers = packCurrentAsPresetLayers();
-    await invoke('presets_save', { data: presetsData });
-    log(`[PRESET] "${preset.name}" tersimpan (${preset.layers.length} layer)`, 'ok');
-  }
-  await exitPresetEditor();
-};
-el('btnPresetEditCancel').onclick = async () => {
-  if (await showConfirmModal('Batalkan edit', 'Perubahan pada preset ini TIDAK akan disimpan. Yakin batal?', 'Batal edit')) {
-    await exitPresetEditor();
-  }
-};
-
-// ==================== ADAPTIVE KEY BIND — Runtime Auto-Switch ====================
-let currentActivePresetId = null;
-let focusedExeLast = null;
-let pendingFocusSince = 0;
-let escapeFrozenForExe = null;
-let autoSwitchBusy = false;
-const FOCUS_DEBOUNCE_MS = 150;
-const FOCUS_POLL_MS = 120;
-
 function syncGlobalToggles() {
   el('masterEnabledToggle').checked = presetsData.masterEnabled;
   if (el('globalAdaptiveToggle')) el('globalAdaptiveToggle').checked = presetsData.masterEnabled;
@@ -628,169 +303,6 @@ function syncGlobalToggles() {
   }
 }
 
-// Status baterai & charger. Sumbernya firmware lewat EVT:BATT / EVT:CHG - bukan
-// angka buatan app. Pada board PROTOTYPE firmware mengirim angka simulasi, dan
-// deviceProfile.simulated membuat UI menandai demikian supaya tidak tertukar
-// dengan data hardware asli.
-let battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
-// Level ambang baterai yang terakhir dinotifikasi ('low' | 'crit' | null).
-let battNotifLevel = null;
-function updateBatteryUI() {
-  const ind = el('battInd'); if (!ind) return;
-  if (battUI.pct === null) {
-    el('battPct').textContent = '--';
-    el('battFill').style.transform = 'scaleX(0.02)';
-    el('battBolt').style.display = 'none';
-    ind.classList.remove('low', 'crit');
-    return;
-  }
-  el('battPct').textContent = battUI.pct + '%';
-  el('battFill').style.transform = `scaleX(${Math.max(0.02, battUI.pct / 100)})`;
-  ind.classList.toggle('low', battUI.pct <= 20 && battUI.pct > 10);
-  ind.classList.toggle('crit', battUI.pct <= 10);
-  el('battBolt').style.display = battUI.charging ? 'block' : 'none';
-  ind.title = battUI.simulated
-    ? `Data SIMULASI (firmware prototipe)${battUI.mv !== null ? ` - ${battUI.mv} mV` : ''}`
-    : (battUI.mv !== null ? `${battUI.mv} mV` : 'Baterai');
-  // Notifikasi baterai lemah hanya saat ambang baru dil-crossing sekali, bukan
-  // setiap EVT:BATT (yang datang tiap 5 detik). Tanpa ini notifikasi muncul terus.
-  // Reset saat baterai naik lagi atau saat sedang mengecas supaya peringatan
-  // bisa berbunyi lagi di siklus berikutnya.
-  const lvl = battUI.pct <= 10 ? 'crit' : (battUI.pct <= 20 ? 'low' : 'ok');
-  if (battUI.charging || lvl === 'ok') battNotifLevel = null;
-  else if (lvl !== battNotifLevel) {
-    battNotifLevel = lvl;
-    if (lvl === 'crit') notify(`Baterai kritis: ${battUI.pct}%`, 'batt-crit', { hold: 8000 });
-    else notify(`Baterai lemah: ${battUI.pct}%`, 'batt-low', { hold: 6000 });
-  }
-}
-setTimeout(updateBatteryUI, 0);
-function updateActivePresetLabel() {
-  const label = el('deviceActivePresetLabel');
-  if (!label) return;
-  if (currentActivePresetId) {
-    const p = presetsData.presets.find(x => x.id === currentActivePresetId);
-    label.textContent = p ? p.name : 'App Preset';
-  } else {
-    label.textContent = 'Default';
-  }
-}
-
-// Replay layer demi layer ke device — dipakai SAMA baik pas edit (openPresetEditor)
-// maupun runtime auto-switch (activatePresetRuntime), biar tidak dobel logic.
-async function replayPresetLayers(preset) {
-  for (let li = 0; li < preset.layers.length; li++) {
-    if (li > 0) await sendLine('ADDLAYER');
-    const layer = preset.layers[li];
-    await sendLine(`RENAMELAYER:${li}:${layer.name}`);
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const k = layer.keys?.[r]?.[c];
-      if (k && k.type !== 0) await sendLine(`SET:${li}:${r}:${c}:${TYPE_NAMES[k.type]}:${k.value}`);
-    }
-    for (let i = 0; i < NUM_ENCODERS; i++) {
-      const cw = layer.encCw?.[i], ccw = layer.encCcw?.[i], btn = layer.encBtn?.[i];
-      if (cw && cw.type) await sendLine(`SETENC:${i}:CW:${TYPE_NAMES[cw.type]}:${cw.value}`);
-      if (ccw && ccw.type) await sendLine(`SETENC:${i}:CCW:${TYPE_NAMES[ccw.type]}:${ccw.value}`);
-      if (btn && btn.type) await sendLine(`SETENC:${i}:BTN:${TYPE_NAMES[btn.type]}:${btn.value}`);
-    }
-  }
-}
-
-// ---- Cache slot di firmware: preset di-upload SEKALI (batch), switch berikutnya = 1 command ----
-const APP_SLOTS = 6;                       // harus sama dengan APP_SLOTS di firmware
-let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
-let slotTick = 0;
-let quietOkUntil = 0;                      // sembunyikan balasan [OK]/[LAYER] selama batch runtime
-
-const presetSig = p => JSON.stringify([p.layers, NUM_ENCODERS]);
-
-function buildPresetLines(preset, slot) {
-  const L = [`SLOT:${slot}:NEW`];
-  for (let li = 0; li < preset.layers.length; li++) {
-    if (li > 0) L.push('ADDLAYER');
-    const layer = preset.layers[li];
-    L.push(`RENAMELAYER:${li}:${layer.name}`);
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const k = layer.keys?.[r]?.[c];
-      if (k && k.type !== 0) L.push(`SET:${li}:${r}:${c}:${TYPE_NAMES[k.type]}:${k.value}`);
-    }
-    for (let i = 0; i < NUM_ENCODERS; i++) {
-      for (const [key, name] of [['encCw', 'CW'], ['encCcw', 'CCW'], ['encBtn', 'BTN']]) {
-        const a = layer[key]?.[i];
-        if (a && a.type) L.push(`SETENC:${i}:${name}:${TYPE_NAMES[a.type]}:${a.value}`);
-      }
-    }
-  }
-  return L;
-}
-
-async function activatePresetRuntime(preset, exe) {
-  const sig = presetSig(preset);
-  let slot = slotTable.findIndex(s => s && s.id === preset.id);
-  const cached = slot >= 0 && slotTable[slot].sig === sig;
-  if (slot < 0) {
-    slot = 0; let best = Infinity;                       // slot kosong dulu, kalau penuh buang yang paling lama dipakai
-    slotTable.forEach((s, i) => { const u = s ? s.used : -1; if (u < best) { best = u; slot = i; } });
-  }
-  quietOkUntil = Date.now() + 500;
-  const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
-  lines.push('INFO', 'DUMPENC');
-  slotTable[slot] = null;                                // anggap belum valid sampai write sukses
-  await sendBatch(lines);
-  slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
-  currentActivePresetId = preset.id;
-  updateActivePresetLabel();
-  log(`[ADAPT] Preset aktif: "${preset.name}" (${exe})${cached ? ' · cache' : ''}`, 'ok');
-  notify(`Preset: ${preset.name}`, 'preset');
-}
-
-let pollInFlight = false;
-async function pollFocusedApp() {
-  if (pollInFlight) return;
-  if (!presetsData.masterEnabled || !isConnected() || editingPresetId || autoSwitchBusy) return;
-  pollInFlight = true;
-  try {
-    let exe;
-    try { exe = await invoke('get_foreground_exe'); } catch (e) { return; }
-    if (!exe) return;
-
-    if (exe !== focusedExeLast) {
-      focusedExeLast = exe;
-      pendingFocusSince = Date.now();
-      if (escapeFrozenForExe && escapeFrozenForExe !== exe) escapeFrozenForExe = null;
-      return; // debounce: window harus stabil dulu (alt+tab cepat melewati app perantara tidak dihitung)
-    }
-    if (Date.now() - pendingFocusSince < FOCUS_DEBOUNCE_MS) return;
-    if (escapeFrozenForExe === exe) return;
-
-    const matched = presetsData.presets.find(p => p.enabled && p.exeName === exe);
-    const targetId = matched ? matched.id : null;
-    if (targetId === currentActivePresetId) return;
-
-    autoSwitchBusy = true;
-    try {
-      if (matched) {
-        await activatePresetRuntime(matched, exe);
-      } else {
-        quietOkUntil = Date.now() + 500;
-        await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
-        currentActivePresetId = null;
-        updateActivePresetLabel();
-        log('[ADAPT] Kembali ke Default Preset', null);
-        notify('Preset: Default', 'preset');
-      }
-    } finally { autoSwitchBusy = false; }
-  } finally { pollInFlight = false; }
-}
-
-function resetAdaptiveRuntimeState() {
-  slotTable = Array(APP_SLOTS).fill(null);
-  currentActivePresetId = null; focusedExeLast = null; escapeFrozenForExe = null; pendingFocusSince = 0;
-  updateActivePresetLabel();
-}
-
-setInterval(pollFocusedApp, FOCUS_POLL_MS);
-
 function handleLine(line) {
   line = line.trim();
   if (!line) return;
@@ -799,9 +311,12 @@ function handleLine(line) {
   let mm;
   if ((mm = line.match(/^\[LAYER\] Pindah ke layer (\d+)/))) {
     const n = parseInt(mm[1]);
-    const ap = currentActivePresetId ? presetsData.presets.find(x => x.id === currentActivePresetId) : null;
-    const pname = ap ? ap.name : 'Default';
-    const lname = (ap ? ap.layers?.[n]?.name : layerNames[n]) || ('Layer ' + n);
+    // Saat preset aktif, nama layer diambil dari preset itu - device hanya tahu
+    // layer sebagai nomor, dan nomor itu milik preset aktif, bukan preset default.
+    const ap = activePresetName();
+    const apLayers = activePresetLayers();
+    const pname = ap || 'Default';
+    const lname = (apLayers ? apLayers[n]?.name : layerNames[n]) || ('Layer ' + n);
     notify(`${pname} · ${lname}`, 'layer');
   } else if ((mm = line.match(/^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$/))) {
     // Format ringkas dari firmware: layer,row,col,type,value. Notifikasi hanya
@@ -814,7 +329,9 @@ function handleLine(line) {
     const a = encConfig[mm ? +mm[1] : 0]?.BTN;                         // knob utama (index 0) mencetak tanpa nomor
     if (a) notifyBoundAction(a.type, a.value);
   }
-  if (Date.now() < quietOkUntil && (line.startsWith('[OK]') || line.startsWith('[LAYER]'))) return;
+  // Selama upload batch preset, device membalas banyak baris [OK] yang tidak perlu
+  // masuk panel log. Jendelanya dimiliki adaptive.js karena dia yang memulai batch.
+  if (suppressDeviceEcho() && (line.startsWith('[OK]') || line.startsWith('[LAYER]'))) return;
 
   if (line.startsWith('EVT:APP:')) {
     if (eventsSuppressed()) { log('[APP] Event lama diabaikan'); return; }
@@ -826,16 +343,9 @@ function handleLine(line) {
   }
 
   if (line === 'EVT:ESCAPE') {
-    if (editingPresetId) {
-      sendLine('CONTEXT:APP:RESUME');
-      log('[PRESET] Gestur escape diabaikan selama mode edit (draft tetap aman).', null);
-    } else if (currentActivePresetId) {
-      escapeFrozenForExe = focusedExeLast;
-      notify('Preset: Default', 'preset');
-      currentActivePresetId = null;
-      updateActivePresetLabel();
-      log(`[ADAPT] Escape manual — auto-switch dibekukan untuk "${focusedExeLast}" sampai window lain difokuskan.`, null);
-    }
+    // Logika escape (bekukan auto-switch / tolak saat mode edit) milik adaptive.js
+    // karena ia yang memegang state preset aktif dan mode edit.
+    handleEscapeGesture();
     return;
   }
 
@@ -854,11 +364,11 @@ function handleLine(line) {
   if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpParseLayer = parseInt(line.substring(11)); return; }
   if (line === 'DUMP_END') {
     setDumpInProgress(false); renderGrid();
-    // Resolve waiter milik layer yang benar-benar didump.
+    // Resolve waiter milik layer yang benar-benar didump. Waiter-nya dimiliki
+    // adaptive.js (dia yang menunggunya), tapi pemicunya baris di sini.
     const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
     dumpParseLayer = NaN;
-    const set = dumpWaiters.get(done);
-    if (set) [...set].forEach(e => e.resolve(true));
+    resolveDumpWaiters(done);
     return;
   }
   if (dumpInProgress) {
@@ -900,29 +410,22 @@ function handleLine(line) {
       deviceProfile[k] = /^-?\d+$/.test(v) ? parseInt(v) : v;
     });
     if (deviceProfile.encoders) setNumEncoders(deviceProfile.encoders);
-    battUI.simulated = deviceProfile.simulated === 1;
+    markBatterySimulated(deviceProfile.simulated === 1);
     log(`[HW] Profil ${deviceProfile.profile} - rgb=${deviceProfile.rgb} vdiv=${deviceProfile.vdiv} chg=${deviceProfile.chg}` + (battUI.simulated ? ' (data simulasi)' : ''));
     renderDeviceProfileBadge();
-    updateBatteryUI();
     return;
   }
   if (line.startsWith('EVT:BATT:')) {
     const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
-    if (kv.pct !== undefined) battUI.pct = parseInt(kv.pct);
-    if (kv.mv !== undefined) battUI.mv = parseInt(kv.mv);
-    if (kv.charging !== undefined) battUI.charging = kv.charging === '1';
-    if (kv.usb !== undefined) battUI.usb = kv.usb === '1';
     if (kv.profile !== undefined) deviceProfile.profile = kv.profile;
-    updateBatteryUI();
+    setBatteryFromKv(kv);
     return;
   }
   if (line.startsWith('EVT:CHG:')) {
     const m = line.match(/state=(\d+)/);
     if (m) {
       const st = parseInt(m[1]);
-      battUI.chargeState = st;
-      battUI.charging = st === 1;
-      updateBatteryUI();
+      setChargeState(st);
       // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
       // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
       // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
@@ -1251,6 +754,23 @@ document.querySelectorAll('#consumerButtons button').forEach(b => {
   b.onclick = () => { recordTokens = [b.dataset.val]; el('editValue').value = b.dataset.val; updateEditorFieldsVisibility(); };
 });
 
+// ==================== SAMBUNGKAN MODUL LAIN ====================
+
+// adaptive.js tidak memanggil fungsi main.js secara langsung - navigasi halaman,
+// modal, notifikasi, dan flag "belum disimpan" semuanya disuntikkan di sini.
+initAdaptive({
+  switchPage,
+  showConfirmModal,
+  showPromptModal,
+  showModalBase,
+  notify,
+  resetEditorState,
+  isDirty: () => dirty,
+  setDirty: (v) => { dirty = !!v; },
+});
+// Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
+initBatteryUi(notify);
+
 // ==================== SAMBUNGKAN TRANSPORT ====================
 // serial-transport.js tidak tahu apa pun soal isi config, layer, atau preset, dan
 // juga tidak memanggil fungsi main.js secara langsung. Semua sisi aplikasi
@@ -1270,9 +790,8 @@ initTransport({
     // (dan badge SIMULASI) serta meter baterai harus ikut kosong, kalau tidak user
     // mengira device masih hidup dan tegangan terkahoir.
     deviceProfile = { connected: false };
-    battUI = { pct: null, mv: null, charging: false, usb: false, chargeState: 0, simulated: false };
+    clearBattery();
     renderDeviceProfileBadge();
-    updateBatteryUI();
   },
   // Saat koneksi putus, state yang BARU BOLEH ada di device hilang sekalian -
   // tidak ada yang perlu "menunggu upload", karena isi RAM device ikut hilang.
@@ -1335,6 +854,10 @@ el('btnApply').onclick = async () => {
 
 renderTabs(); renderGrid(); renderEncoderList();
 autoDetect();
+// initAdaptivePage() memasang kontrol preset (tambah/rename/hapus, tombol Done/Cancel
+// editor) DAN memulai polling window foreground. Kalau ini terlewat, daftar preset
+// tetap tampil tapi tidak pernah auto-switch.
+initAdaptivePage();
 loadPresets();
 
 // ==================== PAGE SETTING ====================

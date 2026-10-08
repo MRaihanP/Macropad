@@ -10,6 +10,16 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
+- **Test kontrak Adaptive** (`adaptive-contract-test.js`) yang membandingkan perintah serial
+  dan perintah bertemplate yang dikirim blok Adaptive versi lama (diambil dari `git show`)
+  dengan `src/adaptive.js` sekarang. Tujuannya menangkap `await sendLine(...)` yang hilang
+  diam-diam saat pemindahan kode — tidak ada error build yang akan memberi tahu.
+  Test ini juga memverifikasi tidak ada fungsi global `main.js` yang bocor ke `adaptive.js`.
+- **Test `battery-ui.js`** (63 pemeriksaan) yang mengimpor modul sungguhan dengan stub DOM.
+  Fokusnya logika ambang: `EVT:BATT` datang tiap 5 detik, jadi notifikasi hanya boleh
+  berbunyi saat ambang **baru** dil-crossing. Diuji juga batas 20%/10%, reset ambang saat
+  baterai naik atau mulai mengecas, pemisahan `EVT:CHG` (charging) dari `EVT:BATT`,
+  badge SIMULASI prototipe, dan penolakan nilai tidak valid dari device.
 - **Test modul `serial-transport.js` yang mengimpor modul sungguhan** dengan stub plugin
   serial (dipasang lewat `node:module` `registerHooks`, tanpa mengubah berkas sumber).
   Sekarang alur yang tadinya mustahil diuji bisa diperiksa: urutan handshake saat connect,
@@ -29,6 +39,23 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 4: Adaptive Key Bind dipindah ke `src/adaptive.js`** (554 baris) dan
+  indikator baterai ke `src/battery-ui.js` (99 baris). `main.js` turun dari 1465 ke 988 baris.
+  - `adaptive.js` memegang seluruh fitur App Preset: manajemen (buat, ubah nama, hapus,
+    aktif/nonaktif, editor) plus runtime auto-switch (polling window foreground, cache slot
+    firmware, gestur escape) dan waiter `DUMP` per-layer.
+  - `battery-ui.js` sebelumnya terselip di tengah blok runtime Adaptive padahal tidak ada
+    hubungan sama sekali dengan preset. Sekarang terpisah, dan angka dari device divalidasi.
+  - `TYPE_NAMES` pindah ke `device-state.js` karena dipakai editor di `main.js` maupun
+    uploader preset di `adaptive.js`; dua salinan berisiko berbeda diam-diam.
+- Modul baru tidak memanggil fungsi `main.js` secara langsung. Semuanya lewat
+  `initAdaptive({ switchPage, showConfirmModal, showPromptModal, showModalBase, notify,
+  resetEditorState, isDirty, setDirty })`. Test kontrak memverifikasi tidak ada satu pun
+  fungsi global `main.js` yang bocor ke `adaptive.js`.
+- `initBatteryUi(notify)` menyuntikkan fungsi notifikasi ke `battery-ui.js` supaya ambang
+  `batt-low`/`batt-crit` tetap berbunyi tanpa `main.js` yang harus mengimbal modul.
+- Render pertama indikator baterai dipulihkan (`setTimeout(updateBatteryUI, 0)`) — sempat
+  hilang saat ekstraksi karena berada di baris paling akhir blok lama.
 - **Refactor Tahap 3: seluruh urusan port serial dipindah ke `src/serial-transport.js`**
   (364 baris). Isinya: buka/tutup port, enumerasi & dropdown COM, probe `WHOAMI`,
   auto-connect/reconnect beserta retry terbatas, polling daftar port, ping, framing baris
@@ -73,6 +100,16 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   bertahan setelah app ditutup.
 
 ### Fixed
+- **Angka baterai dari device bisa membuat UI menampilkan "NaN%".** `parseInt("abc")`
+  menghasilkan `NaN`, dan `NaN !== null` sehingga lolos pemeriksaan "belum ada data".
+  Akibatnya indikator menulis `NaN%` dan — lebih buruk — `NaN <= 20` selalu `false`,
+  jadi peringatan baterai lemah **tidak akan pernah berbunyi** selama device mengirim
+  satu nilai rusak saja. Sekarang ditolak di gerbang masuk (`setBatteryFromKv`), dengan
+  batas 0..100 untuk persentase; nilai buruk diabaikan dan nilai valid terakhir
+  dipertahankan.
+- **Render pertama indikator baterai hilang** setelah ekstraksi ke `battery-ui.js`
+  (`setTimeout(updateBatteryUI, 0)` berada di baris paling akhir blok lama).
+  Indikator akan kosong sampai `EVT:BATT` pertama arrive.
 - **Meter baterai dan badge profil tidak lagi kosong saat device terputus.** Semula
   `setConnected(false)` di `main.js` ikut membersihkan `battUI`; saat ekstraksi itu hilang
   dari hook `onDisconnected`, sehingga tegangan dan persen baterai terakhir tetap terpakai

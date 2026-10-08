@@ -184,3 +184,9 @@ export function reorderLayer(from, to) {
   mapping[to] = map;
   return true;
 }
+
+// ---- Konstanta protokol yang dipakai lebih dari satu modul ----
+// TYPE_NAMES memetakan index tipe pada keymap ke nama yang dikirim ke firmware.
+// Pindah ke sini karena dipakai editor di main.js maupun uploader preset di
+// adaptive.js - kalau tiap modul punya salinannya, keduanya bisa berbeda diam-diam.
+export const TYPE_NAMES = ["NONE", "KEY", "COMBO", "TEXT", "CONSUMER", "APP"];
