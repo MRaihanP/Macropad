@@ -11,6 +11,7 @@
 // dengan preset, tapi sebelumnya terselip di tengah blok tersebut.
 
 import { el } from './dom.js';
+import { t } from './i18n.js';
 
 // pct/mv null = belum ada data. chargeState mengikuti enum ChargeState di firmware:
 // 0 = tidak mengecas, 1 = sedang mengecas, 2 = selesai.
@@ -22,9 +23,9 @@ export function initBatteryUi(n) { notify = n || notify; }
 
 // Firmware melaporkan status charger sebagai angka; mapping ini harus sama dengan
 // enum ChargeState di firmware/common/limits.h.
-const CHARGE_STATES = { 0: 'tidak mengecas', 1: 'mengecas', 2: 'cas selesai' };
+const CHARGE_STATES = { 0: 'batt.charge0', 1: 'batt.charge1', 2: 'batt.charge2' };
 
-export function chargeStateLabel(st) { return CHARGE_STATES[st] || 'tidak diketahui'; }
+export function chargeStateLabel(st) { return t(CHARGE_STATES[st] || 'batt.chargeUnknown'); }
 
 // Dipakai HWINFO: profil baru saja diterima, tapi angka baterai yang lama (dari
 // device sebelumnya) tidak boleh ikut terbawa.
@@ -73,7 +74,7 @@ export function updateBatteryUI() {
     el('battFill').style.transform = 'scaleX(0.02)';
     el('battBolt').style.display = 'none';
     ind.classList.remove('low', 'crit');
-    speak('Data baterai belum tersedia');
+    speak(t('batt.noData'));
     return;
   }
   el('battPct').textContent = battUI.pct + '%';
@@ -82,11 +83,11 @@ export function updateBatteryUI() {
   ind.classList.toggle('crit', battUI.pct <= 10);
   el('battBolt').style.display = battUI.charging ? 'block' : 'none';
   ind.title = battUI.simulated
-    ? `Data SIMULASI (firmware prototipe)${battUI.mv !== null ? ` - ${battUI.mv} mV` : ''}`
-    : (battUI.mv !== null ? `${battUI.mv} mV` : 'Baterai');
-  const mAh = battUI.mv !== null ? `, ${battUI.mv} milivolt` : '';
-  const mode = battUI.simulated ? ' (data simulasi firmware prototipe)' : '';
-  speak(`Baterai ${battUI.pct} persen${battUI.charging ? ', sedang mengecas' : ''}${mAh}${mode}`);
+    ? t('batt.titleSim') + (battUI.mv !== null ? t('batt.titleSimMv', { mv: battUI.mv }) : '')
+    : (battUI.mv !== null ? t('batt.titleMv', { mv: battUI.mv }) : t('batt.titleNone'));
+  const mAh = battUI.mv !== null ? t('batt.mvolts', { mv: battUI.mv }) : '';
+  const mode = battUI.simulated ? t('batt.simMode') : '';
+  speak(t('batt.pct', { pct: battUI.pct, charging: battUI.charging ? t('batt.chargingNow') : '', mv: mAh, sim: mode }));
 
   // Peringatan hanya saat ambang BARU dilewati, bukan setiap EVT:BATT (yang datang
   // tiap 5 detik) - tanpa ini notifikasi muncul terus-menerus.
@@ -96,8 +97,8 @@ export function updateBatteryUI() {
   if (battUI.charging || lvl === 'ok') battNotifLevel = null;
   else if (lvl !== battNotifLevel) {
     battNotifLevel = lvl;
-    if (lvl === 'crit') notify(`Baterai kritis: ${battUI.pct}%`, 'batt-crit', { hold: 8000 });
-    else notify(`Baterai lemah: ${battUI.pct}%`, 'batt-low', { hold: 6000 });
+    if (lvl === 'crit') notify(t('batt.critNotif', { pct: battUI.pct }), 'batt-crit', { hold: 8000 });
+    else notify(t('batt.lowNotif', { pct: battUI.pct }), 'batt-low', { hold: 6000 });
   }
 }
 

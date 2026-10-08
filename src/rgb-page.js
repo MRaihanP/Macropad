@@ -12,6 +12,7 @@
 // dari RGB_INDEX di firmware.
 
 import { ROWS, COLS } from './device-state.js';
+import { t } from './i18n.js';
 import { el } from './dom.js';
 
 const RGB_FW_BRI_CAP = Math.round(255 * 0.6);
@@ -21,15 +22,15 @@ const pctToBri = p => Math.round(Math.max(0, Math.min(100, p)) / 100 * RGB_FW_BR
 export const rgb = { enabled: true, mode: 0, random: false, color: [16, 96, 90], bri: 200, speed: 128, keys: [], sel: null, dirty: false };
 
 export const RGB_MODES = [
-  { id: 0, name: 'Static Light', desc: 'Satu warna untuk semua key', color: true, random: false, speed: false },
-  { id: 1, name: 'Custom per Key', desc: 'Warna tiap key diatur dari peta di kiri', color: false, random: false, speed: false },
-  { id: 2, name: 'Breathing', desc: 'Warna menyala dan meredup pelan', color: true, random: true, speed: true },
-  { id: 3, name: 'Color Cycle', desc: 'Semua key berganti warna bersamaan', color: false, random: false, speed: true },
-  { id: 4, name: 'Rainbow', desc: 'Gradasi pelangi bergerak di atas key', color: false, random: false, speed: true },
-  { id: 5, name: 'Color Waves', desc: 'Gelombang cahaya menyapu secara diagonal', color: true, random: true, speed: true },
-  { id: 6, name: 'Snake', desc: 'Ular cahaya mengikuti urutan LED', color: true, random: true, speed: true },
-  { id: 7, name: 'Randomize', desc: 'Key menyala acak lalu memudar', color: true, random: true, speed: true },
-  { id: 8, name: 'React Light', desc: 'Langsung menyala saat key ditekan lalu memudar', color: true, random: false, speed: false }
+  { id: 0, name: 'Static Light', desc: 'rgb.modeDesc.0', color: true, random: false, speed: false },
+  { id: 1, name: 'Custom per Key', desc: 'rgb.modeDesc.1', color: false, random: false, speed: false },
+  { id: 2, name: 'Breathing', desc: 'rgb.modeDesc.2', color: true, random: true, speed: true },
+  { id: 3, name: 'Color Cycle', desc: 'rgb.modeDesc.3', color: false, random: false, speed: true },
+  { id: 4, name: 'Rainbow', desc: 'rgb.modeDesc.4', color: false, random: false, speed: true },
+  { id: 5, name: 'Color Waves', desc: 'rgb.modeDesc.5', color: true, random: true, speed: true },
+  { id: 6, name: 'Snake', desc: 'rgb.modeDesc.6', color: true, random: true, speed: true },
+  { id: 7, name: 'Randomize', desc: 'rgb.modeDesc.7', color: true, random: true, speed: true },
+  { id: 8, name: 'React Light', desc: 'rgb.modeDesc.8', color: true, random: false, speed: false }
 ];
 
 // Peta posisi tombol [row][col] -> index LED di rantai, 0 = RGB 1 ... 8 = RGB 9.
@@ -112,7 +113,7 @@ export function renderRgbGrid() {
     d.className = 'cell rgb-cell' + ((rgb.sel && rgb.sel[0] === r && rgb.sel[1] === c) ? ' sel' : '');
     const bg = rgb.mode === 1 ? rgbCss(rgb.keys[r][c]) : rgbCss(rgb.color);
     d.innerHTML = `<span class="rgb-dot" style="background:${bg}"></span><span class="val">${rgbKeyName(r, c)}</span>`;
-    d.title = `Posisi tombol R${r} C${c}`;
+    d.title = t('rgb.keyPosTitle', { r, c });
     d.onclick = () => { rgb.sel = [r, c]; renderRgbGrid(); renderRgbKeyCard(); };
     g.appendChild(d);
     rgbAnimFor(d.querySelector('.rgb-dot'), rgb.mode, r, c);
@@ -124,7 +125,7 @@ export function renderRgbKeyCard() {
   if (!rgb.sel) { card.style.display = 'none'; return; }
   ensureRgbKeys();
   card.style.display = 'block';
-  el('rgbKeyTitle').textContent = `Warna key ${rgbKeyName(rgb.sel[0], rgb.sel[1])}`;
+  el('rgbKeyTitle').textContent = t('rgb.keyColorTitle', { name: rgbKeyName(rgb.sel[0], rgb.sel[1]) });
   el('rgbColorPicker').value = rgbToHex(rgb.keys[rgb.sel[0]][rgb.sel[1]]);
 }
 
@@ -134,10 +135,10 @@ export function renderRgbPresets() {
   RGB_MODES.forEach(m => {
     const row = document.createElement('div');
     row.className = 'rgb-preset' + (rgb.mode === m.id ? ' active' : '');
-    row.innerHTML = `<div class="rgb-preset-name">${m.name}</div><div class="rgb-preset-desc">${m.desc}</div>`;
+    row.innerHTML = `<div class="rgb-preset-name">${m.name}</div><div class="rgb-preset-desc">${t(m.desc)}</div>`;
     row.onclick = () => {
       rgb.mode = m.id;
-      el('rgbSaveState').textContent = 'Belum disimpan';
+      el('rgbSaveState').textContent = t('rgb.unsavedShort');
       transportSendLine(`RGB:MODE:${rgb.mode}:${rgb.random ? 1 : 0}:${rgb.color.join(':')}:${rgb.speed}`);
       renderRgbPresets(); renderRgbGrid();
     };
@@ -163,7 +164,7 @@ export function renderRgbAll() {
   el('rgbSpeed').value = rgb.speed;
   el('rgbSpeedVal').textContent = Math.round(rgb.speed / 255 * 100) + '%';
   renderRgbGrid(); renderRgbKeyCard(); renderRgbPresets();
-  el('rgbSaveState').textContent = rgb.dirty ? 'Belum disimpan ke device' : '';
+  el('rgbSaveState').textContent = rgb.dirty ? t('rgb.unsaved') : '';
 }
 
 // ---- Parser baris RGB dari device ----
@@ -194,7 +195,7 @@ export function handleRgbLine(line, log) {
         rgb.keys[r][c] = col;
         renderRgbAll();
       } else {
-        log('[ERROR] Baris RGB_KEY tidak valid, dilewati: ' + line, 'err');
+        log(t('rgb.invalidKeyLine', { line }), 'err');
       }
     }
     return true;

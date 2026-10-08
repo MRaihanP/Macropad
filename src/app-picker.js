@@ -13,6 +13,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { el, log } from './dom.js';
 import { showConfirmModal, showPromptModal, clipUtf8 } from './ui-modal.js';
+import { t } from './i18n.js';
 
 let appsView = { names: [], custom: [], scanned_at: 0, ttl_days: 7, consent: false, stale: true };
 // Sudah menolak consent di sesi ini: jangan tanya lagi tiap picker dibuka.
@@ -24,21 +25,21 @@ export async function ensureAppList(force = false) {
     if (!appsView.consent) {
       if (scanDeclined) return false;
       const ok = await showConfirmModal(
-        'Izinkan pemindaian aplikasi',
-        'Untuk memilih aplikasi dari daftar, app ini perlu membaca daftar aplikasi terinstal di PC ini (sama seperti isi Start Menu). Tidak butuh hak admin, tidak ada data dikirim keluar, dan hasilnya disimpan lokal sehingga tidak dipindai ulang setiap kali.',
-        'Izinkan'
+        t('appPicker.scanTitle'),
+        t('appPicker.scanMsg'),
+        t('appPicker.scanConfirm')
       );
       if (!ok) { scanDeclined = true; return false; }
       await invoke('apps_set_consent', { value: true });
     }
     if (force || appsView.stale) {
-      el('appMeta').textContent = 'Memindai aplikasi...';
+      el('appMeta').textContent = t('appPicker.scanning');
       appsView = await invoke('apps_rescan');
-      log(`[APP] ${appsView.names.length} aplikasi ditemukan`, 'ok');
+      log(t('appPicker.foundLog', { n: appsView.names.length }), 'ok');
     }
     return true;
   } catch (e) {
-    log('[ERROR] Gagal memuat daftar aplikasi: ' + e, 'err');
+    log(t('appPicker.loadErrorLog', { err: e }), 'err');
     return false;
   }
 }
@@ -65,9 +66,9 @@ export function renderAppPicker() {
       const del = document.createElement('button');
       del.className = 'app-del small';
       del.textContent = '×';
-      del.title = 'Hapus dari daftar (file aslinya tidak dihapus)';
+      del.title = t('appPicker.removeTitleAttr');
       del.onclick = async () => {
-        if (!(await showConfirmModal('Hapus dari daftar', `Hapus "${name}" dari daftar aplikasi manual? File aslinya tidak dihapus.`, 'Hapus'))) return;
+        if (!(await showConfirmModal(t('appPicker.removeTitle'), t('appPicker.removeMsg', { name }), t('adaptive.deleteConfirm')))) return;
         await invoke('apps_remove_custom', { name });
         appsView = await invoke('apps_get');
         renderAppPicker();
@@ -97,7 +98,7 @@ export function initAppPicker() {
     try {
       const picked = await invoke('apps_pick_exe');
       if (!picked) return;
-      const name = await showPromptModal('Tambah aplikasi', 'Nama tampilan (maks. 47 byte, ini yang disimpan di device):', clipUtf8(picked.name));
+      const name = await showPromptModal(t('appPicker.addTitle'), t('appPicker.addLabel'), clipUtf8(picked.name));
       if (name === null) return;
       const clean = clipUtf8(name.trim());
       if (!clean) return;
@@ -105,8 +106,8 @@ export function initAppPicker() {
       appsView = await invoke('apps_get');
       el('editValue').value = clean;
       renderAppPicker();
-      log(`[APP] Ditambahkan: ${clean} → ${picked.path}`, 'ok');
-    } catch (e) { log('[ERROR] Gagal menambah aplikasi: ' + e, 'err'); }
+      log(t('appPicker.addedLog', { name: clean, path: picked.path }), 'ok');
+    } catch (e) { log(t('appPicker.addErrorLog', { err: e }), 'err'); }
   };
   el('btnRescanApps').onclick = () => openAppPicker(true);
   el('appTtl').onchange = () => invoke('apps_set_ttl', { days: parseInt(el('appTtl').value) });

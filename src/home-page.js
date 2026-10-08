@@ -17,8 +17,11 @@ import {
 import { el, escapeHtml } from './dom.js';
 import { sendLine } from './serial-transport.js';
 import { openAppPicker } from './app-picker.js';
+import { t } from './i18n.js';
 
-export const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
+// Nilai di sini adalah KUNCI tabel i18n; diterjemahkan saat pemakaian,
+// jadi ganti bahasa langsung memperbarui label berikutnya.
+export const ENC_LABELS = { CW: 'enc.cw', CCW: 'enc.ccw', BTN: 'enc.btn' };
 const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
 const MODIFIER_NAMES = ['CTRL', 'SHIFT', 'ALT', 'GUI'];
 const MEDIA_MAP = {
@@ -60,21 +63,24 @@ function makeInteractive(node, onActivate, label) {
 export function renderTabs() {
   const tabs = el('tabs');
   tabs.innerHTML = '';
-  el('deviceLayerLabel').textContent = layerNames[currentLayer] || ('Layer ' + currentLayer);
+  el('deviceLayerLabel').textContent = layerNames[currentLayer] || t('layer.n', { n: currentLayer });
   for (let l = 0; l < layerCount; l++) {
-    const t = document.createElement('div');
-    t.className = 'tab' + (l === currentLayer ? ' active' : '');
-    t.textContent = layerNames[l] || ('Layer ' + l);
-    t.style.touchAction = 'none';
+    // Variabel lokal sengaja tidak disebut "t": "t" adalah fungsi terjemahan dari
+    // i18n.js, dan menimpanya di sini membuat panggilan t('layer.n', ...) gagal
+    // dengan "t is not a function" karena yang terlihat adalah elemen DOM ini.
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (l === currentLayer ? ' active' : '');
+    tab.textContent = layerNames[l] || t('layer.n', { n: l });
+    tab.style.touchAction = 'none';
     // Tab layer adalah tab strip: harus bisa difokus dan bisa diganti dengan
     // panah kiri/kanan, karena drag hanya bisa dilakukan dengan mouse.
-    t.tabIndex = 0;
-    t.setAttribute('role', 'tab');
-    t.setAttribute('aria-selected', l === currentLayer ? 'true' : 'false');
-    t.setAttribute('aria-label', 'Layer ' + (l + 1) + (layerNames[l] ? ': ' + layerNames[l] : ''));
-    t.onclick = () => { if (tabDragMoved) return; switchLayer(l); };
-    t.onpointerdown = (e) => startTabDrag(e, t, l);
-    t.onkeydown = (e) => {
+    tab.tabIndex = 0;
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', l === currentLayer ? 'true' : 'false');
+    tab.setAttribute('aria-label', t('layer.n', { n: l + 1 }) + (layerNames[l] ? ': ' + layerNames[l] : ''));
+    tab.onclick = () => { if (tabDragMoved) return; switchLayer(l); };
+    tab.onpointerdown = (e) => startTabDrag(e, tab, l);
+    tab.onkeydown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchLayer(l); return; }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
@@ -85,7 +91,7 @@ export function renderTabs() {
       const nodes = el('tabs').children;
       if (nodes[next]) nodes[next].focus();
     };
-    tabs.appendChild(t);
+    tabs.appendChild(tab);
   }
   el('btnDelLayer').disabled = layerCount <= 1;
   el('btnAddLayer').disabled = layerCount >= maxLayers;
@@ -204,8 +210,8 @@ export function renderGrid() {
     cell.className = 'cell' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
     cell.innerHTML = `<div class="type">R${r}C${c} · ${data ? TYPE_NAMES[data.type] : '...'}</div>
                        <div class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</div>`;
-    const label = 'Baris ' + (r + 1) + ' kolom ' + (c + 1) + ': ' +
-      (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : 'kosong');
+    const label = t('grid.cellLabel', { r: r + 1, c: c + 1 }) +
+      (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : t('editor.empty'));
     makeInteractive(cell, () => openEditor('key', { r, c }), label);
     grid.appendChild(cell);
   }
@@ -218,7 +224,7 @@ export function renderEncoderList() {
     if (NUM_ENCODERS > 1) {
       const h = document.createElement('div');
       h.className = 'enc-group-label';
-      h.textContent = `Knob ${i}` + (i === 0 ? ' (gesture dasar)' : '');
+      h.textContent = t('enc.knobHeader', { i }) + (i === 0 ? t('enc.gestureBasic') : '');
       list.appendChild(h);
     }
     ['CW', 'CCW', 'BTN'].forEach(which => {
@@ -227,9 +233,9 @@ export function renderEncoderList() {
       const typeClass = 'type-' + (data ? TYPE_NAMES[data.type] : 'NONE').toLowerCase();
       const row = document.createElement('div');
       row.className = 'enc-row' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
-      row.innerHTML = `<span class="label">${ENC_LABELS[which]}</span><span class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</span>`;
-      const label = (NUM_ENCODERS > 1 ? 'Knob ' + (i + 1) + ' - ' : '') +
-        ENC_LABELS[which] + ': ' + (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : 'kosong');
+      row.innerHTML = `<span class="label">${t(ENC_LABELS[which])}</span><span class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</span>`;
+      const label = (NUM_ENCODERS > 1 ? t('enc.knobLabel', { n: i + 1 }) : '') +
+        t(ENC_LABELS[which]) + ': ' + (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : t('editor.empty'));
       makeInteractive(row, () => openEditor('enc', { idx: i, which }), label);
       list.appendChild(row);
     });
@@ -242,8 +248,8 @@ export function updateEditorFieldsVisibility() {
   const isCaptureType = (type === 1 || type === 2 || type === 4);
   el('editValue').style.display = (type >= 1 && type <= 5) ? 'block' : 'none';
   el('editValue').readOnly = isCaptureType || type === 5;
-  el('editValue').placeholder = type === 3 ? 'ketik teks di sini'
-    : (type === 5 ? 'pilih aplikasi dari daftar di bawah' : (isCaptureType ? 'tekan tombol fisik...' : ''));
+  el('editValue').placeholder = type === 3 ? t('editor.phText')
+    : (type === 5 ? t('editor.phApp') : (isCaptureType ? t('editor.phCapture') : ''));
   el('consumerButtons').style.display = (type === 4) ? 'flex' : 'none';
   el('appPicker').style.display = (type === 5) ? 'block' : 'none';
   document.querySelectorAll('#consumerButtons button').forEach(b => b.classList.toggle('active', b.dataset.val === el('editValue').value));
@@ -254,11 +260,11 @@ export function openEditor(kind, params) {
   let data;
   if (kind === 'key') {
     data = mapping[currentLayer][params.r][params.c] || { type: 0, value: '' };
-    el('editTitle').textContent = `Edit ${layerNames[currentLayer] || ('Layer ' + currentLayer)} — R${params.r} C${params.c}`;
+    el('editTitle').textContent = t('editor.titleKey', { layer: layerNames[currentLayer] || t('layer.n', { n: currentLayer }), r: params.r, c: params.c });
   } else {
     data = (encConfig[params.idx] || {})[params.which] || { type: 0, value: '' };
-    const prefix = NUM_ENCODERS > 1 ? `Knob ${params.idx} — ` : 'Encoder — ';
-    el('editTitle').textContent = 'Edit ' + prefix + ENC_LABELS[params.which];
+    const prefix = NUM_ENCODERS > 1 ? t('editor.prefixKnob', { idx: params.idx }) : t('editor.prefixEnc');
+    el('editTitle').textContent = t('editor.titleEnc', { prefix, label: t(ENC_LABELS[params.which]) });
   }
   el('editType').value = data.type;
   el('editValue').value = data.type === 0 ? '' : data.value;

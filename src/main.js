@@ -70,11 +70,11 @@ function renderDeviceProfileBadge() {
   const sim = deviceProfile.simulated === 1 || battUI.simulated;
   if (!deviceProfile.profile) { b.style.display = 'none'; return; }
   b.style.display = 'inline-flex';
-  b.textContent = sim ? `${deviceProfile.profile} - DATA SIMULASI` : deviceProfile.profile;
+  b.textContent = sim ? t('main.profileSim', { profile: deviceProfile.profile }) : deviceProfile.profile;
   b.classList.toggle('sim', !!sim);
   b.title = sim
-    ? 'Firmware prototipe mengirim angka simulasi untuk baterai/RGB. Format pesan sama dengan board final, jadi app tidak perlu diubah.'
-    : 'Data dibaca langsung dari hardware';
+    ? t('main.simDataWarn')
+    : t('main.simDataTitle');
 }
 
 function syncGlobalToggles() {
@@ -87,7 +87,7 @@ function syncGlobalToggles() {
   const sleepSel = el('sleepTimeoutSelect');
   if (sleepSel) {
     sleepSel.disabled = true;
-    sleepSel.title = 'Belum didukung firmware (perintah sleep belum ada)';
+    sleepSel.title = t('main.sleepUnavailable');
   }
 }
 
@@ -154,7 +154,7 @@ initTransport({
   onConnected: () => {
     // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
     // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
-    notify(deviceWasLost ? 'Terhubung kembali' : 'Terhubung ke companion', 'connect');
+    notify(deviceWasLost ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
     switchPage('home');   // Home selalu tampil saat pertama kali connect
   },
   onDisconnected: () => {
@@ -180,14 +180,14 @@ initTransport({
 el('btnRefreshPorts').onclick = autoDetect;
 el('btnConnect').onclick = () => {
   if (isConnected()) { disconnect(true); return; }
-  if (isAutoBusy()) { log('[AUTO] Sedang mencari device, tunggu sebentar...'); return; }
+  if (isAutoBusy()) { log(t('transport.autoBusy')); return; }
   enableAutoReconnect();
   connect();
 };
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
 el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
-  if (await showConfirmModal('Reset config', 'Reset semua config ke default? (Belum permanen sampai klik Save)', 'Reset')) {
+  if (await showConfirmModal(t('main.resetTitle'), t('main.resetMsg'), t('main.resetConfirm'))) {
     dirty = true;
     sendLine('RESET').then(() => sendLine('INFO'));
   }
@@ -195,13 +195,13 @@ el('btnReset').onclick = async () => {
 el('btnAddLayer').onclick = async () => { dirty = true; await sendLine('ADDLAYER'); setTimeout(() => sendLine('INFO'), 200); };
 el('btnDelLayer').onclick = async () => {
   const name = layerNames[currentLayer] || ('Layer ' + currentLayer);
-  if (!(await showConfirmModal('Delete layer', `Hapus "${name}"? Semua mapping di layer ini akan hilang.`, 'Delete'))) return;
+  if (!(await showConfirmModal(t('main.deleteLayerTitle'), t('main.deleteLayerMsg', { name }), t('main.deleteConfirm')))) return;
   dirty = true;
   await sendLine('DELLAYER'); setTimeout(() => sendLine('INFO'), 200);
 };
 el('btnRenameLayer').onclick = async () => {
   const current = layerNames[currentLayer] || ('Layer ' + currentLayer);
-  const name = await showPromptModal('Rename Layer', 'Nama baru untuk layer ini:', current);
+  const name = await showPromptModal(t('main.renameTitle'), t('main.renameLabel'), current);
   if (name !== null && name.trim() !== '') {
     dirty = true;
     sendLine(`RENAMELAYER:${currentLayer}:${name.trim()}`).then(() => setTimeout(() => sendLine('DUMPNAMES'), 200));
@@ -245,10 +245,10 @@ el('globalAdaptiveToggle').onchange = (e) => {
   // Jangan ditelan diam-diam: kalau gagal, user mengira toggle tersimpan padahal
   // akan kembali ke nilai lama setelah app ditutup.
   invoke('presets_save', { data: presetsData })
-    .catch(err => log('[ERROR] Gagal menyimpan setting adaptive: ' + err, 'err'));
+    .catch(err => log(t('main.adaptiveSaveError', { err }), 'err'));
   syncGlobalToggles();
 };
-el('btnTestNotif').onclick = () => notify('Tes notifikasi', 'connect', { force: true });
+el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
 setInterval(pollPorts, 2000);
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya

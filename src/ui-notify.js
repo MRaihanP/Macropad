@@ -11,6 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { el, log } from './dom.js';
+import { t } from './i18n.js';
 
 // ---- Setting notifikasi ----
 // Disimpan di localStorage, jadi pilihan user bertahan setelah app ditutup.
@@ -30,7 +31,7 @@ export function describeAction(type, value) {
     case 1: case 2: return v;                                          // KEY / COMBO: "1", "CTRL+C"
     case 3: return v.length > 28 ? v.slice(0, 27) + '…' : v;        // TEXT: teksnya
     case 4: return CONSUMER_LABEL[v.toUpperCase()] || v;               // CONSUMER: label media
-    case 5: return 'Open ' + v.replace(/\.exe$/i, '');                 // APP: "Open Discord"
+    case 5: return t('app.openAction', { name: v.replace(/\.exe$/i, '') });   // APP: "Open Discord"
     default: return '';
   }
 }
@@ -56,6 +57,6 @@ export function notify(text, kind = 'info', opts = {}) {
   const hold = opts.hold || (kind === 'key' ? 1000 : 3000);   // notifikasi per key hanya 1 detik
   invoke('notify', { text, kind, hold }).catch(e => {
     console.error('notify gagal:', e);
-    if (!notifyErrShown) { notifyErrShown = true; log('[ERROR] Overlay: ' + e, 'err'); }
+    if (!notifyErrShown) { notifyErrShown = true; log(t('notif.overlayError', { err: e }), 'err'); }
   });
 }

@@ -28,6 +28,7 @@ import {
   applyLayerEvent, applyEncCount, applyEncIdx,
 } from './device-state.js';
 import { el, log } from './dom.js';
+import { t } from './i18n.js';
 import {
   sendLine, dumpInProgress, dumpEncInProgress, namesInProgress,
   setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
@@ -93,7 +94,7 @@ export function handleLine(line) {
     const apLayers = activePresetLayers();
     const pname = ap || 'Default';
     const lname = (apLayers ? apLayers[n]?.name : layerNames[n]) || ('Layer ' + n);
-    hooks.notify(`${pname} · ${lname}`, 'layer');
+    hooks.notify(t('parser.layerNotif', { from: pname, to: lname }), 'layer');
   } else if ((mm = line.match(/^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$/))) {
     // Format ringkas dari firmware: layer,row,col,type,value. Notifikasi hanya
     // memakai type + value; posisi tombol tetap tampil di panel log.
@@ -110,11 +111,11 @@ export function handleLine(line) {
   if (suppressDeviceEcho() && (line.startsWith('[OK]') || line.startsWith('[LAYER]'))) return;
 
   if (line.startsWith('EVT:APP:')) {
-    if (eventsSuppressed()) { log('[APP] Event lama diabaikan'); return; }
+    if (eventsSuppressed()) { log(t('parser.staleEvent')); return; }
     const name = line.substring(8);
     invoke('launch_app', { name })
-      .then(n => log('[APP] Membuka: ' + n, 'ok'))
-      .catch(e => log('[ERROR] ' + e, 'err'));
+      .then(n => log(t('parser.appOpening', { name: n }), 'ok'))
+      .catch(e => log(t('parser.appError', { err: e }), 'err'));
     return;
   }
 
@@ -153,7 +154,7 @@ export function handleLine(line) {
     if (p.length >= 4) {
       const layer = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
       const applied = applyDumpRow(layer, parseInt(p[0]), parseInt(p[1]), parseInt(p[2]), p.slice(3).join(','), log);
-      if (!applied) log('[ERROR] Baris DUMP tidak valid, dilewati: ' + line, 'err');
+      if (!applied) log(t('parser.dumpInvalid', { line }), 'err');
     }
     return;
   }
@@ -199,8 +200,8 @@ export function handleLine(line) {
       // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
       // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
       // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
-      if (st === 1) hooks.notify('Baterai: mulai mengecas', 'charge', { hold: 5000 });
-      else if (st === 2) hooks.notify('Baterai: cas selesai', 'charge-done', { hold: 5000 });
+      if (st === 1) hooks.notify(t('batt.chargeStarted'), 'charge', { hold: 5000 });
+      else if (st === 2) hooks.notify(t('batt.chargeDone'), 'charge-done', { hold: 5000 });
       // state 0 (charger dicabut) sengaja tidak dinotifikasi supaya tidak membising.
     }
     return;
@@ -214,7 +215,7 @@ export function handleLine(line) {
     const idx = line.indexOf(',');
     if (idx > -1) {
       if (!applyName(parseInt(line.substring(0, idx)), line.substring(idx + 1), log))
-        log('[ERROR] Baris NAMES tidak valid, dilewati: ' + line, 'err');
+        log(t('parser.namesInvalid', { line }), 'err');
     }
     return;
   }

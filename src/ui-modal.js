@@ -12,6 +12,7 @@
 // notifikasi, dan nilai itu berasal dari flash device yang bisa berisi apa saja.
 
 import { el, escapeHtml } from './dom.js';
+import { t } from './i18n.js';
 
 // Elemen yang bisa menerima fokus di dalam dialog, sesuai urutan bacaan.
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -78,8 +79,8 @@ export function showModalBase(titleText, bodyHtml, buttons) {
 export async function showPromptModal(title, label, defaultValue) {
   const bodyHtml = `<div>${escapeHtml(label)}</div><input type="text" id="modalInput" value="${escapeHtml(defaultValue)}">`;
   const result = await showModalBase(title, bodyHtml, [
-    { label: 'Cancel', value: null },
-    { label: 'OK', value: 'ok', primary: true }
+    { label: t('modal.cancel'), value: null },
+    { label: t('modal.ok'), value: 'ok', primary: true }
   ]);
   if (result !== 'ok') return null;
   return el('modalInput').value;
@@ -87,8 +88,8 @@ export async function showPromptModal(title, label, defaultValue) {
 
 export function showConfirmModal(title, message, confirmLabel) {
   return showModalBase(title, escapeHtml(message), [
-    { label: 'Cancel', value: false },
-    { label: confirmLabel || 'OK', value: true, primary: true }
+    { label: t('modal.cancel'), value: false },
+    { label: confirmLabel || t('modal.ok'), value: true, primary: true }
   ]);
 }
 

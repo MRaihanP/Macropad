@@ -17,6 +17,7 @@
 
 import { SerialPort } from "tauri-plugin-serialplugin";
 import { el, log } from './dom.js';
+import { t } from './i18n.js';
 
 const LAST_PORT_KEY = 'macropad.lastPort';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -82,20 +83,20 @@ export function enableAutoReconnect() { autoReconnect = true; }
 function releasePortListener() {
   const u = portUnlisten;
   portUnlisten = null;
-  if (u) { try { u(); } catch (e) { log('[ERROR] Gagal lepas listener: ' + e, 'err'); } }
+  if (u) { try { u(); } catch (e) { log(t('transport.unlistenError', { err: e }), 'err'); } }
 }
 
 // ---- Pengiriman ----
 async function writeRaw(str) {
   try { await port.write(str); }
-  catch (e) { log('[ERROR] Gagal kirim: ' + e, 'err'); await handleDeviceLost(); }
+  catch (e) { log(t('transport.sendError', { err: e }), 'err'); await handleDeviceLost(); }
 }
 
 export async function sendLine(str) {
   if (!port) return;
   try { await port.write(str + "\n"); }
   catch (e) {
-    log('[ERROR] Gagal kirim: ' + e, 'err');
+    log(t('transport.sendError', { err: e }), 'err');
     // Tulis gagal = koneksi sudah putus di level OS, jangan tunggu polling.
     await handleDeviceLost();
   }
@@ -119,7 +120,7 @@ export function handleIncomingChunk(data) {
   // tidak pernah dipanggil sehingga tidak ada yang bisa pulih. Buang sisa dan reset
   // parser, lalu lanjut dari newline terakhir agar koneksi berikutnya tetap sinkron.
   if (lineBuffer.length > LINE_BUFFER_MAX) {
-    log('[ERROR] Buffer baris melebihi ' + LINE_BUFFER_MAX + ' byte, parser di-reset', 'err');
+    log(t('transport.lineTooLong', { max: LINE_BUFFER_MAX }), 'err');
     resetParserState();
     const nl = lineBuffer.lastIndexOf('\n');
     lineBuffer = nl >= 0 ? lineBuffer.slice(nl + 1) : '';
@@ -152,9 +153,9 @@ export async function refreshPorts(paths, quiet) {
       sel.appendChild(opt);
     });
     if (keep && list.includes(keep)) sel.value = keep;
-    if (list.length === 0 && !quiet) log('[LOG] Tidak ada port terdeteksi. Klik ↻ setelah colok device.', 'err');
+    if (list.length === 0 && !quiet) log(t('transport.noPorts'), 'err');
     return list;
-  } catch (e) { log('[ERROR] Gagal ambil daftar port: ' + e, 'err'); return []; }
+  } catch (e) { log(t('transport.portListError', { err: e }), 'err'); return []; }
 }
 
 // Probe singkat di port sementara: apakah ini MacroPad?
@@ -192,7 +193,7 @@ export async function probeWhoAmI(path) {
 // ---- Connect / disconnect ----
 export async function connect(pathArg) {
   const path = pathArg || el('portSelect').value;
-  if (!path) { log('[ERROR] Pilih port dulu (klik ↻ kalau kosong)', 'err'); return false; }
+  if (!path) { log(t('transport.pickPort'), 'err'); return false; }
   try {
     port = new SerialPort({ path, baudRate: BAUD, size: READ_SIZE });
     await port.open();
@@ -201,7 +202,7 @@ export async function connect(pathArg) {
     await port.startListening();
     portUnlisten = await port.listen((data) => handleIncomingChunk(data));
   } catch (e) {
-    log('[ERROR] Gagal membuka port: ' + e, 'err');
+    log(t('transport.openError', { err: e }), 'err');
     port = null; return false;
   }
   portPath = path;
@@ -230,8 +231,8 @@ export async function disconnect(manual) {
   if (manual) {
     autoReconnect = false;   // user sengaja memutus: jangan disambung otomatis lagi
     deviceWasLost = false;
-    hooks.notify('Koneksi diputus', 'disconnect');
-    log('[LOG] Auto-reconnect dijeda. Klik Connect atau ↻ untuk mengaktifkan lagi.');
+    hooks.notify(t('transport.notifDisconnected'), 'disconnect');
+    log(t('transport.autoPausedLog'));
   }
   stopPing();
   // Parser state harus ikut dibersihkan di jalur manual, sama seperti di
@@ -257,9 +258,9 @@ export async function disconnect(manual) {
 // tidak sempat kelihatan berubah di antara dua polling 2 detik.
 export async function handleDeviceLost() {
   if (!port) return;
-  log('[AUTO] Device terputus.', 'err');
+  log(t('transport.deviceLostLog'), 'err');
   deviceWasLost = true;
-  hooks.notify('Device terputus', 'disconnect');
+  hooks.notify(t('transport.notifDeviceLost'), 'disconnect');
   const p = port, lostPath = portPath;
   port = null; portPath = null;
   hooks.clearDirty();   // RAM device hilang bersama daftar port; tidak ada yang tertunda
@@ -277,8 +278,8 @@ export async function handleDeviceLost() {
 
 export function setConnected(state) {
   el('dot').classList.toggle('on', state);
-  el('statusText').textContent = state ? 'Connected' : 'Not connected';
-  el('btnConnect').textContent = state ? 'Disconnect' : 'Connect';
+  el('statusText').textContent = state ? t('transport.connected') : t('transport.notConnected');
+  el('btnConnect').textContent = state ? t('transport.disconnect') : t('transport.connect');
   el('app').style.display = state ? 'block' : 'none';
   if (!state) hooks.onDisconnected();
 }
@@ -292,23 +293,23 @@ export async function tryAutoConnect(verbose, only) {
   autoBusy = true;
   try {
     const all = await refreshPorts(null, !verbose);
-    if (all.length === 0) { if (verbose) log('[AUTO] Tidak ada port sama sekali.', 'err'); return false; }
+    if (all.length === 0) { if (verbose) log(t('transport.autoNoPorts'), 'err'); return false; }
     const paths = only ? all.filter(p => only.includes(p)) : all;
     if (paths.length === 0) return false;
     const ordered = [...paths].sort((a, b) => (b === lastGoodPort) - (a === lastGoodPort));
 
-    log('[AUTO] Mencari MacroPad...', null);
+    log(t('transport.autoSearching'), null);
     for (const path of ordered) {
       const ok = await probeWhoAmI(path);
       if (!ok) continue;
       el('portSelect').value = path;
       await sleep(400); // beri jeda, Windows perlu lepas handle port dulu
-      if (await connect(path)) { log('[AUTO] Terhubung otomatis ke ' + path, 'ok'); hooks.onAutoConnectOk(path); return true; }
-      log('[AUTO] Gagal reconnect ke ' + path + ', coba lagi...', 'err');
+      if (await connect(path)) { log(t('transport.autoConnectOk', { path }), 'ok'); hooks.onAutoConnectOk(path); return true; }
+      log(t('transport.autoReconnectFail', { path }), 'err');
       await sleep(400);
-      if (await connect(path)) { log('[AUTO] Terhubung otomatis ke ' + path + ' (percobaan ke-2)', 'ok'); hooks.onAutoConnectOk(path); return true; }
+      if (await connect(path)) { log(t('transport.autoConnectOk2', { path }), 'ok'); hooks.onAutoConnectOk(path); return true; }
     }
-    if (verbose) { log('[AUTO] MacroPad tidak ditemukan otomatis. Pilih port manual, klik Connect.', 'err'); hooks.onAutoConnectFail(); }
+    if (verbose) { log(t('transport.autoNotFound'), 'err'); hooks.onAutoConnectFail(); }
     return false;
   } finally { autoBusy = false; }
 }

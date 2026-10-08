@@ -16,6 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { el, log } from './dom.js';
 import { showModalBase } from './ui-modal.js';
+import { t } from './i18n.js';
 import { sendLine } from './serial-transport.js';
 import { isConnected } from './serial-transport.js';
 import { stopRecordingContinuous, clearSelection } from './home-page.js';
@@ -32,13 +33,16 @@ export function initTray(h) {
 // Hanya bisa diatur di build rilis - di mode dev, shortcut menunjuk ke folder target
 // debug yang bisa terhapus, jadi toggle-nya dinonaktifkan dengan penjelasan.
 export async function initAutostart() {
-  const t = el('autostartToggle');
+  // Variabel lokal sengaja tidak disebut "t": "t" adalah fungsi terjemahan dari
+  // i18n.js, dan menimpanya di sini membuat panggilan t('tray.autostartError', ...)
+  // gagal dengan "t is not a function" karena yang terlihat adalah elemen DOM ini.
+  const toggle = el('autostartToggle');
   try {
     const s = await invoke('autostart_status');
-    t.checked = s.enabled;
-    t.disabled = !s.available;
+    toggle.checked = s.enabled;
+    toggle.disabled = !s.available;
     el('autostartLabel').title = s.available ? '' : 'Hanya bisa diatur di build rilis (npm run tauri build)';
-  } catch (e) { t.disabled = true; log('[ERROR] Gagal membaca status autostart: ' + e, 'err'); }
+  } catch (e) { toggle.disabled = true; log(t('tray.autostartError', { err: e }), 'err'); }
 }
 
 export function initAutostartToggle() {
@@ -46,11 +50,11 @@ export function initAutostartToggle() {
     const want = e.target.checked;
     try {
       await invoke('autostart_set', { value: want });
-      log(want ? '[LOG] Autostart aktif: app jalan di tray saat Windows start' : '[LOG] Autostart dimatikan', 'ok');
+      log(want ? t('tray.autostartOnLog') : t('tray.autostartOffLog'), 'ok');
     } catch (err) {
       // Kembalikan posisi toggle supaya tidak menampilkan keadaan yang tidak berlaku.
       e.target.checked = !want;
-      log('[ERROR] Gagal mengubah autostart: ' + err, 'err');
+      log(t('tray.autostartSetError', { err }), 'err');
     }
   };
 }
@@ -82,14 +86,14 @@ export async function confirmUnsaved(quitting) {
     await invoke('show_main_window'); // pastikan dialog terlihat (kasus Keluar dari tray)
     const choice = await Promise.race([
       showModalBase(
-        'Ada perubahan belum disimpan',
+        t('tray.unsavedTitle'),
         quitting
-          ? 'Konfigurasi di device sudah berubah tapi belum disimpan ke flash. Simpan dulu sebelum keluar?'
-          : 'Konfigurasi di device sudah berubah tapi belum disimpan ke flash. Simpan dulu sebelum app disembunyikan ke tray?',
+          ? t('tray.unsavedQuit')
+          : t('tray.unsavedHide'),
         [
-          { label: 'Cancel', value: 'cancel' },
-          { label: "Don't Save", value: 'discard' },
-          { label: 'Save', value: 'save', primary: true }
+          { label: t('modal.cancel'), value: 'cancel' },
+          { label: t('modal.dontSave'), value: 'discard' },
+          { label: t('modal.save'), value: 'save', primary: true }
         ]
       ),
       whenRenderStalled(3000)
@@ -109,7 +113,7 @@ export async function confirmUnsaved(quitting) {
     if (choice === 'render-stalled') {
       // Render benar-benar berhenti (bukan user lama mikir): jangan biarkan X/Keluar nyangkut selamanya.
       // Config di device TIDAK disentuh (tidak dipaksa save/discard) supaya tidak ada yang hilang salah waktu.
-      log('[LOG] Render tidak merespons, lanjut tanpa mengubah config di device.', 'err');
+      log(t('tray.renderError'), 'err');
       return true;
     }
     return false; // 'cancel' atau Escape

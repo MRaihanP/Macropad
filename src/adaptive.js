@@ -22,6 +22,7 @@ import {
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected } from './serial-transport.js';
+import { t } from './i18n.js';
 
 // ---- State ----
 export let presetsData = { masterEnabled: true, presets: [] };
@@ -94,7 +95,7 @@ function waitForDump(layer, timeoutMs) {
       resolve(okFlag);
     };
     entry.timer = setTimeout(() => {
-      log('[ERROR] Timeout menunggu DUMP_END untuk layer ' + key, 'err');
+      log(t('adaptive.timeoutLog', { key }), 'err');
       entry.resolve(false);
     }, timeoutMs || 3000);
     if (!dumpWaiters.has(key)) dumpWaiters.set(key, new Set());
@@ -140,7 +141,7 @@ function packCurrentAsPresetLayers() {
       encCcw.push(e.CCW ? { type: e.CCW.type, value: e.CCW.value } : { type: 0, value: '' });
       encBtn.push(e.BTN ? { type: e.BTN.type, value: e.BTN.value } : { type: 0, value: '' });
     }
-    layers.push({ name: layerNames[l] || ('Layer ' + l), keys, encCw, encCcw, encBtn });
+    layers.push({ name: layerNames[l] || t('layer.n', { n: l }), keys, encCw, encCcw, encBtn });
   }
   return layers;
 }
@@ -154,7 +155,7 @@ function presetColor(seed) {
 
 export async function loadPresets() {
   try { presetsData = await invoke('presets_get'); }
-  catch (e) { log('[ERROR] Gagal memuat preset: ' + e, 'err'); presetsData = { masterEnabled: true, presets: [] }; }
+  catch (e) { log(t('adaptive.loadErrorLog', { err: e }), 'err'); presetsData = { masterEnabled: true, presets: [] }; }
   el('masterEnabledToggle').checked = presetsData.masterEnabled;
   renderPresetList();
 }
@@ -163,7 +164,7 @@ export function renderPresetList() {
   const box = el('presetList');
   box.innerHTML = '';
   if (presetsData.presets.length === 0) {
-    box.innerHTML = '<div class="hint">Belum ada preset. Klik "+ Tambah preset" di bawah.</div>';
+    box.innerHTML = '<div class="hint">' + t('adaptive.emptyList') + '</div>';
     return;
   }
   presetsData.presets.forEach(preset => {
@@ -178,8 +179,8 @@ export function renderPresetList() {
       </div>
       <div class="preset-actions">
         <label class="toggle-switch"><input type="checkbox" class="preset-toggle-input" ${preset.enabled ? 'checked' : ''}><span class="toggle-slider"></span></label>
-        <button class="small preset-rename">✎</button>
-        <button class="small preset-delete">✕</button>
+        <button class="small preset-rename" title="${t('adaptive.renameTitle')}" aria-label="${t('adaptive.renameTitle')}">✎</button>
+        <button class="small preset-delete" title="${t('adaptive.deleteTitle')}" aria-label="${t('adaptive.deleteTitle')}">✕</button>
       </div>`;
     row.querySelector('.preset-info').onclick = () => openPresetEditor(preset.id);
     row.querySelector('.preset-avatar').onclick = () => openPresetEditor(preset.id);
@@ -199,8 +200,8 @@ async function togglePresetEnabled(id, checked, checkboxEl) {
     // pernah dipakai. Minta konfirmasi alih-alih menimpa tanpa pemberitahuan.
     const conflict = presetsData.presets.find(p => p.id !== id && p.enabled && p.exeName === preset.exeName);
     if (conflict) {
-      const ok = await hooks.showConfirmModal('Ganti preset aktif',
-        `"${conflict.name}" sudah aktif untuk aplikasi yang sama. Aktifkan "${preset.name}" dan nonaktifkan "${conflict.name}"?`, 'Ganti');
+      const ok = await hooks.showConfirmModal(t('adaptive.switchTitle'),
+        t('adaptive.switchMsg', { conflict: conflict.name, preset: preset.name }), t('adaptive.switchConfirm'));
       if (!ok) { checkboxEl.checked = false; return; }
       conflict.enabled = false;
     }
@@ -212,7 +213,7 @@ async function togglePresetEnabled(id, checked, checkboxEl) {
     await sendLine('CONTEXT:DEFAULT');
     currentActivePresetId = null;
     updateActivePresetLabel();
-    log('[ADAPT] Preset dinonaktifkan selagi aktif, kembali ke Default Preset', null);
+    log(t('adaptive.presetDisabledLog'), null);
   }
 
   renderPresetList();
@@ -221,7 +222,7 @@ async function togglePresetEnabled(id, checked, checkboxEl) {
 async function renamePreset(id) {
   const preset = presetsData.presets.find(p => p.id === id);
   if (!preset) return;
-  const name = await hooks.showPromptModal('Rename preset', 'Nama preset:', preset.name);
+  const name = await hooks.showPromptModal(t('adaptive.renameTitle'), t('adaptive.nameLabel'), preset.name);
   if (name === null || !name.trim()) return;
   preset.name = name.trim();
   await invoke('presets_save', { data: presetsData });
@@ -238,7 +239,7 @@ async function deletePreset(id) {
   }
 
   if (!preset) return;
-  if (!(await hooks.showConfirmModal('Hapus preset', `Hapus preset "${preset.name}"? Tidak bisa dibatalkan.`, 'Hapus'))) return;
+  if (!(await hooks.showConfirmModal(t('adaptive.deleteTitle'), t('adaptive.deleteMsg', { name: preset.name }), t('adaptive.deleteConfirm')))) return;
   presetsData.presets = presetsData.presets.filter(p => p.id !== id);
   await invoke('presets_save', { data: presetsData });
   renderPresetList();
@@ -254,14 +255,14 @@ async function getBindableApps(force) {
 function pickBindableApp() {
   return new Promise(async (resolve) => {
     const overlay = el('modalOverlay');
-    el('modalTitle').textContent = 'Pilih aplikasi untuk preset';
+    el('modalTitle').textContent = t('adaptive.pickApp');
     el('modalBody').innerHTML = `
-      <input type="text" id="bindAppSearch" placeholder="Cari aplikasi..." style="width:100%; margin-bottom:8px;">
+      <input type="text" id="bindAppSearch" placeholder="${t('adaptive.searchApps')}" style="width:100%; margin-bottom:8px;">
       <div class="app-list" id="bindAppList" style="max-height:240px;"></div>
-      <button class="small" id="btnBindAppBrowse" style="margin-top:8px;">Browse .exe manual...</button>`;
+      <button class="small" id="btnBindAppBrowse" style="margin-top:8px;">${t('adaptive.browseExe')}</button>`;
     el('modalActions').innerHTML = '';
     const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Batal';
+    cancelBtn.textContent = t('modal.cancel');
     cancelBtn.onclick = () => close(null);
     el('modalActions').appendChild(cancelBtn);
 
@@ -269,7 +270,7 @@ function pickBindableApp() {
     function onKey(e) { if (e.key === 'Escape') close(null); }
     document.addEventListener('keydown', onKey);
 
-    el('bindAppList').innerHTML = '<div class="hint">Memindai...</div>';
+    el('bindAppList').innerHTML = '<div class="hint">' + t('adaptive.scanning') + '</div>';
     overlay.classList.add('show');
     const apps = await getBindableApps();
 
@@ -278,7 +279,7 @@ function pickBindableApp() {
       const listEl = el('bindAppList');
       listEl.innerHTML = '';
       const matches = apps.filter(a => a.name.toLowerCase().includes(q)).slice(0, 80);
-      if (matches.length === 0) { listEl.innerHTML = '<div class="hint">Tidak ada yang cocok.</div>'; return; }
+      if (matches.length === 0) { listEl.innerHTML = '<div class="hint">' + t('adaptive.noMatch') + '</div>'; return; }
       matches.forEach(a => {
         const b = document.createElement('button');
         b.className = 'app-item';
@@ -300,7 +301,7 @@ function pickBindableApp() {
 
 // ---- Masuk/keluar mode edit preset (reuse Home sepenuhnya) ----
 export async function openPresetEditor(id) {
-  if (!isConnected()) { log('[ERROR] Hubungkan device dulu untuk edit preset', 'err'); return; }
+  if (!isConnected()) { log(t('adaptive.needConnectLog'), 'err'); return; }
   const preset = presetsData.presets.find(p => p.id === id);
   if (!preset) return;
   editingPresetId = id;
@@ -338,12 +339,12 @@ export async function exitPresetEditor() {
 export async function confirmLeavePresetEditor() {
   if (!hooks.isDirty()) { await exitPresetEditor(); return; }
   const choice = await hooks.showModalBase(
-    'Ada perubahan belum disimpan',
-    'Preset ini punya perubahan yang belum disimpan. Simpan dulu sebelum keluar?',
+    t('adaptive.unsavedTitle'),
+    t('adaptive.unsavedMsg'),
     [
-      { label: 'Cancel', value: 'cancel' },
-      { label: "Don't Save", value: 'discard' },
-      { label: 'Save', value: 'save', primary: true }
+      { label: t('modal.cancel'), value: 'cancel' },
+      { label: t('modal.dontSave'), value: 'discard' },
+      { label: t('modal.save'), value: 'save', primary: true }
     ]
   );
   if (choice === 'save') {
@@ -352,7 +353,7 @@ export async function confirmLeavePresetEditor() {
       await fetchAllLayersForPacking();
       preset.layers = packCurrentAsPresetLayers();
       await invoke('presets_save', { data: presetsData });
-      log(`[PRESET] "${preset.name}" tersimpan`, 'ok');
+      log(t('adaptive.presetSavedSimpleLog', { name: preset.name }), 'ok');
     }
     hooks.setDirty(false);
     await exitPresetEditor();
@@ -366,7 +367,7 @@ export async function confirmLeavePresetEditor() {
 export function updateActivePresetLabel() {
   const label = el('deviceActivePresetLabel');
   if (!label) return;
-  label.textContent = currentActivePresetId ? (activePresetName() || 'App Preset') : 'Default';
+  label.textContent = currentActivePresetId ? (activePresetName() || t('adaptive.appPreset')) : t('common.default');
 }
 
 // ---- Runtime: unggah preset ke slot firmware ----
@@ -434,8 +435,8 @@ async function activatePresetRuntime(preset, exe) {
   slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
   currentActivePresetId = preset.id;
   updateActivePresetLabel();
-  log(`[ADAPT] Preset aktif: "${preset.name}" (${exe})${cached ? ' · cache' : ''}`, 'ok');
-  hooks.notify(`Preset: ${preset.name}`, 'preset');
+  log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
+  hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
 }
 
 let pollInFlight = false;
@@ -470,8 +471,8 @@ async function pollFocusedApp() {
         await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
         currentActivePresetId = null;
         updateActivePresetLabel();
-        log('[ADAPT] Kembali ke Default Preset', null);
-        hooks.notify('Preset: Default', 'preset');
+        log(t('adaptive.backDefaultLog'), null);
+        hooks.notify(t('adaptive.defaultNotif'), 'preset');
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }
@@ -488,12 +489,12 @@ export function resetAdaptiveRuntimeState() {
 export function handleEscapeGesture() {
   if (editingPresetId) {
     sendLine('CONTEXT:APP:RESUME');
-    log('[PRESET] Gestur escape diabaikan selama mode edit (draft tetap aman).', null);
+    log(t('adaptive.escapeIgnoredLog'), null);
     return true;
   }
   if (currentActivePresetId) {
     escapeFrozenForExe = focusedExeLast;
-    hooks.notify('Preset: Default', 'preset');
+    hooks.notify(t('adaptive.defaultNotif'), 'preset');
     currentActivePresetId = null;
     updateActivePresetLabel();
     log(`[ADAPT] Escape manual - auto-switch dibekukan untuk "${focusedExeLast}" sampai window lain difokuskan.`, null);
@@ -511,21 +512,21 @@ export function initAdaptivePage() {
       await sendLine('CONTEXT:DEFAULT');
       currentActivePresetId = null;
       updateActivePresetLabel();
-      log('[ADAPT] Fitur dimatikan, kembali ke Default Preset', null);
+      log(t('adaptive.featureOffLog'), null);
     }
   };
 
   el('btnAddPreset').onclick = async () => {
     const picked = await pickBindableApp();
     if (!picked) return;
-    const name = await hooks.showPromptModal('Nama preset', 'Nama preset:', picked.name);
+    const name = await hooks.showPromptModal(t('adaptive.newTitle'), t('adaptive.nameLabel'), picked.name);
     if (name === null || !name.trim()) return;
     const id = 'preset_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
     const conflict = presetsData.presets.find(p => p.enabled && p.exeName === picked.exeName);
     const newPreset = { id, name: name.trim(), exeName: picked.exeName, enabled: !conflict, layers: [] };
     presetsData.presets.push(newPreset);
     await invoke('presets_save', { data: presetsData });
-    if (conflict) log(`[PRESET] "${newPreset.name}" dibuat nonaktif - "${conflict.name}" sudah aktif untuk app yang sama.`, null);
+    if (conflict) log(t('adaptive.presetCreatedDisabled', { name: newPreset.name, conflict: conflict.name }), null);
     renderPresetList();
     openPresetEditor(id);
   };
@@ -537,13 +538,13 @@ export function initAdaptivePage() {
       await fetchAllLayersForPacking();
       preset.layers = packCurrentAsPresetLayers();
       await invoke('presets_save', { data: presetsData });
-      log(`[PRESET] "${preset.name}" tersimpan (${preset.layers.length} layer)`, 'ok');
+      log(t('adaptive.presetSavedLog', { name: preset.name, n: preset.layers.length }), 'ok');
     }
     await exitPresetEditor();
   };
 
   el('btnPresetEditCancel').onclick = async () => {
-    if (await hooks.showConfirmModal('Batalkan edit', 'Perubahan pada preset ini TIDAK akan disimpan. Yakin batal?', 'Batal edit')) {
+    if (await hooks.showConfirmModal(t('adaptive.cancelEditTitle'), t('adaptive.cancelEditMsg'), t('adaptive.cancelEditConfirm'))) {
       await exitPresetEditor();
     }
   };
