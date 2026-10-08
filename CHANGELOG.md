@@ -54,8 +54,6 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   fungsi global `main.js` yang bocor ke `adaptive.js`.
 - `initBatteryUi(notify)` menyuntikkan fungsi notifikasi ke `battery-ui.js` supaya ambang
   `batt-low`/`batt-crit` tetap berbunyi tanpa `main.js` yang harus mengimbal modul.
-- Render pertama indikator baterai dipulihkan (`setTimeout(updateBatteryUI, 0)`) — sempat
-  hilang saat ekstraksi karena berada di baris paling akhir blok lama.
 - **Refactor Tahap 3: seluruh urusan port serial dipindah ke `src/serial-transport.js`**
   (364 baris). Isinya: buka/tutup port, enumerasi & dropdown COM, probe `WHOAMI`,
   auto-connect/reconnect beserta retry terbatas, polling daftar port, ping, framing baris
@@ -100,6 +98,24 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   bertahan setelah app ditutup.
 
 ### Fixed
+- **App tidak bisa start sama sekali: tidak ada port COM yang terlihat.** Fungsi
+  `resetEditorState()` ikut terhapus saat ekstraksi transport (Phase 8 tahap 3, commit
+  `ad8ae07`). Fungsi itu berdiri di **tengah** region yang dihapus - di antara
+  `autoDetect()` dan `handleDeviceLost()` - jadi ia ikut terbawa tanpa disadari.
+  Karena `resetEditorState` dirujuk di `initAdaptive({...})` yang dievaluasi saat
+  modul dimuat, hasilnya `ReferenceError: resetEditorState is not defined` - seluruh
+  `main.js` gagal dimuat, jadi tidak ada `autoDetect()`, tidak ada polling, dan
+  dropdown COM kosong. `vite build` tetap hijau karena ini error runtime, bukan error
+  build. Fungsi dikembalikan ke seksi rekam keyboard, tempat ia sebenarnya milik.
+- **Dua test baru yang menutup kelas bug 'fungsi hilang diam-diam':**
+  - `startup-smoke-test.mjs` benar-benar **memuat `src/main.js`** di Node dengan stub
+    `@tauri-apps/*` dan plugin serial, lalu memastikan `available_ports()` dipanggil
+    dan dropdown COM terisi. Inilah test yang langsung menemukan `resetEditorState`.
+  - `no-lost-functions-test.js` membandingkan seluruh daftar fungsi dan konstanta
+    top-level di `main.js` sebelum Phase 8 dengan yang ada di `src/*.js` sekarang,
+    memeriksa 102 nama import benar-benar di-export berkasnya, lalu menjalankan smoke
+    test. Nama yang hilang harus punya penjelasan tertulis di dalam test - kalau tidak,
+    test gagal. Ini yang akan menangkap bystander berikutnya.
 - **Angka baterai dari device bisa membuat UI menampilkan "NaN%".** `parseInt("abc")`
   menghasilkan `NaN`, dan `NaN !== null` sehingga lolos pemeriksaan "belum ada data".
   Akibatnya indikator menulis `NaN%` dan — lebih buruk — `NaN <= 20` selalu `false`,

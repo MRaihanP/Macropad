@@ -741,6 +741,23 @@ function stopRecordingContinuous() {
   window.removeEventListener('keydown', captureKeyDuringRecording);
 }
 
+// Tutup editor + hentikan perekaman keyboard. Tanpa ini listener keydown
+// (preventDefault) tetap aktif walau #app tersembunyi, dan mengunci keyboard
+// setelah device terputus saat editor masih terbuka.
+//
+// Catatan: fungsi ini sempat hilang saat ekstraksi transport (Phase 8 tahap 3).
+// Ia berdiri di antara autoDetect() dan handleDeviceLost(), jadi ikut terhapus
+// bersama blok itu - dan karena dipakai di initAdaptive({...}) yang jalan saat
+// modul dimuat, seluruh main.js gagal dimuat dan tidak ada satu pun port COM
+// yang terlihat. Karena itu sekarang ada startup-smoke-test.mjs yang benar-benar
+// memuat main.js.
+function resetEditorState() {
+  stopRecordingContinuous();
+  recordTokens = [];
+  selected = null;
+  el('editPanel').style.display = 'none';
+}
+
 el('editType').onchange = () => {
   const type = parseInt(el('editType').value);
   recordTokens = [];
