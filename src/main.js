@@ -41,14 +41,19 @@ import { initProtocolParser, handleLine, deviceProfile, resetDeviceProfile } fro
 import { settings, saveSettings, notify, notifyBoundAction } from "./ui-notify.js";
 import { showModalBase, showPromptModal, showConfirmModal, clipUtf8 } from "./ui-modal.js";
 import { switchPage, initSidebar, initRouter } from "./ui-router.js";
+// Picker aplikasi (dipakai juga oleh home-page untuk binding bertipe APP).
+import { initAppPicker } from "./app-picker.js";
+// Halaman Home: tab layer, grid tombol, daftar knob, panel editor, rekam keyboard.
+// Ketiganya satu modul karena saling memanggil (klik sel -> openEditor -> rekam;
+// tab -> switchLayer -> loadLayer -> renderGrid); dipisah akan muncul siklus import.
+import {
+  initHomePage, initEditorPanel,
+  renderTabs, renderGrid, renderEncoderList, loadLayer,
+  resetEditorState, clearSelection, selected, stopRecordingContinuous,
+} from "./home-page.js";
 
-const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
-const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVolumeMute: 'MUTE', MediaPlayPause: 'PLAYPAUSE', MediaTrackNext: 'NEXT', MediaTrackPrevious: 'PREV' };
-const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
-const MODIFIER_NAMES = ['CTRL', 'SHIFT', 'ALT', 'GUI'];
-
-let selected = null;
-let recording = false, recordTokens = [];
+// Config di device berubah tapi belum disimpan ke flash. Dipakai dialog "Simpan
+// dulu?" saat keluar, dan disuntikkan ke home-page lewat initHomePage({ markDirty }).
 let dirty = false;
 
 // Profil & kemampuan hardware (HWINFO) sekarang milik protocol-parser.js, karena
@@ -66,102 +71,6 @@ function renderDeviceProfileBadge() {
     : 'Data dibaca langsung dari hardware';
 }
 
-// ==================== DAFTAR APLIKASI (dikelola Rust: cache + TTL di file) ====================
-let appsView = { names: [], custom: [], scanned_at: 0, ttl_days: 7, consent: false, stale: true };
-let scanDeclined = false; // sudah menolak consent di sesi ini: jangan tanya lagi tiap picker dibuka
-
-async function ensureAppList(force = false) {
-  try {
-    appsView = await invoke('apps_get');
-    if (!appsView.consent) {
-      if (scanDeclined) return false;
-      const ok = await showConfirmModal(
-        'Izinkan pemindaian aplikasi',
-        'Untuk memilih aplikasi dari daftar, app ini perlu membaca daftar aplikasi terinstal di PC ini (sama seperti isi Start Menu). Tidak butuh hak admin, tidak ada data dikirim keluar, dan hasilnya disimpan lokal sehingga tidak dipindai ulang setiap kali.',
-        'Izinkan'
-      );
-      if (!ok) { scanDeclined = true; return false; }
-      await invoke('apps_set_consent', { value: true });
-    }
-    if (force || appsView.stale) {
-      el('appMeta').textContent = 'Memindai aplikasi...';
-      appsView = await invoke('apps_rescan');
-      log(`[APP] ${appsView.names.length} aplikasi ditemukan`, 'ok');
-    }
-    return true;
-  } catch (e) {
-    log('[ERROR] Gagal memuat daftar aplikasi: ' + e, 'err');
-    return false;
-  }
-}
-
-function renderAppPicker() {
-  const q = el('appSearch').value.trim().toLowerCase();
-  const list = el('appList');
-  list.innerHTML = '';
-  const customSet = new Set(appsView.custom || []);
-  const matches = appsView.names
-    .filter(n => n.toLowerCase().includes(q))
-    .sort((a, b) => (customSet.has(b) - customSet.has(a))) // entri manual di atas (sort stabil)
-    .slice(0, 80);
-  matches.forEach(name => {
-    const isCustom = customSet.has(name);
-    const row = document.createElement('div');
-    row.className = 'app-row';
-    const b = document.createElement('button');
-    b.className = 'app-item' + (clipUtf8(name) === el('editValue').value ? ' active' : '');
-    b.textContent = (isCustom ? '★ ' : '') + name;
-    b.onclick = () => { el('editValue').value = clipUtf8(name); renderAppPicker(); };
-    row.appendChild(b);
-    if (isCustom) {
-      const del = document.createElement('button');
-      del.className = 'app-del small';
-      del.textContent = '×';
-      del.title = 'Hapus dari daftar (file aslinya tidak dihapus)';
-      del.onclick = async () => {
-        if (!(await showConfirmModal('Hapus dari daftar', `Hapus "${name}" dari daftar aplikasi manual? File aslinya tidak dihapus.`, 'Hapus'))) return;
-        await invoke('apps_remove_custom', { name });
-        appsView = await invoke('apps_get');
-        renderAppPicker();
-      };
-      row.appendChild(del);
-    }
-    list.appendChild(row);
-  });
-  if (matches.length === 0) list.innerHTML = '<div class="hint">Tidak ada yang cocok, atau daftar belum tersedia.</div>';
-  const when = appsView.scanned_at
-    ? new Date(appsView.scanned_at * 1000).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
-    : '—';
-  const nCustom = (appsView.custom || []).length;
-  el('appMeta').textContent = `${appsView.names.length} aplikasi${nCustom ? ` (${nCustom} manual)` : ''} · dipindai ${when}`;
-  el('appTtl').value = String(appsView.ttl_days);
-}
-
-async function openAppPicker(force = false) {
-  el('appSearch').value = '';
-  await ensureAppList(force);
-  renderAppPicker();
-}
-
-el('appSearch').oninput = renderAppPicker;
-el('btnAddExe').onclick = async () => {
-  try {
-    const picked = await invoke('apps_pick_exe');
-    if (!picked) return;
-    const name = await showPromptModal('Tambah aplikasi', 'Nama tampilan (maks. 47 byte, ini yang disimpan di device):', clipUtf8(picked.name));
-    if (name === null) return;
-    const clean = clipUtf8(name.trim());
-    if (!clean) return;
-    await invoke('apps_add_custom', { name: clean, path: picked.path });
-    appsView = await invoke('apps_get');
-    el('editValue').value = clean;
-    renderAppPicker();
-    log(`[APP] Ditambahkan: ${clean} → ${picked.path}`, 'ok');
-  } catch (e) { log('[ERROR] Gagal menambah aplikasi: ' + e, 'err'); }
-};
-el('btnRescanApps').onclick = () => openAppPicker(true);
-el('appTtl').onchange = () => invoke('apps_set_ttl', { days: parseInt(el('appTtl').value) });
-
 function syncGlobalToggles() {
   el('masterEnabledToggle').checked = presetsData.masterEnabled;
   if (el('globalAdaptiveToggle')) el('globalAdaptiveToggle').checked = presetsData.masterEnabled;
@@ -175,301 +84,6 @@ function syncGlobalToggles() {
     sleepSel.title = 'Belum didukung firmware (perintah sleep belum ada)';
   }
 }
-
-// ==================== RENDER: LAYER, GRID, ENCODER ====================
-let tabDragMoved = false;
-
-function renderTabs() {
-  const tabs = el('tabs');
-  tabs.innerHTML = '';
-  el('deviceLayerLabel').textContent = layerNames[currentLayer] || ('Layer ' + currentLayer);
-  for (let l = 0; l < layerCount; l++) {
-    const t = document.createElement('div');
-    t.className = 'tab' + (l === currentLayer ? ' active' : '');
-    t.textContent = layerNames[l] || ('Layer ' + l);
-    t.style.touchAction = 'none';
-    t.onclick = () => { if (tabDragMoved) return; switchLayer(l); };
-    t.onpointerdown = (e) => startTabDrag(e, t, l);
-    tabs.appendChild(t);
-  }
-  el('btnDelLayer').disabled = layerCount <= 1;
-  el('btnAddLayer').disabled = layerCount >= maxLayers;
-}
-
-// Drag pakai Pointer Events (bukan native HTML5 DnD) supaya nggak ke-capture
-// oleh fitur window-level drag-drop Tauri. Tab yang di-drag ikut geser visual
-// mengikuti cursor, dan tab-tab lain di antara posisi asal & tujuan ikut geser
-// (menghindar) untuk mengisi/membuka ruang, seperti reorder list pada umumnya.
-function startTabDrag(e, tabEl, index) {
-  if (e.button !== undefined && e.button !== 0) return; // hanya klik kiri
-  const tabs = el('tabs');
-  const startX = e.clientX;
-  const others = Array.from(tabs.children).filter(c => c !== tabEl);
-  const rects = others.map(c => c.getBoundingClientRect());
-  const dragRect = tabEl.getBoundingClientRect();
-  const gapPx = parseFloat(getComputedStyle(tabs).columnGap) || 10;
-  const shiftAmount = dragRect.width + gapPx;
-  tabDragMoved = false;
-
-  tabEl.setPointerCapture(e.pointerId);
-  tabEl.classList.add('dragging');
-  document.body.classList.add('no-select');
-
-  function computeTargetRealIndex(clientX) {
-    if (!rects.length) return index;
-    if (clientX <= rects[0].left) return 0;
-    if (clientX >= rects[rects.length - 1].right) return layerCount - 1;
-    for (let i = 0; i < rects.length; i++) {
-      const r = rects[i];
-      if (clientX >= r.left && clientX <= r.right) return i < index ? i : i + 1;
-    }
-    return index;
-  }
-
-  function onMove(ev) {
-    const dx = ev.clientX - startX;
-    if (Math.abs(dx) > 4) tabDragMoved = true;
-    tabEl.style.transform = `translateX(${dx}px)`;
-
-    const targetRealIndex = computeTargetRealIndex(ev.clientX);
-    others.forEach((c, i) => {
-      const otherRealIndex = i < index ? i : i + 1;
-      let shift = 0;
-      if (targetRealIndex > index && otherRealIndex > index && otherRealIndex <= targetRealIndex) shift = -shiftAmount;
-      else if (targetRealIndex < index && otherRealIndex < index && otherRealIndex >= targetRealIndex) shift = shiftAmount;
-      c.style.transform = shift ? `translateX(${shift}px)` : '';
-    });
-  }
-
-  function onUp(ev) {
-    tabEl.releasePointerCapture(e.pointerId);
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onUp);
-    tabEl.classList.remove('dragging');
-    document.body.classList.remove('no-select');
-
-    const targetRealIndex = computeTargetRealIndex(ev.clientX);
-
-    if (tabDragMoved && targetRealIndex !== index) {
-      // Susun ulang node tab di DOM ke urutan barunya SEKARANG (bukan nunggu
-      // roundtrip device), supaya transform yang di-nol-kan di bawah langsung
-      // "landing" ke posisi akhir yang benar tanpa balik dulu ke posisi lama.
-      const allTabs = Array.from(tabs.children); // urutan lama, tabEl masih di 'index'
-      allTabs.splice(index, 1);
-      allTabs.splice(targetRealIndex, 0, tabEl);
-      allTabs.forEach(node => tabs.appendChild(node));
-      allTabs.forEach((node, i) => node.classList.toggle('active', i === targetRealIndex));
-
-      // Optimistic update data lokal biar konsisten dgn urutan DOM baru,
-      // sebelum device benar-benar konfirmasi lewat INFO
-      reorderLayer(index, targetRealIndex);
-      setCurrentLayer(targetRealIndex);
-      renderGrid();
-
-      moveLayerTo(index, targetRealIndex); // sinkron ke device di background
-    }
-
-    // Nol-kan transform SETELAH reorder DOM di atas, supaya animasi "landing"-nya
-    // menuju posisi yang sudah benar, bukan balik ke posisi lama dulu.
-    tabEl.style.transform = '';
-    others.forEach(c => { c.style.transform = ''; });
-
-    setTimeout(() => { tabDragMoved = false; }, 0);
-  }
-
-  document.addEventListener('pointermove', onMove);
-  document.addEventListener('pointerup', onUp);
-}
-
-// Geser layer dari srcIndex ke targetIndex dengan mengirim MOVELAYER berturut-turut
-// (protokol device cuma punya perintah geser satu langkah kiri/kanan pada layer yang sedang aktif)
-async function moveLayerTo(srcIndex, targetIndex) {
-  if (srcIndex === targetIndex) return;
-  dirty = true;
-  await sendLine('LAYER:' + srcIndex);
-  const dir = targetIndex > srcIndex ? 'RIGHT' : 'LEFT';
-  const steps = Math.abs(targetIndex - srcIndex);
-  for (let i = 0; i < steps; i++) {
-    await sendLine('MOVELAYER:' + dir);
-    await new Promise(r => setTimeout(r, 150));
-  }
-  await sendLine('INFO');
-}
-
-function renderGrid() {
-  const grid = el('grid');
-  grid.style.gridTemplateColumns = 'repeat(' + COLS + ', 1fr)';
-  grid.innerHTML = '';
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const data = mapping[currentLayer][r][c];
-    const isEmpty = !data || data.type === 0;
-    const typeClass = 'type-' + (data ? TYPE_NAMES[data.type] : 'NONE').toLowerCase();
-    const cell = document.createElement('div');
-    cell.className = 'cell' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
-    cell.innerHTML = `<div class="type">R${r}C${c} · ${data ? TYPE_NAMES[data.type] : '...'}</div>
-                       <div class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</div>`;
-    cell.onclick = () => openEditor('key', { r, c });
-    grid.appendChild(cell);
-  }
-}
-
-function renderEncoderList() {
-  const list = el('encList');
-  list.innerHTML = '';
-  for (let i = 0; i < NUM_ENCODERS; i++) {
-    if (NUM_ENCODERS > 1) {
-      const h = document.createElement('div');
-      h.className = 'enc-group-label';
-      h.textContent = `Knob ${i}` + (i === 0 ? ' (gesture dasar)' : '');
-      list.appendChild(h);
-    }
-    ['CW', 'CCW', 'BTN'].forEach(which => {
-      const data = (encConfig[i] || {})[which];
-      const isEmpty = !data || data.type === 0;
-      const typeClass = 'type-' + (data ? TYPE_NAMES[data.type] : 'NONE').toLowerCase();
-      const row = document.createElement('div');
-      row.className = 'enc-row' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
-      row.innerHTML = `<span class="label">${ENC_LABELS[which]}</span><span class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</span>`;
-      row.onclick = () => openEditor('enc', { idx: i, which });
-      list.appendChild(row);
-    });
-  }
-}
-
-// ==================== EDITOR PANEL ====================
-function updateEditorFieldsVisibility() {
-  const type = parseInt(el('editType').value);
-  const isCaptureType = (type === 1 || type === 2 || type === 4);
-  el('editValue').style.display = (type >= 1 && type <= 5) ? 'block' : 'none';
-  el('editValue').readOnly = isCaptureType || type === 5;
-  el('editValue').placeholder = type === 3 ? 'ketik teks di sini'
-    : (type === 5 ? 'pilih aplikasi dari daftar di bawah' : (isCaptureType ? 'tekan tombol fisik...' : ''));
-  el('consumerButtons').style.display = (type === 4) ? 'flex' : 'none';
-  el('appPicker').style.display = (type === 5) ? 'block' : 'none';
-  document.querySelectorAll('#consumerButtons button').forEach(b => b.classList.toggle('active', b.dataset.val === el('editValue').value));
-}
-
-function openEditor(kind, params) {
-  selected = { kind, ...params };
-  let data;
-  if (kind === 'key') {
-    data = mapping[currentLayer][params.r][params.c] || { type: 0, value: '' };
-    el('editTitle').textContent = `Edit ${layerNames[currentLayer] || ('Layer ' + currentLayer)} — R${params.r} C${params.c}`;
-  } else {
-    data = (encConfig[params.idx] || {})[params.which] || { type: 0, value: '' };
-    const prefix = NUM_ENCODERS > 1 ? `Knob ${params.idx} — ` : 'Encoder — ';
-    el('editTitle').textContent = 'Edit ' + prefix + ENC_LABELS[params.which];
-  }
-  el('editType').value = data.type;
-  el('editValue').value = data.type === 0 ? '' : data.value;
-  recordTokens = data.value ? data.value.split('+') : [];
-  updateEditorFieldsVisibility();
-  el('editPanel').style.display = 'block';
-  el('editPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-  const type = parseInt(el('editType').value);
-  if (type === 1 || type === 2 || type === 4) startRecordingContinuous(); else stopRecordingContinuous();
-  if (type === 5) openAppPicker();
-}
-
-// Baca isi layer l ke UI TANPA memindahkan layer aktif device.
-//
-// DUMP:<n> di firmware sudah bisa membaca layer mana pun tanpa berganti layer, dan
-// setiap perintah tulis (SET:<layer>:...) menyebut nomornya secara eksplisit. Jadi
-// jalur baca tidak perlu mengirim LAYER: sama sekali - mengirimnya hanya akan
-// memindahkan layer yang sedang dipakai user di device.
-// Ganti layer sungguhan ditangani switchLayer().
-async function loadLayer(l) {
-  mapping[l] = emptyLayer();
-  await sendLine('DUMP:' + l);
-}
-
-// Ganti layer aktif di device DAN muat isinya ke UI. Dipakai saat user menekan tab
-// layer. Jalur baca (EVT:LAYER:, refresh, connect) cukup loadLayer().
-async function switchLayer(l) {
-  setCurrentLayer(l);
-  renderTabs();
-  await sendLine('LAYER:' + l);
-  await loadLayer(l);
-}
-
-// ==================== REKAM DARI KEYBOARD — OTOMATIS & KONTINU ====================
-function isModifierKey(key) { return MODIFIER_KEYS.includes(key); }
-function modifierName(key) { return { Control: 'CTRL', Shift: 'SHIFT', Alt: 'ALT', Meta: 'GUI' }[key]; }
-
-function updateRecordPreview() {
-  el('editValue').value = recordTokens.join('+');
-  if (recordTokens.length === 0) return;
-  if (recordTokens.length === 1 && !MODIFIER_NAMES.includes(recordTokens[0])) el('editType').value = '1';
-  else el('editType').value = '2';
-}
-
-function captureKeyDuringRecording(e) {
-  if (!recording) return;
-
-  if (e.key === 'Backspace') { e.preventDefault(); recordTokens.pop(); updateRecordPreview(); return; }
-  if (e.key === 'Delete') { e.preventDefault(); recordTokens = []; el('editValue').value = ''; el('editType').value = '0'; return; }
-
-  if (MEDIA_MAP[e.code]) {
-    e.preventDefault();
-    recordTokens = [MEDIA_MAP[e.code]];
-    el('editType').value = '4';
-    el('editValue').value = MEDIA_MAP[e.code];
-    updateEditorFieldsVisibility();
-    return;
-  }
-
-  e.preventDefault();
-  if (e.repeat) return; // abaikan auto-repeat saat tombol ditahan lama
-
-  const name = isModifierKey(e.key) ? modifierName(e.key) : (e.key.length === 1 ? e.key.toUpperCase() : e.key);
-  if (MODIFIER_NAMES.includes(name)) {
-    if (recordTokens[recordTokens.length - 1] !== name) recordTokens.push(name);
-  } else {
-    recordTokens.push(name); // tombol biasa selalu jadi token baru, walau ditekan berkali-kali terpisah
-  }
-  updateRecordPreview();
-}
-
-function startRecordingContinuous() {
-  if (recording) return;
-  recording = true;
-  window.addEventListener('keydown', captureKeyDuringRecording);
-}
-function stopRecordingContinuous() {
-  recording = false;
-  window.removeEventListener('keydown', captureKeyDuringRecording);
-}
-
-// Tutup editor + hentikan perekaman keyboard. Tanpa ini listener keydown
-// (preventDefault) tetap aktif walau #app tersembunyi, dan mengunci keyboard
-// setelah device terputus saat editor masih terbuka.
-//
-// Catatan: fungsi ini sempat hilang saat ekstraksi transport (Phase 8 tahap 3).
-// Ia berdiri di antara autoDetect() dan handleDeviceLost(), jadi ikut terhapus
-// bersama blok itu - dan karena dipakai di initAdaptive({...}) yang jalan saat
-// modul dimuat, seluruh main.js gagal dimuat dan tidak ada satu pun port COM
-// yang terlihat. Karena itu sekarang ada startup-smoke-test.mjs yang benar-benar
-// memuat main.js.
-function resetEditorState() {
-  stopRecordingContinuous();
-  recordTokens = [];
-  selected = null;
-  el('editPanel').style.display = 'none';
-}
-
-el('editType').onchange = () => {
-  const type = parseInt(el('editType').value);
-  recordTokens = [];
-  el('editValue').value = '';
-  updateEditorFieldsVisibility();
-  if (type === 1 || type === 2 || type === 4) startRecordingContinuous(); else stopRecordingContinuous();
-  if (type === 5) openAppPicker();
-};
-
-document.querySelectorAll('#consumerButtons button').forEach(b => {
-  b.onclick = () => { recordTokens = [b.dataset.val]; el('editValue').value = b.dataset.val; updateEditorFieldsVisibility(); };
-});
 
 // ==================== SAMBUNGKAN MODUL LAIN ====================
 
@@ -496,6 +110,12 @@ initRouter({
   editingPreset: () => !!editingPresetId,
 });
 initSidebar();
+
+// Halaman Home dan picker aplikasi. initHomePage() hanya butuh penanda "belum
+// tersimpan" - isi editor dan grid semuanya milik modul itu sendiri.
+initHomePage({ markDirty: () => { dirty = true; } });
+initEditorPanel();
+initAppPicker();
 
 // Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
 // sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
@@ -574,7 +194,7 @@ el('btnRenameLayer').onclick = async () => {
     sendLine(`RENAMELAYER:${currentLayer}:${name.trim()}`).then(() => setTimeout(() => sendLine('DUMPNAMES'), 200));
   }
 };
-el('btnCancel').onclick = () => { stopRecordingContinuous(); el('editPanel').style.display = 'none'; selected = null; };
+el('btnCancel').onclick = () => { stopRecordingContinuous(); el('editPanel').style.display = 'none'; clearSelection(); };
 el('btnApply').onclick = async () => {
   if (!selected) return;
   stopRecordingContinuous();
@@ -717,7 +337,7 @@ appWindow.onCloseRequested(async (event) => {
   if (!(await confirmUnsaved(false))) return;
   stopRecordingContinuous();
   el('editPanel').style.display = 'none';
-  selected = null;
+  clearSelection();
   await invoke('hide_to_tray');
 });
 

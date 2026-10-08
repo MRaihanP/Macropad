@@ -58,6 +58,23 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 7: halaman Home dan daftar aplikasi dipisah** - `src/home-page.js`
+  (340 baris) dan `src/app-picker.js` (113 baris). `main.js` turun dari 727 ke 347 baris.
+  - `home-page.js` memegang tab layer (dengan drag-reorder), grid tombol, daftar binding
+    knob, panel editor, dan perekaman keyboard. Ketiganya **sengaja satu modul**:
+    klik sel -> `openEditor()` -> mulai rekam -> `recordTokens` -> apply, dan tab ->
+    `switchLayer()` -> `loadLayer()` -> `renderGrid()`. Dipisah tiga modul akan muncul
+    siklus import. Test memverifikasi graf import `src/` bebas siklus.
+  - `app-picker.js` tidak butuh dependency injection sama sekali - semua yang
+    dibutuhkannya (Rust invoke, modal, DOM) bisa diimpor langsung.
+  - `selected` diekspor sebagai live binding; `main.js` tidak boleh menulisnya langsung
+    karena `import` tidak bisa di-assign, jadi ada `clearSelection()`.
+  - Konstanta `ENC_LABELS`, `MEDIA_MAP`, `MODIFIER_KEYS`, `MODIFIER_NAMES` ikut pindah
+    ke `home-page.js`; `MARK_DIRTY` disuntikkan lewat `initHomePage({ markDirty })`
+    supaya flag "belum tersimpan" tetap milik app.
+- **`home-page-diff.js`**: 17 fungsi di blok Home dan daftar aplikasi dibandingkan satu per
+  satu dengan versi `c46f5cb` dan hasilnya identik semua. Test juga mencetak graf import
+  `src/` supaya mudah diperiksa manual.
 - **Refactor Tahap 6: shell UI dipisah jadi tiga modul** - `src/ui-notify.js` (61 baris,
   notifikasi overlay + setting), `src/ui-modal.js` (74 baris, `showModalBase` /
   `showPromptModal` / `showConfirmModal` + `clipUtf8`), dan `src/ui-router.js` (50 baris,
