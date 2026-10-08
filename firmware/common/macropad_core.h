@@ -392,15 +392,15 @@ void scanMatrix() {
         if (keyDebouncedState[r][c]) {
           KeyAction action = activeCfg->layerMap[activeCfg->currentLayer][r][c];
           executeAction(action);
-          // Log per penekanan KEY. Nonaktif secara bawaan karena Print::vprintf memakai
-// buffer stack 64 byte lalu malloc untuk string yang lebih panjang - satu
-// malloc+free pada setiap penekanan tombol, di jalur terpanas firmware. Selain
-// boros heap, Serial.write() bisa busy-spin sampai 250ms bila host membuka port
-// tapi tidak membaca (mis. app sedang menampilkan dialog).
-#define DEBUG_KEY_LOG 0
-#if DEBUG_KEY_LOG
-      Serial.printf("[KEY] Layer %d, R%d C%d -> type=%d val=%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
-#endif
+          // Event penekanan key. WAJIB selalu dikirim: companion app memakainya untuk
+          // notifikasi overlay per key (notifyBoundAction). Formatnya sengaja ringkas
+          // karena Print::vprintf memakai buffer stack 64 byte lalu malloc untuk output
+          // yang lebih panjang; versi lama "Layer %d, R%d C%d -> type=%d val=%s" bisa
+          // melewati batas itu dan kena alokasi heap pada setiap penekanan tombol.
+          //
+          // Panjang terburuk: "[KEY] 7,2,2,3," + 47 char + newline = 62 byte, masih di
+          // bawah 64. Jangan tambah field tanpa menghitung ulang.
+          Serial.printf("[KEY] %d,%d,%d,%d,%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
           flashLed();
           rgbKeyFlash(r, c);
         }

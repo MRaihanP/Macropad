@@ -7,6 +7,17 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Fixed
+- **Notifikasi overlay per key ikut hilang** setelah Phase 6. App menjadikannya andal
+  pada baris `[KEY] ...` dari firmware, jadi mematikan pencetakan tersebut ikut
+  mematikan notifikasi — bukan hanya log di Serial monitor. `EVT:ENC:%d:%s` tetap
+  dikirim, sehingga notifikasi encoder masih muncul dan gejalanya hanya notifikasi
+  tombol yang hilang. Baris `[KEY]` kini **selalu** dikirim dengan format ringkas
+  `layer,row,col,type,value` (panjang terburuk 62 byte, masih di bawah buffer stack
+  64 byte `Print::vprintf`, jadi tidak kena `malloc`), dan regex parser di app
+  disesuaikan. Nilai macro yang mengandung koma tetap utuh karena field terakhir
+  memakai `(.*)`.
+
 ### Added
 
 #### Phase 6 — kurangi bekuanya firmware

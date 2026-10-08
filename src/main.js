@@ -1109,7 +1109,9 @@ function handleLine(line) {
     const pname = ap ? ap.name : 'Default';
     const lname = (ap ? ap.layers?.[n]?.name : layerNames[n]) || ('Layer ' + n);
     notify(`${pname} · ${lname}`, 'layer');
-  } else if ((mm = line.match(/^\[KEY\] Layer (\d+), R(\d+) C(\d+) -> type=(\d+) val=(.*)$/))) {
+  } else if ((mm = line.match(/^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$/))) {
+    // Format ringkas dari firmware: layer,row,col,type,value. Notifikasi hanya
+    // memakai type + value; posisi tombol tetap tampil di panel log.
     notifyBoundAction(parseInt(mm[4]), mm[5]);
   } else if ((mm = line.match(/^EVT:ENC:(\d+):(CW|CCW)$/))) {
     const a = encConfig[+mm[1]]?.[mm[2]];
