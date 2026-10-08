@@ -116,13 +116,37 @@ void broadcastLayerChanged() {
   Serial.printf("EVT:LAYER:%d\n", activeCfg->currentLayer);
 }
 
+// ---- Kedipan indikator non-blocking ----
+// Dulu blinkLedTimes() memakai delay(120) dua kali per kedipan. Pada 8 layer itu
+// 8 x 240ms = 1,92 detik firmware buta, dan karena scanMatrix() hanya MENGAMBIL
+// sampel (bukan mengantre), setiap penekanan tombol selama periode itu hilang
+// tanpa jejak. Sekarang dijalankan bertahap dari loop() lewat serviceLedBlink().
+#define LED_BLINK_STEP_MS 120
+#define LED_BLINK_MAX     4      // pola hanya perlu memberitahu "layer berapa"
+
+uint8_t ledBlinkRemaining = 0;
+unsigned long ledBlinkNextAt = 0;
+bool ledBlinkOn = false;
+
 void blinkLedTimes(uint8_t times) {
-  for (uint8_t i = 0; i < times; i++) {
-    statusLed(true);
-    delay(120);
+  if (times > LED_BLINK_MAX) times = LED_BLINK_MAX;   // jangan menambah buta tanpa informasi baru
+  ledBlinkRemaining = times;
+  ledBlinkOn = false;
+  ledBlinkNextAt = millis();
+}
+
+void serviceLedBlink() {
+  if (ledBlinkRemaining == 0) return;
+  if ((long)(millis() - ledBlinkNextAt) < 0) return;
+  if (ledBlinkOn) {
     statusLed(false);
-    delay(120);
+    ledBlinkOn = false;
+    if (--ledBlinkRemaining == 0) return;
+  } else {
+    statusLed(true);
+    ledBlinkOn = true;
   }
+  ledBlinkNextAt = millis() + LED_BLINK_STEP_MS;
 }
 
 // =================== DEFAULT CONFIG (Default Preset) ===================
@@ -257,14 +281,59 @@ void executeCombo(const char* combo) {
   Keyboard.releaseAll();
 }
 
+// ---- Gestur "buka aplikasi" (Win+Search -> ketik -> Enter) ----
+// Dijalankan BERTAHAP dari loop() lewat serviceOpenApp(), bukan blocking.
+// Versi lama memakai delay(80) + 450 + 450ms = ~1 detik beku total. Selama itu
+// scanMatrix() tetap berjalan, tetapi karena ia hanya mengambil sampel,
+// penekanan tombol yang jatuh di tengah gestur hilang tanpa jejak - persis
+// keluhan "macropad-nya gak responsif saat macro jalan".
+//
+// Sisa blocking hanya Keyboard.print() di dalam library HID (~1ms per karakter),
+// bukan ratusan milidetik seperti sebelumnya.
+enum OpenAppStep : uint8_t { OA_IDLE = 0, OA_WAIT_SEARCH, OA_WAIT_TYPE };
+OpenAppStep openAppStep = OA_IDLE;
+unsigned long openAppNextAt = 0;
+char openAppName[MACRO_MAX_LEN];
+
+// ---- Kedipan panjang saat gestur escape ----
+// 1 tahap: LED menyala lama sebagai penanda "context dilepas". Non-blocking.
+uint8_t escapeBlinkStage = 0;   // 0 = tidak aktif, 1 = nyalakan, 2 = padamkan
+unsigned long escapeBlinkNextAt = 0;
+
+void serviceEscapeBlink() {
+  if (escapeBlinkStage == 0) return;
+  if ((long)(millis() - escapeBlinkNextAt) < 0) return;
+  if (escapeBlinkStage == 1) {
+    statusLed(true);
+    escapeBlinkStage = 2;
+    escapeBlinkNextAt = millis() + 300;
+  } else {
+    statusLed(false);
+    escapeBlinkStage = 0;
+  }
+}
+
 void executeOpenApp(const char* appName) {
+  if (openAppStep != OA_IDLE) return;   // abaikan gesture yang belum selesai
+  strncpy(openAppName, appName, MACRO_MAX_LEN - 1);
+  openAppName[MACRO_MAX_LEN - 1] = '\0';
   Keyboard.press(KEY_LEFT_GUI);
-  delay(80);
   Keyboard.releaseAll();
-  delay(WIN_SEARCH_OPEN_DELAY_MS);
-  Keyboard.print(appName);
-  delay(WIN_SEARCH_TYPE_DELAY_MS);
-  Keyboard.write(KEY_RETURN);
+  openAppStep = OA_WAIT_SEARCH;
+  openAppNextAt = millis() + WIN_SEARCH_OPEN_DELAY_MS;
+}
+
+void serviceOpenApp() {
+  if (openAppStep == OA_IDLE) return;
+  if ((long)(millis() - openAppNextAt) < 0) return;
+  if (openAppStep == OA_WAIT_SEARCH) {
+    Keyboard.print(openAppName);
+    openAppStep = OA_WAIT_TYPE;
+    openAppNextAt = millis() + WIN_SEARCH_TYPE_DELAY_MS;
+  } else {
+    Keyboard.write(KEY_RETURN);
+    openAppStep = OA_IDLE;
+  }
 }
 
 void sendAppEvent(const char* appName) {
@@ -323,7 +392,15 @@ void scanMatrix() {
         if (keyDebouncedState[r][c]) {
           KeyAction action = activeCfg->layerMap[activeCfg->currentLayer][r][c];
           executeAction(action);
-          Serial.printf("[KEY] Layer %d, R%d C%d -> type=%d val=%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
+          // Log per penekanan KEY. Nonaktif secara bawaan karena Print::vprintf memakai
+// buffer stack 64 byte lalu malloc untuk string yang lebih panjang - satu
+// malloc+free pada setiap penekanan tombol, di jalur terpanas firmware. Selain
+// boros heap, Serial.write() bisa busy-spin sampai 250ms bila host membuka port
+// tapi tidak membaca (mis. app sedang menampilkan dialog).
+#define DEBUG_KEY_LOG 0
+#if DEBUG_KEY_LOG
+      Serial.printf("[KEY] Layer %d, R%d C%d -> type=%d val=%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
+#endif
           flashLed();
           rgbKeyFlash(r, c);
         }
@@ -384,12 +461,12 @@ void checkEncoder() {
       // Baru dilepas
       if (escapeTriggered) {
         // Pola beda sengaja: 1 kedipan panjang, bukan N-kali-sesuai-layer
-        // (currentLayer appCfg sudah tidak relevan, sebentar lagi dibuang companion)
+        // (currentLayer appCfg sudah tidak relevan, sebentar lagi dibuang companion).
+        // Dijalankan non-blocking lewat serviceEscapeBlink(); sebelumnya delay(100)
+        // + delay(300) membekukan loop selama 400ms.
         statusLed(false);
-        delay(100);
-        statusLed(true);
-        delay(300);
-        statusLed(false);
+        escapeBlinkStage = 1;
+        escapeBlinkNextAt = millis() + 100;
         escapeTriggered = false;
         layerSwitchTriggered = false;
       } else if (layerSwitchTriggered) {
@@ -993,6 +1070,11 @@ void loop() {
   scanMatrix();
   checkEncoder();
   checkSerialInput();
+  // Langkah non-blocking: kedipan LED dan gestur buka aplikasi. Keduanya
+  // sebelumnya memakai delay() sehingga loop beku dan penekanan tombol hilang.
+  serviceLedBlink();
+  serviceOpenApp();
+  serviceEscapeBlink();
   updateLed();
   updateRgb();
   reportBatt();

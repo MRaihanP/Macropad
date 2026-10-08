@@ -9,6 +9,37 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
+#### Phase 6 — kurangi bekuanya firmware
+- **`blinkLedTimes()` jadi non-blocking** (`serviceLedBlink()`), dan jumlah kedipan dibatasi
+  4. Dulu 8 layer = 8 × 240ms = **1,92 detik buta**; karena `scanMatrix()` hanya
+  mengambil sampel (bukan mengantre), setiap penekanan tombol pada periode itu hilang
+  tanpa jejak.
+- **Gestur "buka aplikasi" jadi bertahap** (`serviceOpenApp()`). Dulu
+  `delay(80) + 450 + 450ms` ≈ 1 detik beku total; sekarang hanya `Keyboard.print()` di
+  dalam library HID yang masih blocking (~1ms per karakter).
+- **Kedipan escape jadi non-blocking** (`serviceEscapeBlink()`), menggantikan
+  `delay(100) + delay(300)` = 400ms.
+- Semua fungsi `service*` dipanggil dari `loop()`.
+- `DEBUG_KEY_LOG` (default 0) untuk log per penekanan tombol, nonaktif secara bawaan:
+  `Print::vprintf` memakai buffer stack 64 byte lalu `malloc` untuk string lebih panjang,
+  sehingga tiap penekanan tombol menyebabkan satu `malloc`+`free` di jalur terpanas
+  firmware, dengan risiko `Serial.write()` busy-spin sampai 250ms bila host membuka port
+  tapi tidak membaca.
+
+### Tidak dikerjakan pada Phase 6
+- **Memindahkan scan matrix + serial ke task FreeRTOS terpisah** (rencana 6.1) sengaja
+  ditunda. Setelah 6.2–6.4, satu-satunya blocking yang tersisa hanya
+  `Keyboard.print()` di dalam library HID (~1ms/karakter), bukan ratusan milidetik.
+  Pindah ke task terpisah menuntut `Keyboard`, `strip` (Adafruit_NeoPixel), `prefs`, dan
+  `cfg` jadi thread-safe; tidak satu pun dari library itu yang thread-safe. Melakukan
+  refactor itu tanpa bisa compile dan tanpa hardware berisiko menghasilkan
+  korupsi data sesekali — jauh lebih buruk daripada masalah aslinya. Item ini layak
+  dikerjakan nanti dengan board FINAL tersedia untuk pengujian.
+
+### Changed
+- Sisa `delay()` di firmware hanya dua: `delay(15)` (jeda modifier di `executeCombo`,
+  disengaja dan pendek) dan `delay(300)` di `setup()`.
+
 #### Phase 5 — kontrak protokol
 - Waiter `DUMP` dipetakan per layer (`dumpWaiters`), bukan satu slot global, dan tiap
   waiter punya **timeout** 3 detik. Sebelumnya satu slot global dipakai bersama: dump
