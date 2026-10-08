@@ -35,6 +35,8 @@ windows = { version = "0.58", features = [
   "Win32_System_Com",
   "Win32_UI_Shell",
   "Win32_Storage_FileSystem",
+  # i18n: GetUserDefaultLocaleName untuk deteksi bahasa Windows.
+  "Win32_Globalization",
 ] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

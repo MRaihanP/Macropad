@@ -50,6 +50,13 @@ import {
   resetEditorState, clearSelection, selected, stopRecordingContinuous,
 } from "./home-page.js";
 import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
+// i18n. await di level modul supaya bahasa selesai ditentukan SEBELUM init*
+// mana pun yang merender teks dijalankan - kalau tidak, user akan melihat
+// teks dalam bahasa dasar sesaat lalu otomatis berubah.
+import { initI18n, initLanguageSelect, registerRerender, t } from "./i18n.js";
+
+await initI18n();
+initLanguageSelect(el('languageSelect'));
 
 // Config di device berubah tapi belum disimpan ke flash. Dipakai dialog "Simpan
 // dulu?" saat keluar, dan disuntikkan ke home-page lewat initHomePage({ markDirty }).

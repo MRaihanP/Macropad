@@ -470,6 +470,44 @@ fn quit_app(app: tauri::AppHandle) { app.exit(0); }
 struct AutostartStatus { enabled: bool, available: bool }
 
 // available = false di build debug (tauri dev): exe debug tidak boleh masuk startup Windows
+// ==================== I18N ====================
+
+/// Nama locale sistem operasi, mis. "id-ID" atau "en-US".
+///
+/// Dipakai i18n untuk memilih bahasa saat aplikasi pertama kali dibuka, jadi
+/// user tidak perlu memilih bahasa lewat dialog tambahan.
+///
+/// `GetUserDefaultLocaleName` (bukan `GetSystemDefaultLocaleName`): yang pertama
+/// mengikuti bahasa yang benar-benar dipilih user di Windows, yang kedua hanya
+/// bahasa bawaan sistem. Untuk "pilih bahasa otomatis" hampir selalu yang
+/// pertama yang benar - orang dengan Windows English tetapi bekerja dalam
+/// bahasa Indonesia tetap ingin antarmuka berbahasa Indonesia.
+///
+/// Panjang buffer 85 cukup: LOCALE_NAME_MAX_LENGTH di Win32 = 85.
+#[tauri::command]
+fn system_locale() -> Option<String> {
+    use windows::Win32::Globalization::GetUserDefaultLocaleName;
+    let mut buf = [0u16; 85];
+    // `unsafe` dibenarkan di sini: panjang buf diteruskan apa adanya ke API,
+    // jadi fungsi ini tidak bisa menulis melewati batas buffer.
+    let written = unsafe { GetUserDefaultLocaleName(&mut buf) };
+    // 0 = berhasil. Negatif = gagal. Lebih besar dari 85 berarti buffer
+    // kekecilan - praktis mustahil, tapi bail lebih aman daripada membaca
+    // di luar jangkauan.
+    if written <= 0 || written as usize >= buf.len() { return None; }
+    let s = String::from_utf16_lossy(&buf[..written as usize]);
+    Some(s.trim_end_matches('\0').to_string())
+}
+
+/// Dua huruf pertama locale sebagai kode bahasa.
+/// "id-ID" -> "id", "en-US" -> "en", "en" -> "en".
+///
+/// Dipisah dari `system_locale` supaya murni (tidak menyentuh Windows) dan
+/// bisa diuji langsung di unit test.
+fn language_of(locale: &str) -> String {
+    locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase()
+}
+
 #[tauri::command]
 fn autostart_status(app: tauri::AppHandle) -> AutostartStatus {
     #[cfg(desktop)]
@@ -710,6 +748,7 @@ pub fn run() {
             quit_app,
             autostart_status,
             autostart_set,
+            system_locale,
             get_foreground_exe,
             scan_bindable_apps,
             presets_get,
@@ -775,5 +814,56 @@ mod tests {
     fn aplikasi_tidak_ada_ditolak() {
         let d = data(&["Notepad"]);
         assert!(find_app(&d, "Zzzzz").is_err());
+    }
+
+    // ---- i18n: parsing locale ----
+
+    #[test]
+    fn locale_dipotong_ke_kode_bahasa() {
+        assert_eq!(language_of("id-ID"), "id");
+        assert_eq!(language_of("en-US"), "en");
+        assert_eq!(language_of("en-GB"), "en");
+        // Tanpa wilayah.
+        assert_eq!(language_of("id"), "id");
+        // Pemisah underscore juga dipakai sebagian Windows lama.
+        assert_eq!(language_of("en_US"), "en");
+        // Huruf besar harus dinormalkan, kalau tidak "EN-US" tidak akan cocok
+        // dengan daftar bahasa yang tersimpan lowercase.
+        assert_eq!(language_of("EN-US"), "en");
+        assert_eq!(language_of("Id-ID"), "id");
+    }
+
+    #[test]
+    fn locale_kosong_atau_aneh_tidak_panik() {
+        // Tidak boleh panik: string kosong akan jadi "" dan pemanggil wajib
+        //routing ke bahasa bawaan.
+        assert_eq!(language_of(""), "");
+        assert_eq!(language_of("-"), "");
+        assert_eq!(language_of("123"), "123");
+    }
+
+    #[test]
+    fn locale_windows_asli_terbaca() {
+        // Menguji jalur Win32 sungguhan. Kalau API-nya berubah atau buffer 85
+        // ternyata kekecilan, test ini gagal - bukan diam-diam mengembalikan
+        // None yang membuat semua user dapat bahasa default.
+        match system_locale() {
+            Some(loc) => {
+                assert!(!loc.is_empty(), "locale tidak boleh string kosong");
+                assert!(!loc.contains('\0'), "terminator NUL belum dibuang");
+                let lang = language_of(&loc);
+                assert!(!lang.is_empty(), "kode bahasa tidak boleh kosong: {}", loc);
+                // Bentuk BCP-47 yang diharapkan: xx atau xx-YY (huruf/hyphen).
+                assert!(
+                    lang.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "kode bahasa hanya boleh alfanumerik, dapat {:?}",
+                    lang
+                );
+            }
+            // Tidak mungkin terjadi di Windows modern, tapi kalau environment-nya
+            // memang tidak punya locale tidak apa-apa - pemanggil sudah
+            // menyiapkan bahasa bawaan.
+            None => { /* diterima */ }
+        }
     }
 }

@@ -12,28 +12,28 @@
 
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-toggle-row">
-      <button class="icon-btn" id="btnToggleSidebar" title="Buka/tutup panel" aria-label="Buka/tutup panel" aria-controls="sidebar" aria-expanded="true">
+      <button class="icon-btn" id="btnToggleSidebar" data-i18n-attr="title:sidebar.toggle|aria-label:sidebar.toggle" aria-controls="sidebar" aria-expanded="true">
         <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
     </div>
     <nav class="sidebar-nav">
-      <button type="button" class="nav-item active" data-page="home" title="Home">
+      <button type="button" class="nav-item active" data-page="home" data-i18n-attr="title:nav.home">
         <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg></span>
-        <span class="nav-label">Home</span>
+        <span class="nav-label" data-i18n="nav.home">Home</span>
       </button>
-      <button type="button" class="nav-item" data-page="adaptive" title="Adaptive Key Bind">
+      <button type="button" class="nav-item" data-page="adaptive" data-i18n-attr="title:nav.adaptive">
         <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span>
-        <span class="nav-label">Adaptive Key Bind</span>
+        <span class="nav-label" data-i18n="nav.adaptive">Adaptive Key Bind</span>
       </button>
-      <button type="button" class="nav-item" data-page="rgb" title="RGB Setting">
+      <button type="button" class="nav-item" data-page="rgb" data-i18n-attr="title:nav.rgb">
         <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.4.3.6.8.6 1.3V16h5.8v-.8c0-.5.2-1 .6-1.3A6 6 0 0 0 12 3Z"/></svg></span>
-        <span class="nav-label">RGB Setting</span>
+        <span class="nav-label" data-i18n="nav.rgb">RGB Setting</span>
       </button>
     </nav>
     <nav class="sidebar-nav sidebar-bottom">
-      <button type="button" class="nav-item" data-page="settings" title="Setting">
+      <button type="button" class="nav-item" data-page="settings" data-i18n-attr="title:nav.settings">
         <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></span>
-        <span class="nav-label">Setting</span>
+        <span class="nav-label" data-i18n="nav.settings">Setting</span>
       </button>
     </nav>
   </aside>
@@ -44,12 +44,12 @@
     <header>
       <div>
         <h1>Macro Pad Configurator</h1>
-        <div class="sub">ESP32-S3 · 3×3 matrix + encoder · Native App</div>
+        <div class="sub" data-i18n="header.subtitle">ESP32-S3 · 3×3 matrix + encoder · Native App</div>
       </div>
       <div class="status">
-        <label class="autostart" id="autostartLabel"><input type="checkbox" id="autostartToggle"><span>Jalankan saat Windows start</span></label>
+        <label class="autostart" id="autostartLabel"><input type="checkbox" id="autostartToggle"><span data-i18n="header.autostart">Jalankan saat Windows start</span></label>
         <select id="portSelect"></select>
-        <button class="small" id="btnRefreshPorts" aria-label="Pindai ulang port serial" title="Pindai ulang port serial">↻</button>
+        <button class="small" id="btnRefreshPorts" data-i18n-attr="aria-label:header.refreshPorts|title:header.refreshPorts">↻</button>
         <span class="dot" id="dot" aria-hidden="true"></span>
         <!-- role="status" = live region polite: perubahan koneksi diumumkan screen
              reader tanpa memutus apa yang sedang dibacakan. -->
@@ -57,7 +57,7 @@
         <span class="hw-badge" id="hwProfileBadge" style="display:none;"></span>
         <!-- Baterai: role="img" karena isinya SVG, yang tidak bisa dibaca screen reader.
              Labelnya diperbarui dari battery-ui.js. -->
-        <span class="batt" id="battInd" title="Baterai" role="img">
+        <span class="batt" id="battInd" role="img">
           <svg viewBox="0 0 30 14" width="30" height="14" fill="none" aria-hidden="true">
             <rect x="0.75" y="0.75" width="25.5" height="12.5" rx="3.5" stroke="currentColor" stroke-width="1.5"/>
             <rect x="27.5" y="4.5" width="2" height="5" rx="1" fill="currentColor"/>
@@ -73,10 +73,10 @@
     <!-- ============ PAGE: HOME ============ -->
     <div id="page-home" class="page">
       <div id="presetEditBanner" class="preset-edit-banner" style="display:none;">
-        <span>Mengedit preset: <strong id="presetEditName">—</strong></span>
+        <span><span data-i18n="home.editingPreset">Mengedit preset:</span> <strong id="presetEditName">—</strong></span>
         <span style="flex:1;"></span>
-        <button class="small primary" id="btnPresetEditDone">✓ Selesai &amp; Simpan</button>
-        <button class="small" id="btnPresetEditCancel">Batal</button>
+        <button class="small primary" id="btnPresetEditDone" data-i18n="home.editDone">✓ Selesai &amp; Simpan</button>
+        <button class="small" id="btnPresetEditCancel" data-i18n="home.cancel">Batal</button>
       </div>
       <div id="app" style="display:none;">
 
@@ -84,13 +84,13 @@
 
           <div class="dash-left">
             <div class="device-meta-card">
-              <div class="device-meta-row"><span>Device</span><span id="deviceNameLabel">—</span></div>
-              <div class="device-meta-row"><span>Matrix</span><span id="deviceMatrixLabel">— × —</span></div>
-              <div class="device-meta-row"><span>Knob</span><span id="deviceEncLabel">—</span></div>
-              <div class="device-meta-row"><span>Preset Aktif</span><span id="deviceActivePresetLabel">Default</span></div>
+              <div class="device-meta-row"><span data-i18n="home.meta.device">Device</span><span id="deviceNameLabel">—</span></div>
+              <div class="device-meta-row"><span data-i18n="home.meta.matrix">Matrix</span><span id="deviceMatrixLabel">— × —</span></div>
+              <div class="device-meta-row"><span data-i18n="home.meta.knob">Knob</span><span id="deviceEncLabel">—</span></div>
+              <div class="device-meta-row"><span data-i18n="home.meta.activePreset">Preset Aktif</span><span id="deviceActivePresetLabel">Default</span></div>
             </div>
             <div class="device-card">
-              <div class="device-card-title">Layout Tombol — <span id="deviceLayerLabel">Layer 0</span></div>
+              <div class="device-card-title"><span data-i18n="home.layoutTitle">Layout Tombol</span> — <span id="deviceLayerLabel">Layer 0</span></div>
               <div class="grid" id="grid"></div>
               <div class="enc-list" id="encList"></div>
             </div>
@@ -102,14 +102,14 @@
               <div class="tabs" id="tabs"></div>
               <div class="layer-row">
                 <div class="layer-tools">
-                  <button class="small" id="btnAddLayer">+ Layer</button>
-                  <button class="small" id="btnDelLayer">− Delete</button>
-                  <button class="small" id="btnRenameLayer">✎ Rename</button>
+                  <button class="small" id="btnAddLayer" data-i18n="home.addLayer">+ Layer</button>
+                  <button class="small" id="btnDelLayer" data-i18n="home.deleteLayer">− Delete</button>
+                  <button class="small" id="btnRenameLayer" data-i18n="home.renameLayer">✎ Rename</button>
                 </div>
                 <div class="action-row">
-                  <button id="btnRefresh">Load</button>
-                  <button id="btnReset">Reset</button>
-                  <button class="primary" id="btnSave">Save</button>
+                  <button id="btnRefresh" data-i18n="home.load">Load</button>
+                  <button id="btnReset" data-i18n="home.reset">Reset</button>
+                  <button class="primary" id="btnSave" data-i18n="home.save">Save</button>
                 </div>
               </div>
             </div>
@@ -119,56 +119,56 @@
                 <h2 id="editTitle">Edit</h2>
                 <div class="row">
                   <select id="editType">
-                    <option value="0">NONE — kosong</option>
-                    <option value="1">KEY — satu karakter</option>
-                    <option value="2">COMBO — kombinasi tombol</option>
-                    <option value="3">TEXT — teks panjang</option>
-                    <option value="4">CONSUMER — media/volume</option>
-                    <option value="5">APP — buka aplikasi (via companion)</option>
+                    <option value="0" data-i18n="editor.type.0">NONE — kosong</option>
+                    <option value="1" data-i18n="editor.type.1">KEY — satu karakter</option>
+                    <option value="2" data-i18n="editor.type.2">COMBO — kombinasi tombol</option>
+                    <option value="3" data-i18n="editor.type.3">TEXT — teks panjang</option>
+                    <option value="4" data-i18n="editor.type.4">CONSUMER — media/volume</option>
+                    <option value="5" data-i18n="editor.type.5">APP — buka aplikasi (via companion)</option>
                   </select>
                 </div>
                 <div class="row">
-                  <input type="text" id="editValue" placeholder="mis. a / CTRL+C / hello world">
+                  <input type="text" id="editValue" data-i18n-attr="placeholder:editor.valuePlaceholder" placeholder="mis. a / CTRL+C / hello world">
                 </div>
                 <div class="consumer-grid row" id="consumerButtons">
-                  <button data-val="VOLUP">Vol +</button>
-                  <button data-val="VOLDOWN">Vol −</button>
-                  <button data-val="MUTE">Mute</button>
-                  <button data-val="PLAYPAUSE">Play/Pause</button>
-                  <button data-val="NEXT">Next</button>
-                  <button data-val="PREV">Prev</button>
+                  <button data-val="VOLUP" data-i18n="editor.consumer.VOLUP">Vol +</button>
+                  <button data-val="VOLDOWN" data-i18n="editor.consumer.VOLDOWN">Vol −</button>
+                  <button data-val="MUTE" data-i18n="editor.consumer.MUTE">Mute</button>
+                  <button data-val="PLAYPAUSE" data-i18n="editor.consumer.PLAYPAUSE">Play/Pause</button>
+                  <button data-val="NEXT" data-i18n="editor.consumer.NEXT">Next</button>
+                  <button data-val="PREV" data-i18n="editor.consumer.PREV">Prev</button>
                 </div>
                 <div id="appPicker" style="display:none;">
                   <div class="row">
-                    <input type="text" id="appSearch" placeholder="Cari aplikasi...">
-                    <button class="small" id="btnAddExe">+ Tambah .exe</button>
-                    <button class="small" id="btnRescanApps">↻ Scan ulang</button>
+                    <input type="text" id="appSearch" data-i18n-attr="placeholder:appPicker.searchPlaceholder" placeholder="Cari aplikasi...">
+                    <button class="small" id="btnAddExe" data-i18n="appPicker.addExe">+ Tambah .exe</button>
+                    <button class="small" id="btnRescanApps" data-i18n="appPicker.rescan">↻ Scan ulang</button>
                   </div>
                   <div class="app-list" id="appList"></div>
                   <div class="row app-meta-row">
                     <span class="hint" id="appMeta">—</span>
-                    <label class="hint app-ttl">Pindai ulang tiap
+                    <label class="hint app-ttl"><span data-i18n="appPicker.rescanEvery">Pindai ulang tiap</span>
                       <select id="appTtl">
-                        <option value="1">1 hari</option>
-                        <option value="3">3 hari</option>
-                        <option value="7">7 hari</option>
-                        <option value="14">14 hari</option>
-                        <option value="30">30 hari</option>
+                        <option value="1" data-i18n="appPicker.days" data-i18n-n="1">1 hari</option>
+                        <option value="3" data-i18n="appPicker.days" data-i18n-n="3">3 hari</option>
+                        <option value="7" data-i18n="appPicker.days" data-i18n-n="7">7 hari</option>
+                        <option value="14" data-i18n="appPicker.days" data-i18n-n="14">14 hari</option>
+                        <option value="30" data-i18n="appPicker.days" data-i18n-n="30">30 hari</option>
                       </select>
                     </label>
                   </div>
-                  <div class="hint">Aksi APP dibuka oleh companion app di PC (jalan di tray). Kalau app ini tidak berjalan, device otomatis mengetik nama aplikasi lewat Windows Search.</div>
+                  <div class="hint" data-i18n="appPicker.hint">Aksi APP dibuka oleh companion app di PC (jalan di tray). Kalau app ini tidak berjalan, device otomatis mengetik nama aplikasi lewat Windows Search.</div>
                 </div>
-                <div class="hint" id="recordHint">Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi.</div>
+                <div class="hint" id="recordHint" data-i18n="editor.recordHint">Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi.</div>
                 <div class="row" style="margin-top:12px;">
-                  <button class="primary" id="btnApply">Terapkan ke device</button>
-                  <button id="btnCancel">Batal</button>
+                  <button class="primary" id="btnApply" data-i18n="editor.apply">Terapkan ke device</button>
+                  <button id="btnCancel" data-i18n="home.cancel">Batal</button>
                 </div>
               </div>
 
               <div class="panel log-panel">
-                <h2>Log</h2>
-                <div class="log" id="log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Log aktivitas"></div>
+                <h2 data-i18n="home.log">Log</h2>
+                <div class="log" id="log" role="log" aria-live="polite" aria-relevant="additions" data-i18n-attr="aria-label:home.logLabel"></div>
               </div>
             </div>
 
@@ -184,20 +184,20 @@
       <div class="adaptive-header">
         <div>
           <h2 style="margin:0;">Adaptive Key Bind</h2>
-          <div class="hint">Pindah preset otomatis saat aplikasi tertentu jadi window aktif.</div>
+          <div class="hint" data-i18n="adaptive.subtitle">Pindah preset otomatis saat aplikasi tertentu jadi window aktif.</div>
         </div>
         <div class="toggle-row">
           <label class="toggle-switch">
             <input type="checkbox" id="masterEnabledToggle">
             <span class="toggle-slider"></span>
           </label>
-          <span class="toggle-label-text">Aktifkan fitur</span>
+          <span class="toggle-label-text" data-i18n="adaptive.enableFeature">Aktifkan fitur</span>
         </div>
       </div>
 
       <div id="presetList" class="preset-list"></div>
 
-      <button class="add-preset-bar" id="btnAddPreset">+ Tambah preset</button>
+      <button class="add-preset-bar" id="btnAddPreset" data-i18n="adaptive.addPreset">+ Tambah preset</button>
     </div>
 
     <!-- ============ PAGE: SETTING ============ -->
@@ -205,74 +205,85 @@
       <div class="adaptive-header">
         <div>
           <h2 style="margin:0;">Setting</h2>
-          <div class="hint">Pengaturan aplikasi companion.</div>
+          <div class="hint" data-i18n="settings.subtitle">Pengaturan aplikasi companion.</div>
         </div>
       </div>
       <div class="panel">
-        <h2>Fitur Global</h2>
+        <h2 data-i18n="settings.globalFeatures">Fitur Global</h2>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Adaptive Key Bind</div>
-            <div class="hint">Pindah preset otomatis mengikuti aplikasi aktif.</div>
+            <div class="setting-name" data-i18n="settings.adaptiveName">Adaptive Key Bind</div>
+            <div class="hint" data-i18n="settings.adaptiveHint">Pindah preset otomatis mengikuti aplikasi aktif.</div>
           </div>
           <label class="toggle-switch"><input type="checkbox" id="globalAdaptiveToggle"><span class="toggle-slider"></span></label>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-name">RGB</div>
-            <div class="hint" id="globalRgbHint">Hubungkan device dengan RGB untuk mengubah ini.</div>
+            <div class="setting-name" data-i18n="settings.rgbName">RGB</div>
+            <div class="hint" id="globalRgbHint" data-i18n="settings.rgbHint">Hubungkan device dengan RGB untuk mengubah ini.</div>
           </div>
           <label class="toggle-switch"><input type="checkbox" id="globalRgbToggle"><span class="toggle-slider"></span></label>
         </div>
       </div>
       <div class="panel">
-        <h2>Notifikasi</h2>
+        <h2 data-i18n="settings.notifications">Notifikasi</h2>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Notifikasi dasar</div>
-            <div class="hint">Koneksi, perpindahan layer, dan perpindahan preset.</div>
+            <div class="setting-name" data-i18n="settings.notifyBasicName">Notifikasi dasar</div>
+            <div class="hint" data-i18n="settings.notifyBasicHint">Koneksi, perpindahan layer, dan perpindahan preset.</div>
           </div>
           <label class="toggle-switch"><input type="checkbox" id="notifyBasicToggle"><span class="toggle-slider"></span></label>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Notifikasi per key</div>
-            <div class="hint">Tombol dan knob yang ditekan. Tampil selama 1 detik.</div>
+            <div class="setting-name" data-i18n="settings.notifyKeysName">Notifikasi per key</div>
+            <div class="hint" data-i18n="settings.notifyKeysHint">Tombol dan knob yang ditekan. Tampil selama 1 detik.</div>
           </div>
           <label class="toggle-switch"><input type="checkbox" id="notifyKeysToggle"><span class="toggle-slider"></span></label>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Notifikasi baterai</div>
-            <div class="hint">Mulai mengecas, cas selesai, baterai lemah, dan baterai kritis.</div>
+            <div class="setting-name" data-i18n="settings.notifyBatteryName">Notifikasi baterai</div>
+            <div class="hint" data-i18n="settings.notifyBatteryHint">Mulai mengecas, cas selesai, baterai lemah, dan baterai kritis.</div>
           </div>
           <label class="toggle-switch"><input type="checkbox" id="notifyBatteryToggle"><span class="toggle-slider"></span></label>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Tes notifikasi</div>
-            <div class="hint">Tampilkan contoh notifikasi di layar.</div>
+            <div class="setting-name" data-i18n="settings.notifyTestName">Tes notifikasi</div>
+            <div class="hint" data-i18n="settings.notifyTestHint">Tampilkan contoh notifikasi di layar.</div>
           </div>
           <button class="small btn-icon" id="btnTestNotif">
             <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-            <span>Tes</span>
+            <span data-i18n="settings.notifyTestButton">Tes</span>
           </button>
         </div>
       </div>
+
       <div class="panel">
-        <h2>Daya (wireless)</h2>
+        <h2 data-i18n="settings.language">Bahasa</h2>
         <div class="setting-row">
           <div>
-            <div class="setting-name">Tidur otomatis</div>
-            <div class="hint" id="sleepHint">Hanya tersedia saat device FINAL terhubung.</div>
+            <div class="setting-name" data-i18n="settings.language">Bahasa</div>
+            <div class="hint" data-i18n="settings.languageHint">Antarmuka dan notifikasi. Awalnya mengikuti bahasa Windows.</div>
+          </div>
+          <select id="languageSelect" data-i18n-attr="aria-label:settings.language"></select>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 data-i18n="settings.power">Daya (wireless)</h2>
+        <div class="setting-row">
+          <div>
+            <div class="setting-name" data-i18n="settings.sleepName">Tidur otomatis</div>
+            <div class="hint" id="sleepHint" data-i18n="settings.sleepHint">Hanya tersedia saat device FINAL terhubung.</div>
           </div>
           <select id="sleepTimeoutSelect">
-            <option value="0">Nonaktif</option>
-            <option value="60">1 menit</option>
-            <option value="120">2 menit</option>
-            <option value="300">5 menit</option>
-            <option value="600">10 menit</option>
-            <option value="1800">30 menit</option>
+            <option value="0" data-i18n="settings.sleep.off">Nonaktif</option>
+            <option value="60" data-i18n="settings.sleep.minutes" data-i18n-n="1">1 menit</option>
+            <option value="120" data-i18n="settings.sleep.minutes" data-i18n-n="2">2 menit</option>
+            <option value="300" data-i18n="settings.sleep.minutes" data-i18n-n="5">5 menit</option>
+            <option value="600" data-i18n="settings.sleep.minutes" data-i18n-n="10">10 menit</option>
+            <option value="1800" data-i18n="settings.sleep.minutes" data-i18n-n="30">30 menit</option>
           </select>
         </div>
       </div>
@@ -283,48 +294,48 @@
       <div class="adaptive-header">
         <div>
           <h2 style="margin:0;">RGB Setting</h2>
-          <div class="hint">Pencahayaan per-key. Pengaturan ini dikendalikan lewat companion app.</div>
+          <div class="hint" data-i18n="rgb.subtitle">Pencahayaan per-key. Pengaturan ini dikendalikan lewat companion app.</div>
         </div>
         <div class="toggle-row">
           <label class="toggle-switch"><input type="checkbox" id="rgbEnabledToggle"><span class="toggle-slider"></span></label>
-          <span class="toggle-label-text">Aktifkan RGB</span>
+          <span class="toggle-label-text" data-i18n="rgb.enable">Aktifkan RGB</span>
         </div>
       </div>
 
       <div class="dashboard" id="rgbDash">
         <div class="dash-left">
           <div class="device-card">
-            <div class="device-card-title">Peta RGB — klik key untuk mengatur warnanya</div>
+            <div class="device-card-title" data-i18n="rgb.mapTitle">Peta RGB — klik key untuk mengatur warnanya</div>
             <div class="grid" id="rgbGrid"></div>
-            <div class="hint" style="text-align:center;">Knob tidak terlihat di sini, fokus ke grid tombol.</div>
+            <div class="hint" style="text-align:center;" data-i18n="rgb.knobHint">Knob tidak terlihat di sini, fokus ke grid tombol.</div>
           </div>
         </div>
         <div class="dash-right">
           <div class="panel">
-            <h2>Pencahayaan</h2>
-            <div class="rgb-slider-row"><span>Kecerahan</span><input type="range" id="rgbBri" min="0" max="100" value="78"><span id="rgbBriVal" class="rgb-val">78%</span></div>
-            <div class="hint">100% di app = batas maksimal aman firmware (~60% PWM LED).</div>
-            <div class="rgb-slider-row"><span>Kecepatan</span><input type="range" id="rgbSpeed" min="0" max="255" value="128"><span id="rgbSpeedVal" class="rgb-val">50%</span></div>
+            <h2 data-i18n="rgb.lighting">Pencahayaan</h2>
+            <div class="rgb-slider-row"><span data-i18n="rgb.brightness">Kecerahan</span><input type="range" id="rgbBri" min="0" max="100" value="78"><span id="rgbBriVal" class="rgb-val">78%</span></div>
+            <div class="hint" data-i18n="rgb.brightnessHint">100% di app = batas maksimal aman firmware (~60% PWM LED).</div>
+            <div class="rgb-slider-row"><span data-i18n="rgb.speed">Kecepatan</span><input type="range" id="rgbSpeed" min="0" max="255" value="128"><span id="rgbSpeedVal" class="rgb-val">50%</span></div>
           </div>
 
           <div class="panel" id="rgbKeyCard" style="display:none;">
             <h2 id="rgbKeyTitle">Warna key</h2>
             <input type="color" id="rgbColorPicker" value="#10605A">
-            <div class="hint">Mengubah warna key otomatis masuk mode Custom per Key.</div>
+            <div class="hint" data-i18n="rgb.keyColorHint">Mengubah warna key otomatis masuk mode Custom per Key.</div>
           </div>
 
           <div class="panel">
-            <h2>Mode Lighting</h2>
+            <h2 data-i18n="rgb.lightingMode">Mode Lighting</h2>
             <div class="rgb-preset-list" id="rgbPresetList"></div>
             <div id="cpModeWrap" style="margin-top:8px;">
               <input type="color" id="rgbModeColor" value="#10605A">
-              <div class="hint">Warna pilihan untuk mode lighting yang mendukung warna.</div>
+              <div class="hint" data-i18n="rgb.lightingModeHint">Warna pilihan untuk mode lighting yang mendukung warna.</div>
             </div>
           </div>
 
           <div class="row">
-            <button class="primary" id="btnRgbSave">Simpan ke device</button>
-            <button id="btnRgbReset">Reset ke default</button>
+            <button class="primary" id="btnRgbSave" data-i18n="rgb.save">Simpan ke device</button>
+            <button id="btnRgbReset" data-i18n="rgb.reset">Reset ke default</button>
             <span class="hint" id="rgbSaveState"></span>
           </div>
         </div>
