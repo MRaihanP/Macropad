@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "Capability for the always-on-top notification overlay window. Kept as small as possible: the overlay only displays text sent by Rust, it needs no serial access, no filesystem, and no window control.",
+  "windows": ["overlay"],
+  "permissions": [
+    "core:event:allow-listen"
+  ]
+}

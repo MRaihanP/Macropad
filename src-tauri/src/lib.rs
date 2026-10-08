@@ -25,7 +25,7 @@ use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 use windows::core::{PWSTR, PCWSTR, Interface};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct AppEntry {
     name: String,
     id: String, // id = AppID, path .lnk (fallback scan), atau path .exe/.lnk (entri manual)
@@ -53,17 +53,47 @@ fn now_secs() -> u64 {
 fn data_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("apps.json"))
 }
+
+// load_data/save_data bisa dipanggil dari beberapa thread berbeda sekaligus
+// (launch_app menulis d.apps sementara apps_rescan juga menulis). Tanpa lock, satu
+// penulisan bisa menimpa hasil yang lain.
+static DATA_LOCK: Mutex<()> = Mutex::new(());
+
 fn load_data(app: &tauri::AppHandle) -> AppData {
-    data_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-fn save_data(app: &tauri::AppHandle, d: &AppData) {
-    if let Some(p) = data_path(app) {
-        if let Some(dir) = p.parent() { let _ = std::fs::create_dir_all(dir); }
-        if let Ok(s) = serde_json::to_string(d) { let _ = std::fs::write(p, s); }
+    let _g = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    match data_path(app) {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Dulu file korup diam-diam diganti default lalu ditimpa, jadi
+                    // seluruh daftar aplikasi kustom hilang tanpa jejak.
+                    eprintln!("[apps.json] rusak ({}), dicadangkan sebagai apps.json.corrupt", e);
+                    let _ = std::fs::rename(&p, p.with_extension("json.corrupt"));
+                    AppData::default()
+                }
+            },
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("[apps.json] gagal dibaca: {}", e);
+                AppData::default()
+            }
+            Err(_) => AppData::default(),
+        },
+        None => AppData::default(),
     }
+}
+
+fn save_data(app: &tauri::AppHandle, d: &AppData) -> Result<(), String> {
+    let _g = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let p = data_path(app).ok_or("path app data tidak tersedia")?;
+    if let Some(dir) = p.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+    let s = serde_json::to_string(d).map_err(|e| e.to_string())?;
+    // Tulis ke file sementara lalu rename: rename bersifat atomik di NTFS, jadi
+    // apps.json tidak pernah terlihat setengah tertulis (power loss di tengah tulis).
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    Ok(())
 }
 fn view_of(d: &AppData) -> AppsView {
     let age = now_secs().saturating_sub(d.scanned_at);
@@ -158,29 +188,47 @@ fn scan_start_apps() -> Vec<AppEntry> {
     apps
 }
 
-fn find_app(d: &AppData, name: &str) -> Option<AppEntry> {
+fn find_app(d: &AppData, name: &str) -> Result<AppEntry, String> {
     let n = name.trim().to_lowercase();
-    if n.is_empty() { return None; }
+    if n.is_empty() { return Err("Nama aplikasi kosong".into()); }
     let all = || d.custom.iter().chain(d.apps.iter());
-    all()
-        .find(|a| a.name.to_lowercase() == n)
-        // nama dari firmware bisa terpotong (batas 47 karakter), jadi cocokkan juga awalannya
-        .or_else(|| all().find(|a| a.name.to_lowercase().starts_with(&n)))
-        .cloned()
+    // Cocokkan persis dulu.
+    if let Some(a) = all().find(|a| a.name.to_lowercase() == n) { return Ok(a.clone()); }
+    // Nama dari firmware bisa terpotong (batas 47 karakter), jadi cocokkan juga
+    // awalannya. Dua syarat menjaga agar ini tidak jadi amplifier:
+    //   1. prefix minimal 4 karakter - "sl" akan cocok dengan Slack, Spotify,
+    //      Slackmate, dan banyak lagi;
+    //   2. prefix harus unik - kalau lebih dari satu aplikasi cocok, jangan menebak
+    //      diam-diam, karena perangkat yang sekadar mengirim baris acak akan membuat
+    //      PC menjalankan program yang tidak pernah dipilih user.
+    if n.chars().count() >= 4 {
+        let hits: Vec<&AppEntry> = all().filter(|a| a.name.to_lowercase().starts_with(&n)).collect();
+        if hits.len() == 1 { return Ok(hits[0].clone()); }
+        if hits.len() > 1 {
+            let names: Vec<&str> = hits.iter().take(4).map(|a| a.name.as_str()).collect();
+            return Err(format!(
+                "Nama \"{}\" tidak unik: cocok dengan {} aplikasi ({}). Pilih ulang di app.",
+                name, hits.len(), names.join(", ")
+            ));
+        }
+    }
+    Err(format!("Aplikasi tidak ditemukan: {}", name))
 }
 
 fn launch_impl(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
     let mut data = load_data(app);
     let mut found = find_app(&data, name);
-    if found.is_none() && data.consent {
+    if found.is_err() && data.consent {
         // mungkin aplikasi baru diinstal: scan ulang sekali lalu coba lagi
         data.apps = scan_start_apps();
         data.scanned_at = now_secs();
-        save_data(app, &data);
+        if let Err(e) = save_data(app, &data) { eprintln!("[apps] simpan gagal: {}", e); }
         found = find_app(&data, name);
     }
-    let entry = found.ok_or_else(|| {
-        format!("Aplikasi tidak ditemukan: {} (buka app, pilih aplikasi lagi dan Scan ulang)", name)
+    let entry = found.map_err(|e| {
+        if e.contains("tidak ditemukan") {
+            format!("{} (buka app, pilih aplikasi lagi dan Scan ulang)", e)
+        } else { e }
     })?;
     let target = if entry.custom {
         if !Path::new(&entry.id).exists() {
@@ -307,9 +355,14 @@ fn presets_get(app: tauri::AppHandle) -> PresetsFile {
 #[tauri::command]
 fn presets_save(app: tauri::AppHandle, data: PresetsFile) -> Result<(), String> {
     let p = presets_path(&app).ok_or("Gagal menentukan path data")?;
-    if let Some(dir) = p.parent() { let _ = std::fs::create_dir_all(dir); }
+    if let Some(dir) = p.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
     let s = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-    std::fs::write(p, s).map_err(|e| e.to_string())
+    // Tulis atomik lewat file sementara + rename. Versi lama menulis langsung ke
+    // presets.json, jadi power loss di tengah menulis meninggalkan file terpotong
+    // yang berikutnya diam-diam dibaca sebagai default - semua preset hilang.
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -319,14 +372,14 @@ fn apps_get(app: tauri::AppHandle) -> AppsView { view_of(&load_data(&app)) }
 fn apps_set_consent(app: tauri::AppHandle, value: bool) {
     let mut d = load_data(&app);
     d.consent = value;
-    save_data(&app, &d);
+    if let Err(e) = save_data(&app, &d) { eprintln!("[apps] simpan gagal: {}", e); }
 }
 
 #[tauri::command]
 fn apps_set_ttl(app: tauri::AppHandle, days: u32) {
     let mut d = load_data(&app);
     d.ttl_days = days.max(1);
-    save_data(&app, &d);
+    if let Err(e) = save_data(&app, &d) { eprintln!("[apps] simpan gagal: {}", e); }
 }
 
 #[tauri::command]
@@ -335,7 +388,7 @@ async fn apps_rescan(app: tauri::AppHandle) -> Result<AppsView, String> {
         let mut d = load_data(&app);
         d.apps = scan_start_apps();
         d.scanned_at = now_secs();
-        save_data(&app, &d);
+        if let Err(e) = save_data(&app, &d) { eprintln!("[apps] simpan gagal: {}", e); }
         view_of(&d)
     })
     .await
@@ -372,7 +425,7 @@ fn apps_add_custom(app: tauri::AppHandle, name: String, path: String) -> Result<
     let mut d = load_data(&app);
     d.custom.retain(|a| !a.name.eq_ignore_ascii_case(&name)); // nama sama = timpa
     d.custom.push(AppEntry { name, id: path, custom: true });
-    save_data(&app, &d);
+    if let Err(e) = save_data(&app, &d) { eprintln!("[apps] simpan gagal: {}", e); }
     Ok(())
 }
 
@@ -380,7 +433,7 @@ fn apps_add_custom(app: tauri::AppHandle, name: String, path: String) -> Result<
 fn apps_remove_custom(app: tauri::AppHandle, name: String) {
     let mut d = load_data(&app);
     d.custom.retain(|a| !a.name.eq_ignore_ascii_case(&name));
-    save_data(&app, &d);
+    if let Err(e) = save_data(&app, &d) { eprintln!("[apps] simpan gagal: {}", e); }
 }
 
 #[tauri::command]
@@ -484,6 +537,7 @@ fn now_ms() -> u64 {
 static HIDE_AT: AtomicU64 = AtomicU64::new(0);      // kapan overlay boleh disembunyikan (ms epoch)
 static HIDE_WATCHER: AtomicBool = AtomicBool::new(false);
 static OVERLAY_INIT: Mutex<()> = Mutex::new(());    // cegah dua thread membuat overlay bersamaan
+const EVENT_NOTIFY: &str = "overlay-notify";       // channel resmi Rust -> overlay.html
 
 fn build_overlay(app: &tauri::AppHandle, strict: bool) -> Result<tauri::WebviewWindow, String> {
     let mut b = tauri::WebviewWindowBuilder::new(app, OVERLAY_WINDOW, tauri::WebviewUrl::App("overlay.html".into()))
@@ -515,6 +569,30 @@ fn ensure_overlay(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String
     Ok(w)
 }
 
+// Antrean notifikasi yang belum bisa dikirim karena halaman overlay belum siap
+// memasang listener-nya. Dulu ini ditangani dengan w.eval() yang menyuntik JS,
+// sehingga teks device (yang berasal dari nilai macro di flash) ikut di-parse sebagai
+// JavaScript. Sekarang lewat channel event resmi, jadi teks aman dan murni data.
+static PENDING_NOTIFY: Mutex<Vec<serde_json::Value>> = Mutex::new(Vec::new());
+static OVERLAY_READY: AtomicBool = AtomicBool::new(false);
+
+fn deliver_overlay(w: &tauri::WebviewWindow, payload: &serde_json::Value) {
+    if let Err(e) = w.emit(EVENT_NOTIFY, payload.clone()) {
+        eprintln!("[overlay] emit gagal: {}", e);
+    }
+}
+
+// Dipanggil overlay.html setelah listener-nya terpasang; sekaligus Functions drain
+// antrean yang menumpuk selama halaman belum siap.
+#[tauri::command]
+fn overlay_ready(app: tauri::AppHandle) -> Result<(), String> {
+    let w = ensure_overlay(&app)?;
+    OVERLAY_READY.store(true, Ordering::SeqCst);
+    let queued = { let mut q = PENDING_NOTIFY.lock().unwrap_or_else(|e| e.into_inner()); std::mem::take(&mut *q) };
+    if let Some(last) = queued.last() { deliver_overlay(&w, last); }
+    Ok(())
+}
+
 // async: jalan di thread pool, BUKAN main thread, supaya tidak pernah memblokir UI/serial
 #[tauri::command]
 async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<u64>) -> Result<(), String> {
@@ -530,10 +608,16 @@ async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<
         let _ = w.show();
     }
 
-    // Masuk antrean di halaman overlay: aman walau halamannya belum selesai dimuat
     let payload = serde_json::json!({ "text": text, "kind": kind, "hold": hold });
-    let _ = w.eval(&format!(
-        "(window.__notifyQ=window.__notifyQ||[]).push({});window.__drain&&window.__drain();", payload));
+    if OVERLAY_READY.load(Ordering::SeqCst) {
+        deliver_overlay(&w, &payload);
+    } else {
+        // Belum ada listener: antrekan, dan batasi supaya tidak tumbuh tanpa batas
+        // kalau overlay gagal dimuat.
+        let mut q = PENDING_NOTIFY.lock().unwrap_or_else(|e| e.into_inner());
+        if q.len() > 16 { q.remove(0); }
+        q.push(payload);
+    }
 
     // Satu watcher saja: sembunyikan jendela setelah animasi selesai (hold + muncul + menyusut + margin)
     HIDE_AT.store(now_ms() + hold + 2200, Ordering::SeqCst);
@@ -594,7 +678,7 @@ pub fn run() {
                 if !d.autostart_init {
                     if m.enable().is_ok() {
                         d.autostart_init = true;
-                        save_data(handle, &d);
+                        if let Err(e) = save_data(handle, &d) { eprintln!("[apps] simpan gagal: {}", e); }
                     }
                 } else if m.is_enabled().unwrap_or(false) {
                     let _ = m.enable(); // perbarui path exe di registry kalau app dipindah/diupdate
@@ -626,13 +710,70 @@ pub fn run() {
             quit_app,
             autostart_status,
             autostart_set,
-            launch_app,
             get_foreground_exe,
             scan_bindable_apps,
             presets_get,
             presets_save,
-            notify
+            notify,
+            overlay_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn e(name: &str) -> AppEntry {
+        AppEntry { name: name.to_string(), id: format!("C:\\{}.lnk", name), custom: false }
+    }
+
+    fn data(names: &[&str]) -> AppData {
+        AppData { apps: names.iter().map(|n| e(n)).collect(), ..Default::default() }
+    }
+
+    #[test]
+    fn cocok_persis_selalu_menang() {
+        let d = data(&["Notepad", "Notepad++"]);
+        assert_eq!(find_app(&d, "notepad").unwrap().name, "Notepad");
+        assert_eq!(find_app(&d, "Notepad++").unwrap().name, "Notepad++");
+    }
+
+    // Ini yang membuat prefix lama berbahaya: "sl" cocok dengan Slack sekaligus
+    // Spotify, jadi perangkat yang mengirim baris acak bisa memilih salah satu.
+    #[test]
+    fn prefix_pendek_ditolak_bukan_menebak() {
+        let d = data(&["Slack", "Spotify", "Slackmate"]);
+        let r = find_app(&d, "sl");
+        assert!(r.is_err(), "prefix 'sl' harus gagal, bukan menebak salah satu aplikasi");
+    }
+
+    #[test]
+    fn prefix_yang_ambigu_menyebut_kandidatnya() {
+        let d = data(&["Chrome", "Chromium", "Google Chrome"]);
+        let e = find_app(&d, "Chro").unwrap_err();
+        assert!(e.contains("tidak unik"), "pesan harus menjelaskan nama ambigu: {}", e);
+        assert!(e.contains("Chrome"), "pesan harus menyebut kandidat: {}", e);
+    }
+
+    // Nama dari firmware bisa terpotong, jadi prefix >= 4 huruf tetap boleh dipakai
+    // selama hasilnya tunggal.
+    #[test]
+    fn prefix_panjang_unik_diterima() {
+        let d = data(&["Discord", "Steam"]);
+        assert_eq!(find_app(&d, "Disc").unwrap().name, "Discord");
+    }
+
+    #[test]
+    fn nama_kosong_ditolak() {
+        let d = data(&["Notepad"]);
+        assert!(find_app(&d, "   ").is_err());
+    }
+
+    #[test]
+    fn aplikasi_tidak_ada_ditolak() {
+        let d = data(&["Notepad"]);
+        assert!(find_app(&d, "Zzzzz").is_err());
+    }
 }
