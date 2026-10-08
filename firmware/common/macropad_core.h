@@ -50,7 +50,12 @@ unsigned long keyLastChangeTime[ROWS][COLS];
 // =================== STATE ENCODER ROTASI (per index) ===================
 volatile bool encMoved[NUM_ENCODERS]       = { false };
 volatile bool encDirCW[NUM_ENCODERS]       = { true };
-volatile uint8_t lastEncAState[NUM_ENCODERS];
+// State quadrature 2-bit terakhir ((A<<1)|B) dan akumulator transisi.
+volatile uint8_t encQuadState[NUM_ENCODERS] = { 0 };
+volatile int8_t  encQuadAcc[NUM_ENCODERS]   = { 0 };
+
+// Jumlah transisi quadrature (= perubahan A/B) untuk satu detent penuh.
+#define QUAD_STEPS_PER_DETENT 4
 
 // =================== STATE ENCODER BUTTON (per index; index ENC_PRIMARY pakai
 // gesture lengkap di checkEncoder(), index lain cuma tap sederhana) ===================
@@ -80,18 +85,48 @@ const unsigned long LED_FLASH_DURATION_MS = 150;
 // =================== SERIAL COMMAND BUFFER ===================
 // Buffer baris didefinisikan di dekat checkSerialInput() (bagian bawah berkas ini).
 
-// =================== ISR ENCODER (satu fungsi untuk semua knob, dibedakan lewat arg) ===================
+// =================== ISR ENCODER - state machine quadrature ===================
+// Cara lama: ISR memicu di kedua edge pin A, tapi HANYA bereaksi saat A LOW, lalu
+// membaca B saat itu untuk menentukan arah. Rapuh: pantulan (bounce) pada detent
+// bisa membuat B sudah berubah pada waktu A LOW untuk kedua kalinya, sehingga satu
+// putaran terbaca sebagai arah yang salah - gejala "diputar ke kiri kadang
+// terbaca kanan".
+//
+// Cara sekarang: state machine quadrature penuh. Setiap perubahan A/B disimpan
+// sebagai state 2-bit, arah diambil dari tabel transisi, dan:
+//   - transisi tidak valid (A dan B berubah bersamaan = bouncing) diabaikan;
+//   - langkah baru hanya diumumkan setelah 4 transisi searah (1 detent penuh),
+//     jadi satu pantulan sesaat tidak cukup untuk menghasilkan langkah salah arah.
+//
+// Arah CW sengaja dibuat sama dengan cara lama (saat A LOW dan B HIGH = CW)
+// supaya tidak perlu membalik rasa kiri/kanan di knob mana pun.
+static const int8_t QUAD_DELTA[16] = {
+   0, -1,  1,  0,   // prev 00 -> 00 | 01 | 10 | 11
+   1,  0,  0, -1,   // prev 01 -> 00 | 01 | 10 | 11
+  -1,  0,  0,  1,   // prev 10 -> 00 | 01 | 10 | 11
+   0,  1, -1,  0    // prev 11 -> 00 | 01 | 10 | 11
+};
+
+// Satu fungsi untuk semua knob, dibedakan lewat arg (index knob).
+// Dipicu pada KEDUA pin (A dan B) supaya tidak ada transisi yang terlewat.
 void IRAM_ATTR handleEncoderISR(void* arg) {
   uint8_t i = (uint8_t)(uintptr_t)arg;
-  uint8_t stateA = digitalRead(ENC_A_PINS[i]);
-  if (stateA != lastEncAState[i]) {
-    uint8_t stateB = digitalRead(ENC_B_PINS[i]);
-    if (stateA == LOW) {
-      encDirCW[i] = (stateB == HIGH);
-      encMoved[i] = true;
-    }
-    lastEncAState[i] = stateA;
+  uint8_t now = (uint8_t)((digitalRead(ENC_A_PINS[i]) << 1) | digitalRead(ENC_B_PINS[i]));
+  uint8_t prev = encQuadState[i];
+  if (now == prev) return;
+  int8_t d = QUAD_DELTA[(prev << 2) | now];
+  encQuadState[i] = now;
+  if (d == 0) return;                        // bouncing / transisi tidak valid
+
+  int16_t acc = (int16_t)encQuadAcc[i] + d;
+  if (acc >= QUAD_STEPS_PER_DETENT) {
+    acc -= QUAD_STEPS_PER_DETENT;
+    encDirCW[i] = true;  encMoved[i] = true;
+  } else if (acc <= -QUAD_STEPS_PER_DETENT) {
+    acc += QUAD_STEPS_PER_DETENT;
+    encDirCW[i] = false; encMoved[i] = true;
   }
+  encQuadAcc[i] = (int8_t)acc;               // selalu di dalam [-3, 3]
 }
 
 
@@ -1056,8 +1091,14 @@ void setup() {
     pinMode(ENC_BTN_PINS[i], INPUT_PULLUP);
     pinMode(ENC_A_PINS[i], INPUT_PULLUP);
     pinMode(ENC_B_PINS[i], INPUT_PULLUP);
-    lastEncAState[i] = digitalRead(ENC_A_PINS[i]);
+    // Inisialisasi state quadrature dengan snapshot kedua pin, JANGAN dengan asumsi.
+    encQuadState[i] = (uint8_t)((digitalRead(ENC_A_PINS[i]) << 1) | digitalRead(ENC_B_PINS[i]));
+    encQuadAcc[i] = 0;
+    encMoved[i] = false;
+    // ISR dipasang di KEDUA pin A dan B. Versi lama hanya memasang di A, sehingga
+    // separuh transisi quadrature tidak pernah terlihat dan arah tidak bisa ditentukan.
     attachInterruptArg(digitalPinToInterrupt(ENC_A_PINS[i]), handleEncoderISR, (void*)(uintptr_t)i, CHANGE);
+    attachInterruptArg(digitalPinToInterrupt(ENC_B_PINS[i]), handleEncoderISR, (void*)(uintptr_t)i, CHANGE);
   }
 
   hwPeripheralsInit();

@@ -9,7 +9,23 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
+### Fixed
+- **Arah rotary encoder kadang terbalik satu langkah** ("diputar ke kiri kadang
+  terbaca kanan"). Penyebabnya ISR lama hanya bereaksi saat pin A LOW lalu membaca B
+  pada saat itu juga. Saat pantulan (bounce) pada detent, B sudah berubah ketika A LOW
+  untuk kedua kalinya, sehingga satu putaran terbaca sebagai arah yang terbalik.
+  Diganti **state machine quadrature penuh**: setiap perubahan A/B disimpan sebagai
+  state 2-bit, arah diambil dari tabel transisi, transisi tidak valid (A dan B berubah
+  bersamaan) diabaikan, dan langkah baru baru diumumkan setelah 4 transisi searah
+  (= 1 detent). ISR sekarang dipasang pada **kedua pin** A dan B; sebelumnya hanya
+  pin A sehingga separuh transisi quadrature tidak pernah terlihat. Arah CW sengaja
+  dibuat sama dengan cara lama (A LOW + B HIGH = CW) supaya tidak perlu membalik
+  kiri/kanan pada knob mana pun.
+- `applyName()` sempat diekspor tetapi belum dipasang di `main.js` — ditemukan oleh
+  test wiring sebelum commit.
+
 ### Changed
+- **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.**
 - **Refactor Tahap 1: state device dipindah ke `src/device-state.js`.** `main.js` punya
   77 `let`/`const` global, dan keadaan yang dilaporkan device (`ROWS`, `COLS`,
   `NUM_ENCODERS`, `currentLayer`, `layerCount`, `maxLayers`, `mapping`, `layerNames`,
@@ -232,6 +248,16 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   `cfg` jadi thread-safe — tidak satu pun dari library itu thread-safe. Melakukan refactor
   itu tanpa bisa compile dan tanpa hardware berisiko menghasilkan korupsi data sesekali,
   yang jauh lebih buruk daripada masalah aslinya.
+
+## Planned work
+
+- **Filter waktu untuk rotary encoder.** State machine quadrature sudah menangani
+  bounce pada detent (sumber gejala arah terbalik), tetapi noise acak yang mengubah A/B
+  secara acak tetap terlihat identik dengan putaran nyata — state machine bekerja tanpa
+  informasi waktu. Menolaknya butuh filter berbasis waktu (abaikan transisi yang terjadi
+  < 2 ms setelah transisi sebelumnya, memakai penghitung siklus IRAM-safe). Belum
+  ditambahkan karena tidak bisa diuji tanpa hardware. Gejalanya: langkah acak saat knob
+  diam.
 
 ## Catatan verifikasi
 
