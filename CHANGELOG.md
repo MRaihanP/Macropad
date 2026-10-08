@@ -10,6 +10,19 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
+- **Test `protocol-parser.js` yang mengurai baris device sungguhan** (15 seksi, format
+  baris disalin persis dari `firmware/common/macropad_core.h`). Sekarang yang bisa
+  diuji: `INFO:` dengan nilai di luar rentang ditolak tanpa jadi `NaN`, isi `DUMP:`
+  masuk ke layer yang disebut dan bukan `currentLayer`, nilai ber-koma tetap utuh,
+  target layer di-reset di `DUMP_END` sehingga blok berikutnya tidak menulis ke layer
+  yang salah, indeks korup dari device dilewati tanpa melempar, kunci encoder di luar
+  allowlist ditolak (anti prototype pollution), `NAMES_BEGIN/END` dengan nama ber-koma
+  dan ber-spasi, `HWINFO:` termasuk flag `simulated`, serta notifikasi event hardware.
+- **`handleLine-diff.js`**: membuktikan pemindahan `handleLine` bersifat verbatim dengan
+  membandingkannya langsung terhadap versi di HEAD, lalu membandingkannya lagi setelah
+  normalisasi whitespace dan komentar. Hasilnya identik kecuali prefiks `hooks.`. Ini
+  menutup celah paling berbahaya - refactor yang diam-diam mengubah satu baris kondisi
+  tidak bisa lagi lolos tanpa terlihat.
 - **Test kontrak Adaptive** (`adaptive-contract-test.js`) yang membandingkan perintah serial
   dan perintah bertemplate yang dikirim blok Adaptive versi lama (diambil dari `git show`)
   dengan `src/adaptive.js` sekarang. Tujuannya menangkap `await sendLine(...)` yang hilang
@@ -39,6 +52,31 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   capability apa pun — aman hanya secara kebetulan.
 
 ### Changed
+- **Refactor Tahap 5: parser protokol (handleLine) dipindah ke src/protocol-parser.js**
+  (246 baris). Kontrak app<->firmware sekarang ada di satu modul yang bisa diuji tanpa
+  browser. main.js turun dari 988 ke 833 baris.
+  - Parser hanya menyentuh layar lewat initProtocolParser({ notify, notifyBoundAction,
+    renderDeviceProfileBadge, renderTabs, renderGrid, renderEncoderList, loadLayer }).
+    device-state, transport, adaptive, rgb, dan battery ia impor langsung.
+  - deviceProfile (isi HWINFO:) pindah ke parser sebagai live binding; badge di
+    main.js membacanya, dan 
+esetDeviceProfile()dipakai hook onDisconnected.
+  - dumpParseLayer (layer target untuk DUMP_BEGIN:<n>) pindah ke parser - hanya
+    dia yang memakainya.
+  - handleLine **dibuktikan verbatim**: handleLine-diff.js membandingkan body fungsi
+    di HEAD dengan yang di modul baru dan membandingkan lagi setelah normalisasi
+    whitespace serta komentar. Hasilnya identik, kecuali prefiks hooks.. Jadi
+    ekstraksi ini tidak mengubah satu baris pun perilaku parser.
+- lastDeviceLayerEventAt ditandai jelas sebagai **tulis-tanpa-baca**: di seluruh riwayat
+  repo nilainya pernah diisi tapi tidak pernah dibaca. Ini sisa rencana *pause
+  auto-switch* yang belum jadi. Sengaja tidak dihapus supaya niatnya tidak hilang, tapi
+  sekarang deklarasinya jujur soal itu (lihat Planned work).
+- Lima test lama diperbarui karena handleLine pindah: key-event-test,
+  parser-wiring-test, protocol-contract-test, 
+gb-page-test, dan
+  daptive-contract-test. parser-wiring-test sekarang memeriksa main.js **dan**
+  protocol-parser.js untuk penulisan state langsung, karena output serial bisa masuk
+  dari dua berkas dan salah satunya bisa membuka jalur tulis-langsung yang lolos.
 - **Refactor Tahap 4: Adaptive Key Bind dipindah ke `src/adaptive.js`** (554 baris) dan
   indikator baterai ke `src/battery-ui.js` (99 baris). `main.js` turun dari 1465 ke 988 baris.
   - `adaptive.js` memegang seluruh fitur App Preset: manajemen (buat, ubah nama, hapus,
@@ -322,6 +360,15 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   < 2 ms setelah transisi sebelumnya, memakai penghitung siklus IRAM-safe). Belum
   ditambahkan karena tidak bisa diuji tanpa hardware. Gejalanya: langkah acak saat knob
   diam.
+- **Pause auto-switch sesaat setelah user pindah layer.** `lastDeviceLayerEventAt` sudah
+  diisi setiap ada `EVT:LAYER:` sejak lama, tapi belum pernah dibaca siapa pun - sudah
+  diverifikasi di seluruh riwayat repo. Rencana aslinya: begitu user pindah layer lewat
+  knob, auto-switch otomatis harus berhenti sesaat, supaya perubahan layer manual tidak
+  langsung ditimpa preset karena polling melihat window yang sama. Tanpa ini, hal yang
+  bisa terjadi: user memutar knob ke layer 3, 120 ms kemudian preset aktif memaksa
+  balik ke layer 1. Perlu diputuskan juga apa yang terjadi saat `fetchAllLayersForPacking()`
+  sedang berjalan - memindahkan layer di tengah dump akan menyisipkan `DUMP:<n>` baru
+  ke tengah stream dump yang sedang berjalan.
 
 ## Catatan verifikasi
 

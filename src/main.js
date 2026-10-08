@@ -1,24 +1,22 @@
-import { SerialPort } from "tauri-plugin-serialplugin";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 // State device (dimensi matriks, layer, keymap, binding knob) tinggal di satu modul
 // dengan mutator tervalidasi. Nilai di-import sebagai live binding, jadi kode yang
 // hanya membaca tidak berubah; kode yang menulis wajib memakai setter dari sana.
+// Diparser protokol, semua mutator dipakai dari sana - jadi yang diimpor di sini
+// hanya yang masih dipakai oleh render/editor.
 import {
   CAP_LAYERS, ROWS, COLS, NUM_ENCODERS, currentLayer, layerCount, maxLayers,
-  mapping, layerNames, encConfig, encParseIdx,
-  setCurrentLayer, setNumEncoders, setMapping, setLayerNames, setEncParseIdx, resetEncParse,
-  ensureEncConfigSize, emptyLayer,
-  applyInfo, applyDumpRow, applyEncRow, applyName, applyLayerEvent, applyEncCount, applyEncIdx,
-  reorderLayer, TYPE_NAMES,
+  mapping, layerNames, encConfig,
+  setCurrentLayer, setMapping, setLayerNames, resetEncParse,
+  ensureEncConfigSize, emptyLayer, reorderLayer, TYPE_NAMES,
 } from "./device-state.js";
 // Helper DOM dan seluruh logika halaman RGB dipisah ke modul sendiri. Halaman RGB
 // membaca state dari device (RGB_DUMP/RGB_KEY), bukan dari default app.
 import { el, log, escapeHtml } from "./dom.js";
 import {
-  rgb, renderRgbAll, renderRgbKeyCard, renderRgbGrid, renderRgbPresets, syncRgbDotColors,
-  handleRgbLine, initRgbPage, setRgbTransport, hexToRgb, rgbKeyName, ledIndex,
+  rgb, renderRgbAll, initRgbPage, setRgbTransport, hexToRgb,
 } from "./rgb-page.js";
 // Seluruh urusan port serial (connect/reconnect, buffer baris, framing parser,
 // pengiriman perintah) dipisah ke modul sendiri. Yang diimpor di sini hanya yang
@@ -26,23 +24,18 @@ import {
 // sehingga isi config/layer/preset tidak bocor ke dalam modul transport.
 import {
   initTransport, sendLine, sendBatch, connect, disconnect,
-  autoDetect, pollPorts,
-  dumpInProgress, dumpEncInProgress, namesInProgress,
-  setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
-  isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  autoDetect, pollPorts, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
 } from "./serial-transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
   resetAdaptiveRuntimeState, confirmLeavePresetEditor,
-  suppressDeviceEcho, activePresetName, activePresetLayers, resolveDumpWaiters,
-  handleEscapeGesture,
 } from "./adaptive.js";
 // Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
-import {
-  initBatteryUi, battUI, updateBatteryUI, setBatteryFromKv, setChargeState,
-  markBatterySimulated, clearBattery,
-} from "./battery-ui.js";
+import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
+// Parser protokol: satu baris dari device -> aksi. Kontrak app<->firmware ada di
+// sini; main.js hanya menyuntikkan fungsi yang menyentuh layar.
+import { initProtocolParser, handleLine, deviceProfile, resetDeviceProfile } from "./protocol-parser.js";
 
 const ENC_LABELS = { CW: 'Putar searah jarum jam (CW)', CCW: 'Putar berlawanan arah (CCW)', BTN: 'Tombol tekan' };
 const MEDIA_MAP = { AudioVolumeUp: 'VOLUP', AudioVolumeDown: 'VOLDOWN', AudioVolumeMute: 'MUTE', MediaPlayPause: 'PLAYPAUSE', MediaTrackNext: 'NEXT', MediaTrackPrevious: 'PREV' };
@@ -50,17 +43,12 @@ const MODIFIER_KEYS = ['Control', 'Shift', 'Alt', 'Meta'];
 const MODIFIER_NAMES = ['CTRL', 'SHIFT', 'ALT', 'GUI'];
 
 let selected = null;
-// Layer yang sedang di-dump, dibaca dari DUMP_BEGIN:<n>. Dipakai supaya isi dump
-// masuk ke layer asalnya, bukan ke currentLayer yang mungkin sudah berubah.
-let dumpParseLayer = NaN;
 let recording = false, recordTokens = [];
 let dirty = false;
-let lastDeviceLayerEventAt = 0;
 
-// Kemampuan hardware device, dibaca dari HWINFO. Penting karena firmware PROTOTYPE
-// mengirim angka SIMULASI untuk baterai/RGB; app harus menandai agar data palsu
-// tidak dibaca sebagai data hardware sungguhan.
-let deviceProfile = { connected: false };
+// Profil & kemampuan hardware (HWINFO) sekarang milik protocol-parser.js, karena
+// baris HWINFO: yang mengisinya diparse di sana. Badge di bawah membacanya sebagai
+// live binding.
 function renderDeviceProfileBadge() {
   const b = el('hwProfileBadge'); if (!b) return;
   const sim = deviceProfile.simulated === 1 || battUI.simulated;
@@ -302,179 +290,6 @@ function syncGlobalToggles() {
     sleepSel.title = 'Belum didukung firmware (perintah sleep belum ada)';
   }
 }
-
-function handleLine(line) {
-  line = line.trim();
-  if (!line) return;
-
-  // ---- Notifikasi overlay dari event hardware ----
-  let mm;
-  if ((mm = line.match(/^\[LAYER\] Pindah ke layer (\d+)/))) {
-    const n = parseInt(mm[1]);
-    // Saat preset aktif, nama layer diambil dari preset itu - device hanya tahu
-    // layer sebagai nomor, dan nomor itu milik preset aktif, bukan preset default.
-    const ap = activePresetName();
-    const apLayers = activePresetLayers();
-    const pname = ap || 'Default';
-    const lname = (apLayers ? apLayers[n]?.name : layerNames[n]) || ('Layer ' + n);
-    notify(`${pname} · ${lname}`, 'layer');
-  } else if ((mm = line.match(/^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$/))) {
-    // Format ringkas dari firmware: layer,row,col,type,value. Notifikasi hanya
-    // memakai type + value; posisi tombol tetap tampil di panel log.
-    notifyBoundAction(parseInt(mm[4]), mm[5]);
-  } else if ((mm = line.match(/^EVT:ENC:(\d+):(CW|CCW)$/))) {
-    const a = encConfig[+mm[1]]?.[mm[2]];
-    if (a) notifyBoundAction(a.type, a.value);
-  } else if ((mm = line.match(/^\[ENC_BTN\] Knob (\d+):/)) || line.startsWith('[ENC_BTN] Aksi terkonfigurasi')) {
-    const a = encConfig[mm ? +mm[1] : 0]?.BTN;                         // knob utama (index 0) mencetak tanpa nomor
-    if (a) notifyBoundAction(a.type, a.value);
-  }
-  // Selama upload batch preset, device membalas banyak baris [OK] yang tidak perlu
-  // masuk panel log. Jendelanya dimiliki adaptive.js karena dia yang memulai batch.
-  if (suppressDeviceEcho() && (line.startsWith('[OK]') || line.startsWith('[LAYER]'))) return;
-
-  if (line.startsWith('EVT:APP:')) {
-    if (eventsSuppressed()) { log('[APP] Event lama diabaikan'); return; }
-    const name = line.substring(8);
-    invoke('launch_app', { name })
-      .then(n => log('[APP] Membuka: ' + n, 'ok'))
-      .catch(e => log('[ERROR] ' + e, 'err'));
-    return;
-  }
-
-  if (line === 'EVT:ESCAPE') {
-    // Logika escape (bekukan auto-switch / tolak saat mode edit) milik adaptive.js
-    // karena ia yang memegang state preset aktif dan mode edit.
-    handleEscapeGesture();
-    return;
-  }
-
-  if (line.startsWith('EVT:LAYER:')) {
-    const n = parseInt(line.substring(10));
-    lastDeviceLayerEventAt = Date.now(); // dipakai nanti buat pause auto-switch
-    if (n !== currentLayer && applyLayerEvent(n)) {
-      // Device sudah pindah layer dengan sendirinya (long-press knob), jadi jangan
-      // kirim LAYER: balik - cukup baca isinya.
-      renderTabs();
-      loadLayer(n);
-    }
-    return;
-  }
-
-  if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpParseLayer = parseInt(line.substring(11)); return; }
-  if (line === 'DUMP_END') {
-    setDumpInProgress(false); renderGrid();
-    // Resolve waiter milik layer yang benar-benar didump. Waiter-nya dimiliki
-    // adaptive.js (dia yang menunggunya), tapi pemicunya baris di sini.
-    const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
-    dumpParseLayer = NaN;
-    resolveDumpWaiters(done);
-    return;
-  }
-  if (dumpInProgress) {
-    const p = line.split(',');
-    // Semua index dari device harus divalidasi. Tanpa ini, baris korup seperti
-    // "99,0,1,x" membuat mapping[..][99] undefined dan penugasannya melempar
-    // TypeError DI DALAM callback serial, yang ditangkap plugin dan ditelan. Akibatnya
-    // parser mati di tengah stream dan semua baris berikutnya dimakan sebagai payload
-    // DUMP - desync permanen sampai reconnect.
-    // Validasi lengkap (indeks, tipe, alokasi layer) ada di device-state.js.
-    // Nilai boleh mengandung koma (macro TEXT), jadi field terakhir adalah sisa baris.
-    if (p.length >= 4) {
-      const layer = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
-      const applied = applyDumpRow(layer, parseInt(p[0]), parseInt(p[1]), parseInt(p[2]), p.slice(3).join(','), log);
-      if (!applied) log('[ERROR] Baris DUMP tidak valid, dilewati: ' + line, 'err');
-    }
-    return;
-  }
-  if (line.startsWith('ENC_BEGIN')) {
-    setDumpEncInProgress(true);
-    const m = line.match(/count=(\d+)/);
-    if (m && applyEncCount(parseInt(m[1]), log)) el('deviceEncLabel').textContent = String(NUM_ENCODERS);
-    return;
-  }
-  if (line === 'ENC_END') { setDumpEncInProgress(false); renderEncoderList(); return; }
-  if (dumpEncInProgress) {
-    if (line.startsWith('IDX:')) { applyEncIdx(parseInt(line.substring(4))); return; }
-    const p = line.split(',');
-    // Allowlist kunci ada di applyEncRow - tanpa itu device bisa mengirim
-    // "__proto__" yang menjadi prototype assignment pada objek knob.
-    if (p.length >= 3) applyEncRow(encParseIdx, p[0], parseInt(p[1]), p.slice(2).join(','), log);
-    return;
-  }
-  if (line.startsWith('HWINFO:')) {
-    deviceProfile = { connected: true };
-    line.substring(7).split(',').forEach(p => {
-      const eq = p.indexOf('='); if (eq < 0) return;
-      const k = p.substring(0, eq), v = p.substring(eq + 1);
-      deviceProfile[k] = /^-?\d+$/.test(v) ? parseInt(v) : v;
-    });
-    if (deviceProfile.encoders) setNumEncoders(deviceProfile.encoders);
-    markBatterySimulated(deviceProfile.simulated === 1);
-    log(`[HW] Profil ${deviceProfile.profile} - rgb=${deviceProfile.rgb} vdiv=${deviceProfile.vdiv} chg=${deviceProfile.chg}` + (battUI.simulated ? ' (data simulasi)' : ''));
-    renderDeviceProfileBadge();
-    return;
-  }
-  if (line.startsWith('EVT:BATT:')) {
-    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
-    if (kv.profile !== undefined) deviceProfile.profile = kv.profile;
-    setBatteryFromKv(kv);
-    return;
-  }
-  if (line.startsWith('EVT:CHG:')) {
-    const m = line.match(/state=(\d+)/);
-    if (m) {
-      const st = parseInt(m[1]);
-      setChargeState(st);
-      // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
-      // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
-      // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
-      if (st === 1) notify('Baterai: mulai mengecas', 'charge', { hold: 5000 });
-      else if (st === 2) notify('Baterai: cas selesai', 'charge-done', { hold: 5000 });
-      // state 0 (charger dicabut) sengaja tidak dinotifikasi supaya tidak membising.
-    }
-    return;
-  }
-  // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
-  if (handleRgbLine(line, log)) return;
-  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); return; }
-  if (line === 'NAMES_END') { setNamesInProgress(false); renderTabs(); return; }
-  if (namesInProgress) {
-    // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
-    const idx = line.indexOf(',');
-    if (idx > -1) {
-      if (!applyName(parseInt(line.substring(0, idx)), line.substring(idx + 1), log))
-        log('[ERROR] Baris NAMES tidak valid, dilewati: ' + line, 'err');
-    }
-    return;
-  }
-  if (line.startsWith('INFO:')) {
-    // Nilai dari device tidak boleh dipercaya buta: parseInt("abc") = NaN, dan
-    // ROWS = NaN membuat Array.from({length: NaN}) -> [] sehingga renderGrid melempar.
-    // Validasi + penulisan ada di applyInfo() (device-state.js).
-    const kv = {};
-    line.substring(5).split(',').forEach(p => {
-      const eq = p.indexOf('='); if (eq < 0) return;
-      kv[p.substring(0, eq)] = p.substring(eq + 1);
-    });
-    applyInfo(kv, { log });
-    el('deviceEncLabel').textContent = String(NUM_ENCODERS);
-    el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
-    renderTabs(); loadLayer(currentLayer); sendLine('DUMPNAMES');
-    return;
-  }
-  if (line.startsWith('WHOAMI:')) {
-    const parts = line.split(':');
-    el('deviceNameLabel').textContent = parts[1] || 'MacroPad';
-    return;
-  }
-  if (line === 'PONG') return;   // sembunyikan PONG dari log
-
-  if (line.startsWith('[ERROR]')) log(line, 'err');
-  else if (line.startsWith('[OK]')) log(line, 'ok');
-  else log(line);
-}
-
 
 // ==================== RENDER: LAYER, GRID, ENCODER ====================
 let tabDragMoved = false;
@@ -788,13 +603,26 @@ initAdaptive({
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);
 
+// Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
+// sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
+// ia impor langsung, jadi daftar ini hanya berisi fungsi render/notify.
+initProtocolParser({
+  notify,
+  notifyBoundAction,
+  renderDeviceProfileBadge,
+  renderTabs,
+  renderGrid,
+  renderEncoderList,
+  loadLayer,
+});
+
 // ==================== SAMBUNGKAN TRANSPORT ====================
 // serial-transport.js tidak tahu apa pun soal isi config, layer, atau preset, dan
 // juga tidak memanggil fungsi main.js secara langsung. Semua sisi aplikasi
 // disuntikkan di sini - titik pertemuan tunggal antara transport dan app.
 initTransport({
-  // Setiap baris dari device berakhir di sini. handleLine tetap milik main.js
-  // karena isinya banyak menyangkut layer, encoder, preset, dan notifikasi.
+  // Setiap baris dari device berakhir di protocol-parser.js. Transport hanya
+  // hanya pemisah baris; ia tidak tahu apa arti baris-baris itu.
   onLine: (line) => handleLine(line),
   onConnected: () => {
     // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
@@ -806,7 +634,7 @@ initTransport({
     // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus: profile
     // (dan badge SIMULASI) serta meter baterai harus ikut kosong, kalau tidak user
     // mengira device masih hidup dan tegangan terkahoir.
-    deviceProfile = { connected: false };
+    resetDeviceProfile();
     clearBattery();
     renderDeviceProfileBadge();
   },
