@@ -64,11 +64,16 @@ export function clearBattery() {
 
 export function updateBatteryUI() {
   const ind = el('battInd'); if (!ind) return;
+  // Screen reader tidak bisa membaca isi SVG. Karena itu indikator ditandai
+  // role="img" di index.html, dan maknanya dipindahkan ke aria-label.
+  // Nilai "--" pun tetap diberi label, kalau tidak screen reader membacakan kosong.
+  const speak = (txt) => { ind.setAttribute('aria-label', txt); };
   if (battUI.pct === null) {
     el('battPct').textContent = '--';
     el('battFill').style.transform = 'scaleX(0.02)';
     el('battBolt').style.display = 'none';
     ind.classList.remove('low', 'crit');
+    speak('Data baterai belum tersedia');
     return;
   }
   el('battPct').textContent = battUI.pct + '%';
@@ -79,6 +84,9 @@ export function updateBatteryUI() {
   ind.title = battUI.simulated
     ? `Data SIMULASI (firmware prototipe)${battUI.mv !== null ? ` - ${battUI.mv} mV` : ''}`
     : (battUI.mv !== null ? `${battUI.mv} mV` : 'Baterai');
+  const mAh = battUI.mv !== null ? `, ${battUI.mv} milivolt` : '';
+  const mode = battUI.simulated ? ' (data simulasi firmware prototipe)' : '';
+  speak(`Baterai ${battUI.pct} persen${battUI.charging ? ', sedang mengecas' : ''}${mAh}${mode}`);
 
   // Peringatan hanya saat ambang BARU dilewati, bukan setiap EVT:BATT (yang datang
   // tiap 5 detik) - tanpa ini notifikasi muncul terus-menerus.

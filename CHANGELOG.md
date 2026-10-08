@@ -57,7 +57,88 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   seminimal mungkin (`core:event:allow-listen`). Sebelumnya jendela overlay tidak punya
   capability apa pun — aman hanya secara kebetulan.
 
+### Added
+- **Test `a11y-test.js` (40 pemeriksaan, seksi 1-8).** Memverifikasi hal-hal a11y
+  yang bisa diperiksa statis dan yang kalau hilang langsung memblokir pengguna
+  keyboard/screen reader: elemen interaktif benar-benar bisa difokus, role/label
+  masuk akal untuk yang tidak terbaca sebagai teks, perubahan status diumumkan,
+  dan focus ring terlihat. Bukan audit WCAG penuh — tidak ada browser headless
+  di lingkungan ini, jadi yang diuji adalah syarat-syarat yang bisa dibuktikan.
+- **Navigasi sidebar bisa dioperasikan penuh dari keyboard.** `.nav-item` diubah dari
+  `<div onclick>` menjadi `<button type="button">`, plus `ArrowLeft/Right/Up/Down`
+  untuk memindah fokus antar item. Alasannya teknis: hanya elemen native
+  (`<button>`, `<a>`, `<input>`) yang masuk ke tab order dan otomatis bisa
+  ditekan Enter/Space — `tabindex` pada `<div>` tetap memerlukan `role` dan
+  penangan key sendiri.
+- **Focus ring.** Sebelumnya **tidak ada satu pun** aturan `:focus-visible` di
+  seluruh aplikasi (`styles.css`), jadi pengguna keyboard tidak punya petunjuk
+  sedang berada di kontrol mana. Sekarang ada aturan global untuk `button`,
+  `[role="button"]`, `[role="tab"]`, `input`, `select`, `textarea`.
+- **Sel grid, baris binding knob, dan tab layer bisa difokus dan diaktifkan
+  keyboard.** Helper `makeInteractive()` di `home-page.js` memasang
+  `tabindex="0"` + `role="button"` + penangan Enter/Space, dan memasang
+  `aria-label` berisi koordinat serta isi binding yang sebenarnya.
+  Tab layer mendapat `role="tab"`, `aria-selected`, dan navigasi panah kiri/kanan
+  — jalur keyboard untuk mengganti layer, yang sebelumnya hanya bisa lewat mouse
+  atau drag.
+- **Modal adalah dialog yang sungguhan.** Ditambah `role="dialog"`,
+  `aria-modal="true"`, `aria-labelledby="modalTitle"`, plus focus trap
+  (Tab/Shift+Tab memutar di dalam dialog) dan **pengembalian fokus ke elemen
+  pemicu** saat ditutup. Tanpa itu, fokus jatuh ke `<body>` dan pengguna keyboard
+  harus Tab dari awal lagi setiap kali dialog ditutup.
+- **Live region untuk perubahan status.** `#statusText` mendapat `role="status"`
+  dan `#log` mendapat `role="log" aria-live="polite" aria-relevant="additions"`,
+  sehingga perubahan koneksi dan baris log baru diumumkan tanpa memutus apa
+  yang sedang dibacakan.
+
+### Fixed
+- **Perubahan status koneksi dan level baterai tidak bisadidengar screen reader.**
+  Indikator baterai berupa SVG, yang isinya tidak bisa dibaca assistive tech —
+  sekarang ditandai `role="img"` dan maknanya dipindahkan ke `aria-label` yang
+  diisi `battery-ui.js` dari nilai yang sebenarnya, termasuk keadaan "belum ada
+  data" (yang kalau dibiarkan kosong akan dibacakan sebagai kosong).
+- **Tombol ikon `↻` (pindai ulang port) tanpa nama yang bisa dibacakan.**sekarang
+  punya `aria-label`. Tombol `≡` (toggle sidebar) juga, beserta `aria-expanded`
+  yang diperbarui setiap kali diklik dan disetel sesuai keadaan awal.
+- **`aria-expanded` pada toggle sidebar bisa meleset dari keadaan sebenarnya.**
+  Nilai yang disimpan ke `localStorage` sekarang dijamin string boolean
+  (`"true"`/`"false"`), bukan objek boolean mentah yang akan jadi `"{}"` saat
+  diserialisasi — kunci yang sama dibaca lagi oleh versi berikutnya, jadi
+  data lama milik versi lama tetap terbaca.
+- **SVG dekoratif dibaca sebagai teks aneh.** Semua SVG di `index.html` kini
+  punya `aria-hidden="true"`; satu SVG yang terlewat (ikon bel pada tombol
+  "Tes") ditemukan oleh `a11y-test.js` dan diperbaiki.
+
 ### Changed
+- **`shell-ui-diff.js` dan `home-page-diff.js`: tiga fungsi tidak lagi dibandingkan
+  posisional, diganti pembuktian semantik.** Phase 9a mengubah bentuk
+  `switchPage()`, toggle sidebar, `showModalBase()`, `renderTabs()`, `renderGrid()`,
+  dan `renderEncoderList()` — semuanya mendapat stmt a11y sehingga perbandingan
+  baris-per-baris mustahil. Sekarang setiap **efek lama** dibuktikan masih ada
+  di kode baru (mis. `switchPage` tetap memakai `navName = navOverride || name`,
+  dan `navOverride` tetap **tidak** mempengaruhi halaman mana yang ditampilkan),
+  sementara **tambahan a11y-nya** diuji terpisah secara positif. Diff tetap
+  ketat terhadap perubahan yang tidak diharapkan.
+- **`.nav-item` jadi `<button>`, jadi style bawaannya dinetralkan di `styles.css`**
+  (`background: none`, `border: 0`, `font-family: inherit`, `text-align: left`)
+  supaya tampilan sidebar tidak berubah sama sekali dari versi `<div>`. Tidak
+  dinetralkan, sidebar akan berubah total.
+
+#### Fase 9a (aksesibilitas)
+Audit awal menemukan lima masalah nyata, semuanya terkait keyboard:
+
+| Masalah | Akibat bagi pengguna keyboard |
+|---|---|
+| `.nav-item` = `<div onclick>` | Tidak bisa diakses keyboard sama sekali |
+| Modal tanpa `role="dialog"`/focus trap | Screen reader tidak tahu ini dialog; Tab bisa keluar ke belakang |
+| `#statusText`, `#log`, meter baterai tanpa live region | Perubahan status tidak diumumkan |
+| Sel grid & baris knob = `<div onclick>` | Tidak bisa mengedit binding tanpa mouse |
+| Tidak ada `:focus-visible` di seluruh aplikasi | Tidak ada petunjuk sedang berada di kontrol mana |
+
+Yang **sengaja tidak** dikerjakan di Fase 9a: audit kontras warna, audit
+`tabindex` positif yang tidak ada, dan pengujian dengan screen reader sungguhan.
+Semuanya butuh browser/perangkat nyata, tidak bisa dibuktikan di lingkungan ini.
+
 - **Refactor Tahap 8 (penutup Phase 8): tray & autostart dipindah ke `src/tray.js`**
   (137 baris). `main.js` turun dari 347 ke **252 baris**.
   - Berisi status autostart Windows, dialog "Simpan dulu?" untuk dua jalur (X dan menu

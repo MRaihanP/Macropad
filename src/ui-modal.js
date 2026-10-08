@@ -13,6 +13,9 @@
 
 import { el, escapeHtml } from './dom.js';
 
+// Elemen yang bisa menerima fokus di dalam dialog, sesuai urutan bacaan.
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function showModalBase(titleText, bodyHtml, buttons) {
   return new Promise(resolve => {
     const overlay = el('modalOverlay');
@@ -20,25 +23,55 @@ export function showModalBase(titleText, bodyHtml, buttons) {
     el('modalBody').innerHTML = bodyHtml;
     const actions = el('modalActions');
     actions.innerHTML = '';
-    function close(value) { overlay.classList.remove('show'); document.removeEventListener('keydown', onKey); resolve(value); }
+    function close(value) {
+      overlay.classList.remove('show');
+      document.removeEventListener('keydown', onKey, true);
+      // Kembalikan fokus ke elemen yang membuka dialog. Tanpa ini, fokus jatuh
+      // ke <body> dan pengguna keyboard kehilangan tempatnya - harus Tab dari
+      // awal lagi setiap kali dialog ditutup.
+      if (previouslyFocused && previouslyFocused.isConnected) {
+        try { previouslyFocused.focus(); } catch (e) { }
+      }
+      resolve(value);
+    }
     function onKey(e) {
       if (e.key === 'Escape') close(null);
       if (e.key === 'Enter') {
         const okBtn = buttons.find(b => b.primary);
         if (okBtn) close(okBtn.value);
       }
+      // Focus trap: tanpa ini, Tab dari tombol terakhir akan keluar ke elemen
+      // di belakang overlay yang tertutup - pengguna keyboard bisa fokus ke
+      // kontrol yang tidak terlihat dan tidak tahu sedang di mana.
+      if (e.key === 'Tab') {
+        const items = [...overlay.querySelectorAll(FOCUSABLE)].filter(n => n.offsetParent !== null || n === document.activeElement);
+        if (items.length === 0) { e.preventDefault(); return; }
+        const first = items[0], last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        else if (!overlay.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      }
     }
+    const previouslyFocused = document.activeElement;
     buttons.forEach(btn => {
       const b = document.createElement('button');
+      b.type = 'button';
       b.textContent = btn.label;
       if (btn.primary) b.className = 'primary';
       b.onclick = () => close(btn.value);
       actions.appendChild(b);
     });
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     overlay.classList.add('show');
     const input = el('modalInput');
+    // Fokus pertama: input kalau ada, kalau tidak tombol utama, kalau tidak
+    // tombol pertama. Tanpa ini fokus tetap di belakang dan user tidak tahu
+    // dialog sudah terbuka.
     if (input) { input.focus(); input.select(); }
+    else {
+      const items = [...overlay.querySelectorAll(FOCUSABLE)];
+      (items.find(n => n.classList.contains('primary')) || items[0] || el('modalTitle')).focus?.();
+    }
   });
 }
 

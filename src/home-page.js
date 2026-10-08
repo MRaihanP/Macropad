@@ -38,6 +38,25 @@ let markDirty = () => { };
 export function initHomePage(h) { if (h && h.markDirty) markDirty = h.markDirty; }
 
 // ==================== TAB LAYER ====================
+// Helper: menjadikan elemen non-button bisa dioperasikan dari keyboard.
+//
+// Sel grid dan baris binding knob sengaja <div> (bukan <button>) karena isinya
+// HTML bebas. Tanpa tabindex + role + penangan key, area itu hanya bisa diklik
+// mouse - pengguna keyboard tidak bisa mengedit binding sama sekali.
+function makeInteractive(node, onActivate, label) {
+  node.tabIndex = 0;
+  node.setAttribute('role', 'button');
+  if (label) node.setAttribute('aria-label', label);
+  node.onclick = onActivate;
+  // Enter dan Space mengaktifkan role="button"; tanpa ini, mustahil dipicu keyboard.
+  node.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();   // Space tanpa ini akan menggulir halaman
+    onActivate();
+  };
+  return node;
+}
+
 export function renderTabs() {
   const tabs = el('tabs');
   tabs.innerHTML = '';
@@ -47,8 +66,25 @@ export function renderTabs() {
     t.className = 'tab' + (l === currentLayer ? ' active' : '');
     t.textContent = layerNames[l] || ('Layer ' + l);
     t.style.touchAction = 'none';
+    // Tab layer adalah tab strip: harus bisa difokus dan bisa diganti dengan
+    // panah kiri/kanan, karena drag hanya bisa dilakukan dengan mouse.
+    t.tabIndex = 0;
+    t.setAttribute('role', 'tab');
+    t.setAttribute('aria-selected', l === currentLayer ? 'true' : 'false');
+    t.setAttribute('aria-label', 'Layer ' + (l + 1) + (layerNames[l] ? ': ' + layerNames[l] : ''));
     t.onclick = () => { if (tabDragMoved) return; switchLayer(l); };
     t.onpointerdown = (e) => startTabDrag(e, t, l);
+    t.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchLayer(l); return; }
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const step = (e.key === 'ArrowRight') ? 1 : -1;
+      const next = Math.min(layerCount - 1, Math.max(0, l + step));
+      if (next === l) return;
+      switchLayer(next);
+      const nodes = el('tabs').children;
+      if (nodes[next]) nodes[next].focus();
+    };
     tabs.appendChild(t);
   }
   el('btnDelLayer').disabled = layerCount <= 1;
@@ -168,7 +204,9 @@ export function renderGrid() {
     cell.className = 'cell' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
     cell.innerHTML = `<div class="type">R${r}C${c} · ${data ? TYPE_NAMES[data.type] : '...'}</div>
                        <div class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</div>`;
-    cell.onclick = () => openEditor('key', { r, c });
+    const label = 'Baris ' + (r + 1) + ' kolom ' + (c + 1) + ': ' +
+      (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : 'kosong');
+    makeInteractive(cell, () => openEditor('key', { r, c }), label);
     grid.appendChild(cell);
   }
 }
@@ -190,7 +228,9 @@ export function renderEncoderList() {
       const row = document.createElement('div');
       row.className = 'enc-row' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
       row.innerHTML = `<span class="label">${ENC_LABELS[which]}</span><span class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</span>`;
-      row.onclick = () => openEditor('enc', { idx: i, which });
+      const label = (NUM_ENCODERS > 1 ? 'Knob ' + (i + 1) + ' - ' : '') +
+        ENC_LABELS[which] + ': ' + (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : 'kosong');
+      makeInteractive(row, () => openEditor('enc', { idx: i, which }), label);
       list.appendChild(row);
     });
   }
