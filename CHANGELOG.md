@@ -170,6 +170,38 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
 
 ### Fixed
+- **Preset selalu terbuka di layer 0.** `openPresetEditor()` mengirim
+  `LAYER:0` secara hardcoded, jadi membuka ulang preset yang sama selalu
+  melompat kembali ke layer pertama - padahal user mungkin sedang mengedit
+  layer 3. Sekarang layer terakhir dicatat per preset dan dipakai lagi saat
+  preset yang sama dibuka kembali dalam satu sesi koneksi. Preset yang belum
+  pernah dibuka tetap mulai dari layer 0, sesuai permintaan.
+  - Peta `lastLayerByPreset` **di-reset tiap koneksi putus**
+    (`resetAdaptiveRuntimeState()`), bukan tiap aplikasi ditutup. Alasannya:
+    isi RAM device ikut hilang saat koneksi putus, jadi device sedang tidak
+    menampilkan preset mana pun. Layer yang tercatat dari sesi lalu sudah tidak
+    punya isi - membukanya hanya membuka layer kosong.
+  - **Dijepit ke `[0, jumlah layer preset - 1]`.** Tanpa jepit, preset yang
+    tadinya punya 5 layer lalu dikecilkan (mis. sebagian layer dihapus) akan
+    mengirim `LAYER:4` yang tidak ada - device diam dan grid tampil kosong
+    tanpa pesan error apa pun.
+  - Dicatat di **dua jalur keluar**: `openPresetEditor()` (sebelum
+    `editingPresetId` ditimpa, sehingga lompat langsung dari preset A ke preset B
+    juga tercatat) dan `exitPresetEditor()` (jalur Selesai/Batal). Kalau hanya
+    satu, layer terakhir hilang untuk jalur yang lain - dan gejalanya baru
+    muncul setelah disconnect.
+
+### Added
+- **Test `preset-layer-test.js`** (5 seksi, 18 pemeriksaan) untuk fix di atas.
+  Yang diuji: tidak adanya lagi `LAYER:0` hardcoded, Default-to-0 untuk preset
+  yang belum pernah dibuka, penjepit rentang layer, pencatatan di kedua jalur
+  keluar, dan reset per sesi koneksi. Diverifikasi dengan **uji negatif** yang
+  sengaja membuat empat regresi - `LAYER:0` hardcoded, penjepit dihapus, reset
+  peta dihapus, pencatatan di `exitPresetEditor` dihapus - dan memastikan keempatnya
+  **terdeteksi**. Keempatnya adalah bug senyap: tidak melempar error, hanya
+  berperilaku salah.
+
+### Fixed
 - **Kontrol RGB tanpa nama yang bisa dibaca (Phase 9.4).**
   Dua slider (`#rgbBri`, `#rgbSpeed`) punya `<span>` teks di sebelahnya.
   Terlihat, tapi `<span>` tidak memberi accessible name - screen reader hanya

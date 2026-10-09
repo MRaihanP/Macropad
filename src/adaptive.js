@@ -28,6 +28,27 @@ import { t } from './i18n.js';
 export let presetsData = { masterEnabled: true, presets: [] };
 export let editingPresetId = null;
 let currentActivePresetId = null;
+
+// Layer terakhir yang sedang dibuka untuk setiap preset.
+//
+// Dipakai supaya membuka ulang preset kembali ke layer yang sama, bukan selalu
+// layer 0. Scope-nya SESI KONEKSI, bukan aplikasi: peta ini dikosongkan di
+// resetAdaptiveRuntimeState() yang dipanggil tiap koneksi putus. Alasannya -
+// isi RAM device ikut hilang saat koneksi putus (lihat catatan clearDirty di
+// serial-transport.js), jadi device sedang tidak menampilkan preset mana pun.
+// Mengambil "terakhir dibuka" dari sesi yang lalu akan membuka layer yang
+// isinya sudah tidak ada di device.
+let lastLayerByPreset = new Map();   // presetId -> layer
+
+// Catat layer aktif untuk preset yang sedang diedit.
+//
+// Dipanggil SEBELUM editingPresetId ditimpa, sehingga perpindahan langsung dari
+// preset A ke preset B (tanpa lewat Selesai/Batal) juga ikut tercatat. Kalau
+// hanya dicatat di exitPresetEditor(), layer terakhir preset A akan hilang
+// setiap kali user langsung melompat ke preset lain.
+function noteCurrentLayerForEditingPreset() {
+  if (editingPresetId) lastLayerByPreset.set(editingPresetId, currentLayer);
+}
 let focusedExeLast = null;
 let pendingFocusSince = 0;
 let escapeFrozenForExe = null;
@@ -304,6 +325,7 @@ export async function openPresetEditor(id) {
   if (!isConnected()) { log(t('adaptive.needConnectLog'), 'err'); return; }
   const preset = presetsData.presets.find(p => p.id === id);
   if (!preset) return;
+  noteCurrentLayerForEditingPreset();
   editingPresetId = id;
   // Sedang DIEDIT, bukan lagi "auto-matched" - kalau tidak, label dan poll loop
   // akan menganggap preset ini masih aktif karena exe-nya lagi difokuskan.
@@ -317,12 +339,23 @@ export async function openPresetEditor(id) {
 
   await sendLine('CONTEXT:APP:NEW');
   await replayPresetLayers(preset);
-  await sendLine('LAYER:0');
+
+  // Layer tujuan: terakhir dibuka untuk preset ini di sesi koneksi ini, atau 0
+  // kalau preset ini baru pertama kali dibuka. Dijepit ke rentang layer milik
+  // preset - preset bisa punya lebih sedikit layer daripada yang tercatat,
+  // misalnya setelah diedit dan sebagian layer dihapus. Tanpa jepit ini device
+  // akan Staying di layer yang tidak ada dan grid tampil kosong.
+  const maxLayer = Math.max(0, (preset.layers?.length || 1) - 1);
+  const wanted = lastLayerByPreset.get(id);
+  const targetLayer = (wanted === undefined) ? 0 : Math.min(Math.max(0, wanted), maxLayer);
+
+  await sendLine('LAYER:' + targetLayer);
   await sendLine('INFO');
   await sendLine('DUMPENC');
 }
 
 export async function exitPresetEditor() {
+  noteCurrentLayerForEditingPreset();
   editingPresetId = null;
   el('presetEditBanner').style.display = 'none';
   el('btnSave').style.display = '';
@@ -479,6 +512,10 @@ async function pollFocusedApp() {
 }
 
 export function resetAdaptiveRuntimeState() {
+  // Peta "layer terakhir" hanya berlaku selama satu sesi koneksi. Device sudah
+  // tidak menampilkan isi preset mana pun setelah putus, jadi layer yang
+  // tercatat dari sesi lalu tidak lagi punya arti.
+  lastLayerByPreset = new Map();
   slotTable = Array(APP_SLOTS).fill(null);
   currentActivePresetId = null; focusedExeLast = null; escapeFrozenForExe = null; pendingFocusSince = 0;
   updateActivePresetLabel();
