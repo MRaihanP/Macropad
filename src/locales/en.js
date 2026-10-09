@@ -59,7 +59,7 @@ export const en = {
 'editor.consumer.NEXT': 'Next',
 'editor.consumer.PREV': 'Prev',
 'editor.apply': 'Apply to device',
-'editor.recordHint': 'Records automatically: just press the physical keys, each key is joined with "+". Backspace = delete the last token, Delete = clear everything. Media keys (volume/play) are detected directly.',
+'editor.recordHint': 'Records automatically: just press the physical keys, each key is joined with "+". Backspace = delete the last token, Delete = clear everything. Media keys (volume/play) are detected directly. Escape = cancel and stop recording.',
 
 // ---- Pemilih aplikasi ----
 'appPicker.searchPlaceholder': 'Search apps...',

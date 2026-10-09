@@ -128,6 +128,56 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   yang sedang dibacakan.
 
 ### Fixed
+- **Keyboard terkunci saat merekam binding (Phase 9.6).**
+  `captureKeyDuringRecording()` memanggil `preventDefault()` pada SETIAP
+  `keydown` selama mode rekam aktif. Akibatnya `F5`, `Ctrl+R`, `Ctrl+W`,
+  `Ctrl+T` semuanya tertahan, dan satu-satunya cara keluar adalah klik tombol
+  Cancel - yang mustahil dijangkau karena keyboard sedang direkam. User
+  terkunci sampai app ditutup paksa. (`Alt+Tab` tidak bisa di-`preventDefault()`
+  dari webview sama sekali; itu pintasan accelerator sistem, bukan event DOM.)
+  - Escape sekarang menjadi jalan keluar: menghentikan rekam, menyembunyikan
+    panel editor, dan membersihkan isi editor. Petunjuk di UI (ID & EN)
+    menyebutnya supaya tidak sekadar konvensi tersembunyi.
+  - Logika "batal" diekstrak jadi satu `cancelEditor()` di `home-page.js`,
+    dipakai oleh tombol Cancel **dan** Escape. Sebelumnya logikanya tertulis
+    inline di `onclick` tombol Cancel; menyalinnya berarti kedua jalur bisa
+    melenceng - dan jalur yang lupa melepas listener perekaman akan mengunci
+    keyboard untuk sisa sesi.
+  - Tabrakan dengan modal diperbaiki. `ui-modal.js` memasang listener di fase
+    *capture* pada `document`, sedangkan perekam keyboard di `window` fase
+    *bubble* - jadi modal selalu jalan lebih dulu. Tanpa koordinasi, satu
+    tekan Escape akan menutup modal **sekaligus** membatalkan editor. Sekarang
+    `ui-modal.js` memanggil `e.preventDefault()` saat menutup, dan perekam
+    memeriksa `e.defaultPrevented` lalu mundur. Escape juga tidak lagi jatuh ke
+    cabang Enter di `ui-modal.js` (sebelumnya `if (e.key === 'Escape') close(null);`
+    tanpa `return`, jadi branch berikutnya ikut dievaluasi).
+  - Fungsi `onKey` di `ui-modal.js` sekarang me-return eksplisit di tiap cabang.
+
+### Changed
+- **Test `home-page-diff.js` dan `shell-ui-diff.js` diperbarui untuk 9.6.**
+  Keduanya adalah diff test "verbatim proof" yang membandingkan hasil ekstraksi
+  modul dengan versi lama di commit yang dipin, jadi mereka **wajib** gagal
+  saat ada perubahan yang disengaja - itulah gunanya. Baris baru 9.6 di-strip
+  lewat daftar `ESCAPE_HATCH` supaya perbandingan tetap ketat terhadap semua
+  baris lain, dan keberadaan baris baru itu dibuktikan eksplisit di seksi 4b -
+  kalau tidak, strip itu bisa menelan perubahan apa pun tanpa terlihat.
+  `shell-ui-diff.js` tidak lagi memakai perbandingan posisional untuk `onKey`
+  (bentuknya memang berubah), tapi PERILAKU yang dijanjikan - Escape menutup
+  dengan `null` - tetap diuji, ditambah pemeriksaan bahwa Escape me-return
+  sebelum cabang Enter.
+
+### Added
+- **Test `record-escape-test.js`** (6 seksi) yang mengunci perilaku 9.6:
+  Escape ditangani sebelum branch tombol biasa (tidak ikut jadi token),
+  `cancelEditor()`EXPORTED dan lengkap, jumlah `addEventListener` ==
+  `removeEventListener` (mencegah listener menumpuk setiap kali editor dibuka),
+  Contracts `ui-modal` <-> perekam, dan petunjuk UI menyebut Escape di kedua
+  bahasa. Test ini diverifikasi **dengan uji negatif**: `preventDefault()` di
+  `ui-modal.js` sengaja dihapus sementara, test dipastikan GAGAL, lalu file
+  dipulihkan dan test dipastikan hijau lagi. Test yang tidak pernah gagal
+  tidak membuktikan apa pun.
+
+### Fixed
 - **Perubahan status koneksi dan level baterai tidak bisadidengar screen reader.**
   Indikator baterai berupa SVG, yang isinya tidak bisa dibaca assistive tech —
   sekarang ditandai `role="img"` dan maknanya dipindahkan ke `aria-label` yang

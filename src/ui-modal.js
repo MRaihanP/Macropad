@@ -36,10 +36,16 @@ export function showModalBase(titleText, bodyHtml, buttons) {
       resolve(value);
     }
     function onKey(e) {
-      if (e.key === 'Escape') close(null);
+      // preventDefault di sini bukan sekadar agar Enter tidak mengirim form di
+      // belakang overlay. Ini juga jadi sinyal "sudah ada yang menangani
+      // event ini" bagi listener lain - home-page.js memeriksa
+      // e.defaultPrevented supaya satu tekan Escape saat modal terbuka tidak
+      // sekaligus membatalkan editor yang sedang direkam.
+      if (e.key === 'Escape') { e.preventDefault(); close(null); return; }
       if (e.key === 'Enter') {
         const okBtn = buttons.find(b => b.primary);
-        if (okBtn) close(okBtn.value);
+        if (okBtn) { e.preventDefault(); close(okBtn.value); }
+        return;
       }
       // Focus trap: tanpa ini, Tab dari tombol terakhir akan keluar ke elemen
       // di belakang overlay yang tertutup - pengguna keyboard bisa fokus ke

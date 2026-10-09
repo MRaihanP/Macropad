@@ -56,7 +56,7 @@ export const id = {
 'editor.consumer.NEXT': 'Berikutnya',
 'editor.consumer.PREV': 'Sebelumnya',
 'editor.apply': 'Terapkan ke device',
-'editor.recordHint': 'Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi.',
+'editor.recordHint': 'Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi. Escape = batal & hentikan rekam.',
 
 // ---- Pemilih aplikasi ----
 'appPicker.searchPlaceholder': 'Cari aplikasi...',

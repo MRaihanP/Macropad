@@ -47,7 +47,7 @@ import { initAppPicker } from "./app-picker.js";
 import {
   initHomePage, initEditorPanel,
   renderTabs, renderGrid, renderEncoderList, loadLayer,
-  resetEditorState, clearSelection, selected, stopRecordingContinuous,
+  resetEditorState, selected, stopRecordingContinuous, cancelEditor,
 } from "./home-page.js";
 import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
 // i18n. await di level modul supaya bahasa selesai ditentukan SEBELUM init*
@@ -211,7 +211,7 @@ el('btnRenameLayer').onclick = async () => {
     sendLine(`RENAMELAYER:${currentLayer}:${name.trim()}`).then(() => setTimeout(() => sendLine('DUMPNAMES'), 200));
   }
 };
-el('btnCancel').onclick = () => { stopRecordingContinuous(); el('editPanel').style.display = 'none'; clearSelection(); };
+el('btnCancel').onclick = cancelEditor;
 el('btnApply').onclick = async () => {
   if (!selected) return;
   stopRecordingContinuous();

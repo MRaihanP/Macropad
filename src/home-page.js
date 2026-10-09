@@ -310,8 +310,40 @@ function updateRecordPreview() {
   else el('editType').value = '2';
 }
 
+// Tutup editor dan hentikan perekaman. Satu-satunya definisi "batal" - dipakai
+// tombol Cancel dan tombol Escape saat merekam.
+//
+// Dipisah dari onclick tombol Cancel supaya keduanya tidak bisa berbeda
+// perilaku. Tanpa ini, menambah jalur baru berarti mudah lupa bahwa
+// listener perekaman harus dilepas, dan listener yang tertinggal akan
+// mengunci keyboard untuk sisa sesi.
+export function cancelEditor() {
+  stopRecordingContinuous();
+  el('editPanel').style.display = 'none';
+  clearSelection();
+}
+
 function captureKeyDuringRecording(e) {
   if (!recording) return;
+
+  // Modal (ui-modal.js) memasang listener-nya di fase capture pada document,
+  // jadi ia berjalan SEBELUM listener ini yang di window fase bubble. Kalau
+  // modal yang menutup diri, ui-modal sudah memanggil e.preventDefault() -
+  // dari situ kita tahu. Tanpa pengecekan ini, satu tekan Escape akan
+  // menutup modal sekaligus membatalkan editor: dua perubahan sekaligus dari
+  // satu penekanan.
+  if (e.defaultPrevented) return;
+
+  // Escape = jalan keluar. Tanpa baris ini, F5 / Ctrl+R / Ctrl+W / Ctrl+T
+  // tertahan preventDefault() dan user terkunci: satu-satunya cara keluar
+  // adalah klik Cancel, yang mustahil dijangkau keyboard karena seluruh
+  // keyboard sedang direkam. (Alt+Tab tidak bisa di-preventDefault dari
+  // webview sama sekali - itu pintasan accelerator sistem, bukan event DOM.)
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelEditor();
+    return;
+  }
 
   if (e.key === 'Backspace') { e.preventDefault(); recordTokens.pop(); updateRecordPreview(); return; }
   if (e.key === 'Delete') { e.preventDefault(); recordTokens = []; el('editValue').value = ''; el('editType').value = '0'; return; }
