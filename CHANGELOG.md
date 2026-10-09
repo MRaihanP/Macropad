@@ -208,6 +208,29 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   dari firmware dan bukan dari tebakan.
 
 ### Fixed
+- **Status "belum disimpan" di halaman RGB tidak diumumkan ke screen reader
+  (Phase 9.3).** `#rgbSaveState` menampilkan teks "belum disimpan" setiap kali
+  RGB diubah. Tanpa live region, teks itu hanya terlihat - screen reader tidak
+  mengumumkannya karena teks statis tidak masuk pengumuman otomatis. User
+  buta bisa menutup app tanpa pernah tahu perubahan RGB-nya belum tersimpan ke
+  device. Sekarang `#rgbSaveState` memakai `role="status"` +
+  `aria-live="polite"`, konsisten dengan `#statusText` dan `#log`.
+  `polite` (bukan `assertive`) dipilih supaya tidak memotong apa yang sedang
+  dibacakan screen reader.
+  Live region ini sudah ada di HTML dan hanya diubah lewat `textContent`, jadi
+  screen reader punya kesempatan membandingkan "sebelum" vs "sesudah" - kalau
+  elemennya baru dibuat saat teks muncul, tidak ada yang diumumkan.
+
+### Added
+- **Test `rgb-savestate-a11y-test.js`** (5 seksi, 13 pemeriksaan) plus seksi
+  5c di `a11y-test.js`. Yang dijaga bukan hanya atributnya, tapi juga bahwa
+  live region **sudah ada sebelum teks berubah** (tidak dibuat lewat
+  `createElement`), tidak ditulis lewat `innerHTML`, dan teks yang
+  diumumkan selalu berisi informasi bermakna.
+  Diverifikasi dengan uji negatif yang mengembalikan `#rgbSaveState` ke span
+  biasa - **kedua test mendeteksinya**.
+
+### Fixed
 - **Device yang port-nya muncul sebelum firmware siap tidak PERNAH tersambung.**
   Dua hal bertemu dan saling menutup jalan:
   1. `scheduleRetry()` maksimal **2x percobaan** lalu menyerah permanen.

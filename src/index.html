@@ -368,7 +368,12 @@
           <div class="row">
             <button class="primary" id="btnRgbSave" data-i18n="rgb.save">Simpan ke device</button>
             <button id="btnRgbReset" data-i18n="rgb.reset">Reset ke default</button>
-            <span class="hint" id="rgbSaveState"></span>
+            <!-- role="status" = live region polite: perubahan status simpan RGB
+               (mis. "belum disimpan" muncul/hilang) diumumkan screen reader.
+               Tanpa ini, screen reader user tidak akan pernah tahu kalau
+               perubahan RGB-nya belum tersimpan ke device - informasi itu
+               hanya terlihat, tidak terdengar. -->
+          <span class="hint" id="rgbSaveState" role="status" aria-live="polite"></span>
           </div>
         </div>
       </div>
