@@ -63,7 +63,9 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
-#include <BLE2902.h>
+// BLE2902.h SENGAJA TIDAK di-include. Pada core 3.3.x kelas itu deprecated
+// karena NimBLE menambah CCCD otomatis untuk characteristic yang punya
+// PROPERTY_NOTIFY. Memakainya hanya menghasilkan warning.
 
 // =================== UUID (HARUS SAMA DENGAN src-tauri/src/ble.rs) =======
 // Kalau salah di sini, companion app tidak akan pernah menemukan device.
@@ -74,7 +76,8 @@ static const char* TX_UUID     = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // app
 static const char* RX_UUID     = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // device -> app
 static const char* HID_SVC     = "1812";   // Human Interface Device
 static const char* HID_CHAR    = "2a4d";   // HID Report
-static const char* CCCD_UUID   = "2902";   // Client Characteristic Configuration
+// CCCD (2902) tidak dideklarasikan di sini: NimBLE menambahkannya otomatis
+// begitu characteristic punya PROPERTY_NOTIFY. Tidak perlu membuat manual.
 
 static const char* DEVICE_NAME = "MacroPad BLE Spike";
 
@@ -105,11 +108,22 @@ static bool bleHidReady = false;
 // Report HID saat ini. 0x04 = LED output report.
 static uint8_t hidLedReport[1] = {0x00};
 
+// Callback untuk report HID.
+//
+// CATATAN API (revisi 2026-10-09): pada library BLE core ESP32 3.3.x,
+// BLECharacteristicCallbacks hanya punya onWrite(BLECharacteristic*) - satu
+// argumen. Bentuk tiga-argumen (BLECharacteristic*, uint8_t*, size_t) berasal
+// dari ESP32 BLE lama (Bluedroid) dan sudah tidak ada:
+//
+//   error: 'void HidCallbacks::onWrite(...)' marked 'override',
+//          but does not override
+//
+// Data yang ditulis dibaca lewat getValue(), bukan lewat parameter.
 class HidCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* ch, uint8_t* data, size_t len) override {
-    // Windows menulis status LED (Caps Lock, Num Lock, dst) ke sini.
-    Serial.printf("[SPIKE] HID output report: len=%d, ", (int)len);
-    for (size_t i = 0; i < len; i++) Serial.printf("%02X ", data[i]);
+  void onWrite(BLECharacteristic* ch) override {
+    String v = ch->getValue();
+    Serial.printf("[SPIKE] HID output report: len=%d, ", (int)v.length());
+    for (size_t i = 0; i < v.length(); i++) Serial.printf("%02X ", (uint8_t)v[i]);
     Serial.println();
   }
 };
@@ -157,28 +171,43 @@ static void setupBle() {
   BLEServer* server = BLEDevice::createServer();
 
   BLEService* hid = server->createService(BLEUUID(HID_SVC), 20);
+
+  // CATATAN API (revisi 2026-10-09): BLEService::createCharacteristic() hanya
+  // menerima DUA argumen (uuid, properties) di core 3.3.x. Bentuk tiga
+  // argumen (uuid, properties, accessPermissions) dari Bluedroid sudah
+  // dihapus. Access permission pada NimBLE diatur lewat setAccessPermissions()
+  // bila benar-benar dibutuhkan; untuk spike ini tidak perlu.
   BLECharacteristic* report = hid->createCharacteristic(
       BLEUUID(HID_CHAR),
       BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY |
-      BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_WRITE,
-      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+      BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_WRITE);
   report->setValue(kbdReportMap, sizeof(kbdReportMap));
-  hid->createDescriptor(BLEUUID(CCCD_UUID), BLEDescriptor::PROPERTY_NOTIFY | BLEDescriptor::PROPERTY_READ);
+  // TIDAK memakai createDescriptor() untuk CCCD: BLEService tidak punya
+  // metode itu di core 3.3.x. Lihat catatan BLE2902 di bawah.
   report->setCallbacks(&g_hidCallbacks);
 
   // --- Service 2: NUS (saluran perintah app <-> device) ---
   // Sengaja di server yang sama dengan HID, supaya SPIKE ini sekaligus
   // membuktikan keduanya bisa hidup berdampingan.
   BLEService* nus = server->createService(BLEUUID(SERVICE_UUID), 12);
+  // CATATAN API (revisi 2026-10-09): BLE2902 DIHAPUS dari spike ini.
+  //
+  // Di core 3.3.x, BLE2902 deprecated dengan pesan:
+  //   "'BLE2902' is deprecated: NimBLE does not support manually adding 2902
+  //    descriptors as they are automatically added when the characteristic
+  //    has notifications or indications enabled."
+  //
+  // Artinya: begitu characteristic punya PROPERTY_NOTIFY,, NimBLE otomatis
+  // menambahkan CCCD - yang justru kita butuhkan agar subscribe dari sisi
+  // app benar-benar sampai. Menambahkan manual justru menghasilkan warning
+  // dan akan dihapus di versi berikutnya.
   g_nusTx = nus->createCharacteristic(
       BLEUUID(RX_UUID),
       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-  g_nusTx->addDescriptor(new BLE2902());
 
   g_nusRx = nus->createCharacteristic(
       BLEUUID(TX_UUID),
       BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  g_nusRx->addDescriptor(new BLE2902());
 
   server->start();
 
@@ -242,8 +271,16 @@ static void loopImpl() {
   if (down && !buttonDown) {
     buttonDown = true;
     // Kirim lewat KEDUA jalur supaya jelas mana yang bekerja.
+    //
+    // CATATAN API (revisi 2026-10-09): USBHIDKeyboard::print() sudah
+    // mengirim report HID-nya sendiri. Memanggil sendReport() tanpa argumen
+    // tidak bisa: overload-nya hanya sendReport(KeyReport*) yang expects 1
+    // argumen. Hasilnya:
+    //   error: no matching function for call to 'USBHIDKeyboard::sendReport()'
+    //
+    // Jadi cukup print(). Method print() yang dipakai firmware utama
+    // (HID_Keypad_*.ino) juga begitu.
     usbKeyboard.print('a');
-    usbKeyboard.sendReport();
     Serial.println("[SPIKE] USB: kirim 'a' lewat USB HID");
     bleSendKey(0x04);                     // HID usage 0x04 = 'a'
   }

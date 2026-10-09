@@ -243,6 +243,55 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   **Uji negatif: 14 mutasi, 14/14 terdeteksi.**
 
 ### Fixed
+- **Spike BLE HID tidak bisa dikompilasi - 4 API core ESP32 3.3.11 yang salah.**
+  Semua diperbaiki setelah membaca header asli di instalasi Arduino lokal
+  (`libraries/BLE/src/` dan `libraries/USB/src/`), bukan menebak dari
+  ingatan:
+
+  1. **`onWrite()` hanya satu argumen.** `BLECharacteristicCallbacks` di core
+     3.3.x punya `virtual void onWrite(BLECharacteristic*)` - tidak ada
+     varian tiga-argumen lagi. Bentuk `(ch, uint8_t*, size_t)` berasal dari
+     Bluedroid:
+     `error: marked 'override', but does not override`.
+     Data sekarang dibaca lewat `getValue()`.
+  2. **`BLEService::createCharacteristic()` hanya dua argumen.** Bentuk tiga
+     argumen `(uuid, properties, accessPermissions)` sudah dihapus di core
+     3.3.x: `error: no matching function for call`. Access permission
+     (bila perlu) diatur lewat `setAccessPermissions()`.
+  3. **`BLEService` tidak punya `createDescriptor()`.** Nilai
+     `BLEDescriptor::PROPERTY_NOTIFY` juga tidak ada. CCCD dihapus karena
+     sudah tidak diperlukan - lihat `BLE2902` di bawah.
+  4. **`BLE2902` deprecated.** Pesan resmi core 3.3.x:
+     *"NimBLE does not support manually adding 2902 descriptors as they are
+     automatically added when the characteristic has notifications or
+     indications enabled."* Jadi menambahkan manual justru menghasilkan
+     warning dan **akan dihapus di versi berikutnya**. `BLE2902.h` dihapus
+     dari `#include`; CCCD dibuat otomatis NimBLE begitu characteristic punya
+     `PROPERTY_NOTIFY`.
+  5. **`USBHIDKeyboard::sendReport()` butuh argumen.** Overload-nya hanya
+     `sendReport(KeyReport*)`; `print()` sudah mengirim report sendiri, jadi
+     panggilan tanpa argumen tidak perlu dan gagal:
+     `error: no matching function for call`.
+
+### Added
+- **Seksi `D2` di `spike-test.js`: deutlichkan bentuk API core 3.3.11**,
+  semuanya dibaca dari header asli. Termasuk `onWrite` satu argumen,
+  `createCharacteristic` dua argumen (dihitung dengan menghitung koma di
+  level teratas), larangan `createDescriptor`, larangan `BLE2902`, dan
+  larangan `sendReport()` tanpa argumen.
+- Pemeriksaan `PROPERTY_NOTIFY` diperketat dari `>= 1` menjadi `tepat 2`
+  (HID report **dan** NUS TX). Versi lama tetap hijau saat satu dari dua
+  dihapus - ditemukan oleh uji negatif.
+- **Uji negatif: 6 dari 19 mutasi adalah persis compile error yang terjadi
+  nyata**, semuanya dideteksi. Total **19/19**.
+
+### Notes
+- **Kabar baik dari error tersebut: NimBLE yang dipakai.** Pesan deprecated
+  `BLE2902` hanya muncul pada backend NimBLE. Kalau yang terpakai Bluedroid,
+  stack BLE-nya jauh lebih boros RAM dan spike ini tidak akan relevan. Jadi
+  pertanyaan "NimBLE atau bukan" sudah terjawab: **NimBLE**.
+
+### Fixed
 - **Firmware PROTOTYPE dan FINAL tidak bisa dikompilasi sejak Phase 10.**
   Dibuktikan user saat mencoba compile; ada **tiga** bug terpisah, semuanya
   berasal dari Phase 10 (abstraksi transport), bukan dari spike BLE.
