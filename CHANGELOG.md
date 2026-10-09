@@ -269,6 +269,43 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   akan flickering, bukan "randomize". Test yang salah lebih berbahaya daripada
   kode yang salah, karena ia mengarahkan perbaikan ke arah keliru.
 
+### Added
+- **`firmware/spike_ble_hid/spike_ble_hid.ino` - spike kelayakan BLE HID
+  (THROWAWAY, sekali pakai).** Seluruh Phase 10 bergantung pada tiga
+  pertanyaan yang jawabannya belum diketahui, dan ketiganya bisa membatalkan
+  rencana kalau salah:
+  1. Apakah TinyUSB/USB-CDC dan BLE bisa hidup berdampingan di ESP32-S3?
+  2. Apakah service HID benar-benar bisa mengirim key ke Windows, atau hanya
+     terlihat di Device Manager?
+  3. Apakah sisa RAM cukup setelah stack BLE?
+  Spike menjawab ketiganya di device nyata, sebelum handler app dan firmware
+  BLE ditulis. Foldernya terpisah dari `common/` dan folder profil supaya
+  tidak pernah ikut ter-build di firmware produksi.
+  - Satu GATT server dengan **dua service**: HID (1812) dan NUS
+    (6e400001-…). Ini sekaligus membuktikan keduanya bisa hidup berdampingan -
+    kalau tidak bisa, jalur perintah konfigurasi harus lewat cara lain.
+  - Melaporkan `ESP.getFreeHeap()` / `getMinFreeHeap()` / `getMaxAllocHeap()` /
+    `getHeapSize()` dan keberadaan PSRAM, supaya kebocoran memori terlihat dari
+    laporan periodik, bukan dari gejala "device mati setelah beberapa menit".
+  - Inti yang harus dipakai: **NimBLE** (`BLEDevice::init()` mencetak banner
+    "NimBLE"; kalau muncul "Bluedroid", core-nya bukan Arduino >= 3). NimBLE
+    jauh lebih hemat RAM dan ini yang membuat spike relevan.
+
+- **Test `spike-test.js` (7 seksi, 40+ pemeriksaan).** Satu-satunya verifikasi
+  yang mungkin tanpa toolchain Arduino: kurawal seimbang setelah komentar
+  dan string dibuang, `setup()`/`loop()` ada dan tidak redefined,
+  `loopImpl()` tidak rekursif, **UUID NUS identik dengan yang di
+  `src-tauri/src/ble.rs`**, dua service cohabit di satu server, CCCD ada di
+  kedua characteristic, laporan memori lengkap, dan tidak ada `delay()` besar
+  di loop.
+  Pemeriksaan UUID ke `ble.rs` itu yang paling berisiko: kalau UUID berbeda,
+  companion app tidak akan pernah menemukan device - dan itu baru ketahuan
+  setelah pairing di Windows, jauh setelah kode ditulis.
+  Uji negatif: **11 mutasi, 11/11 terdeteksi** (kurawal tidak seimbang,
+  `loop()` hilang, `loop()` dobel, `loopImpl()` rekursif, UUID service/TX
+  berubah, CCCD dihapus, service NUS pindah ke server sendiri, laporan memori
+  dihapus, `delay(5000)` di loop, penanda throwaway dihapus).
+
 ### Fixed
 - **Preset aktif menimpa pilihan layer user dalam ~120 ms.** `lastDeviceLayerEventAt`
   sudah diisi setiap ada `EVT:LAYER:` sejak lama, tapi **tidak pernah dibaca siapa
