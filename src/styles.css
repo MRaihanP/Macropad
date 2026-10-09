@@ -252,6 +252,12 @@ input[readonly] { color: var(--accent); cursor: default; }
 
 /* ===== RGB page ===== */
 .rgb-slider-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 0.82rem; color: var(--muted); }
+/* Selector menyertakan <label> sejak Phase 9.4: teks slider RGB diubah dari
+   <span> ke <label for> supaya screen reader membacakan nama slider, bukan
+   hanya "slider". Kalau selector ini tidak diperbarui, label kehilangan lebar
+   tetap dan slider melebar tidak seragam. */
+
+.rgb-slider-row > label:first-child,
 .rgb-slider-row > span:first-child { width: 78px; flex-shrink: 0; }
 .rgb-slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
 .rgb-val { width: 40px; text-align: right; font-family: var(--mono); color: var(--text); }

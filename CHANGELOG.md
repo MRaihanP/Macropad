@@ -128,6 +128,32 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   yang sedang dibacakan.
 
 ### Fixed
+- **Kontrol RGB tanpa nama yang bisa dibaca (Phase 9.4).**
+  Dua slider (`#rgbBri`, `#rgbSpeed`) punya `<span>` teks di sebelahnya.
+  Terlihat, tapi `<span>` tidak memberi accessible name - screen reader hanya
+  membacakan "slider" tanpa nama. Dua color picker (`#rgbColorPicker`,
+  `#rgbModeColor`) bahkan tidak punya teks sama sekali di dekatnya, jadi
+  keduanya diumumkan sebagai "color picker" telanjang.
+  - `<span>` diganti `<label for>` - nama jadi benar dan tetap terlihat.
+  - `#rgbColorPicker` dihubungkan ke `#rgbKeyTitle` via `aria-labelledby`.
+    Judul itu diisi dinamis di `rgb-page.js` dengan
+    `t('rgb.keyColorTitle', { name })`, jadi nama yang terbaca selalu menyebut
+    key yang sedang dipilih - tidak ada kunci i18n baru yang bisa basi.
+  - `#rgbModeColor` dapat `aria-label` lewat kunci baru `rgb.modeColorLabel`
+    (ID + EN), lewat `data-i18n-attr` supaya ikut ganti bahasa.
+  - Nilai slider sekarang punya `aria-valuetext` berisi versi persen yang
+    sama persis dengan yang tertulis di layar (`78%`), bukan angka mentah
+    0-255 yang ada di atribut `value`. Span readout di layar diberi
+    `aria-hidden="true"` supaya tidak dibacakan dua kali.
+  - Penulisan nilai diringkas ke satu helper `setSliderReadout()` yang
+    menulis teks layar dan `aria-valuetext` bersamaan. Sebelumnya ada
+    4 titik penulisan terpisah; mengisi salah satu saja akan membuat angka yang
+    dibacakan berbeda dari yang terlihat, dan itu tidak akan ketahuan.
+  - `styles.css`: selector `.rgb-slider-row > span:first-child` diperluas
+    menyertakan `label:first-child`. Tanpa ini label kehilangan lebar tetap
+    78px dan slider melebar tidak seragam.
+
+### Fixed
 - **Keyboard terkunci saat merekam binding (Phase 9.6).**
   `captureKeyDuringRecording()` memanggil `preventDefault()` pada SETIAP
   `keydown` selama mode rekam aktif. Akibatnya `F5`, `Ctrl+R`, `Ctrl+W`,

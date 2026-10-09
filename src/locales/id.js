@@ -109,6 +109,7 @@ export const id = {
 'rgb.keyColor': 'Warna key',
 'rgb.keyColorHint': 'Mengubah warna key otomatis masuk mode Custom per Key.',
 'rgb.lightingMode': 'Mode Lighting',
+'rgb.modeColorLabel': 'Warna mode lighting',
 'rgb.lightingModeHint': 'Warna pilihan untuk mode lighting yang mendukung warna.',
 'rgb.save': 'Simpan ke device',
 'rgb.reset': 'Reset ke default',

@@ -157,12 +157,27 @@ export function syncRgbDotColors() {
   });
 }
 
+// Tampilkan nilai slider di layar DAN ke screen reader sekaligus.
+//
+// Dua tempat harus selalu ditulis bersamaan: teks yang terlihat (#rgbBriVal)
+// dan aria-valuetext yang dibacakan screen reader. Hanya mengisi salah satunya
+// membuat keduanya berbeda - user mendengar angka yang tidak cocok dengan yang
+// dia lihat di layar.
+//
+// Yang ditulis adalah versi persen ('78%') yang tampil di layar, bukan angka
+// mentah 0-255 yang ada di atribut value - supaya yang dibacakan persis sama
+// dengan yang tertulis.
+function setSliderReadout(inputId, readoutId, displayText) {
+  el(readoutId).textContent = displayText;
+  el(inputId).setAttribute('aria-valuetext', displayText);
+}
+
 export function renderRgbAll() {
   el('rgbEnabledToggle').checked = rgb.enabled;
   el('rgbBri').value = briToPct(rgb.bri);
-  el('rgbBriVal').textContent = briToPct(rgb.bri) + '%';
+  setSliderReadout('rgbBri', 'rgbBriVal', briToPct(rgb.bri) + '%');
   el('rgbSpeed').value = rgb.speed;
-  el('rgbSpeedVal').textContent = Math.round(rgb.speed / 255 * 100) + '%';
+  setSliderReadout('rgbSpeed', 'rgbSpeedVal', Math.round(rgb.speed / 255 * 100) + '%');
   renderRgbGrid(); renderRgbKeyCard(); renderRgbPresets();
   el('rgbSaveState').textContent = rgb.dirty ? t('rgb.unsaved') : '';
 }
@@ -219,13 +234,13 @@ export function initRgbPage() {
   el('rgbBri').oninput = (e) => {
     const pct = parseInt(e.target.value);
     rgb.bri = pctToBri(pct); rgb.dirty = true;
-    el('rgbBriVal').textContent = pct + '%';
+    setSliderReadout('rgbBri', 'rgbBriVal', pct + '%');
     transportSendLine(`RGB:BRI:${rgb.bri}`);
     renderRgbAll();
   };
   el('rgbSpeed').oninput = (e) => {
     rgb.speed = parseInt(e.target.value); rgb.dirty = true;
-    el('rgbSpeedVal').textContent = Math.round(rgb.speed / 255 * 100) + '%';
+    setSliderReadout('rgbSpeed', 'rgbSpeedVal', Math.round(rgb.speed / 255 * 100) + '%');
     transportSendLine(`RGB:MODE:${rgb.mode}:${rgb.random ? 1 : 0}:${rgb.color.join(':')}:${rgb.speed}`);
     renderRgbAll();
   };

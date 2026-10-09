@@ -313,14 +313,14 @@
         <div class="dash-right">
           <div class="panel">
             <h2 data-i18n="rgb.lighting">Pencahayaan</h2>
-            <div class="rgb-slider-row"><span data-i18n="rgb.brightness">Kecerahan</span><input type="range" id="rgbBri" min="0" max="100" value="78"><span id="rgbBriVal" class="rgb-val">78%</span></div>
+            <div class="rgb-slider-row"><label for="rgbBri" data-i18n="rgb.brightness">Kecerahan</label><input type="range" id="rgbBri" min="0" max="100" value="78" aria-valuetext="78%"><span id="rgbBriVal" class="rgb-val" aria-hidden="true">78%</span></div>
             <div class="hint" data-i18n="rgb.brightnessHint">100% di app = batas maksimal aman firmware (~60% PWM LED).</div>
-            <div class="rgb-slider-row"><span data-i18n="rgb.speed">Kecepatan</span><input type="range" id="rgbSpeed" min="0" max="255" value="128"><span id="rgbSpeedVal" class="rgb-val">50%</span></div>
+            <div class="rgb-slider-row"><label for="rgbSpeed" data-i18n="rgb.speed">Kecepatan</label><input type="range" id="rgbSpeed" min="0" max="255" value="128" aria-valuetext="50%"><span id="rgbSpeedVal" class="rgb-val" aria-hidden="true">50%</span></div>
           </div>
 
           <div class="panel" id="rgbKeyCard" style="display:none;">
             <h2 id="rgbKeyTitle">Warna key</h2>
-            <input type="color" id="rgbColorPicker" value="#10605A">
+            <input type="color" id="rgbColorPicker" value="#10605A" aria-labelledby="rgbKeyTitle">
             <div class="hint" data-i18n="rgb.keyColorHint">Mengubah warna key otomatis masuk mode Custom per Key.</div>
           </div>
 
@@ -328,7 +328,7 @@
             <h2 data-i18n="rgb.lightingMode">Mode Lighting</h2>
             <div class="rgb-preset-list" id="rgbPresetList"></div>
             <div id="cpModeWrap" style="margin-top:8px;">
-              <input type="color" id="rgbModeColor" value="#10605A">
+              <input type="color" id="rgbModeColor" value="#10605A" data-i18n-attr="aria-label:rgb.modeColorLabel">
               <div class="hint" data-i18n="rgb.lightingModeHint">Warna pilihan untuk mode lighting yang mendukung warna.</div>
             </div>
           </div>

@@ -112,6 +112,7 @@ export const en = {
 'rgb.keyColor': 'Key colour',
 'rgb.keyColorHint': 'Changing a key’s colour automatically switches to Custom Per Key mode.',
 'rgb.lightingMode': 'Lighting Mode',
+'rgb.modeColorLabel': 'Lighting mode colour',
 'rgb.lightingModeHint': 'Colour used by lighting modes that support one.',
 'rgb.save': 'Save to device',
 'rgb.reset': 'Reset to defaults',
