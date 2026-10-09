@@ -63,6 +63,9 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+// BLESecurity.h dipakai untuk bonding. Tanpa ini, Windows 11 tidak akan
+// menyelesaikan pairing dan akan terlihat "connecting" tanpa henti.
+#include <BLESecurity.h>
 // BLE2902.h SENGAJA TIDAK di-include. Pada core 3.3.x kelas itu deprecated
 // karena NimBLE menambah CCCD otomatis untuk characteristic yang punya
 // PROPERTY_NOTIFY. Memakainya hanya menghasilkan warning.
@@ -166,6 +169,39 @@ static void setupBle() {
   // Arduino >= 3. NimBLE yang jauh lebih hemat RAM.
   BLEDevice::init(DEVICE_NAME);
   BLEDevice::setMTU(517);          // MTU besar = satu report HID muat tanpa pecah
+
+  // ---- SECURITY / PAIRING ----
+  //
+  // INI PENYEBAB GEJALA "connecting terus menerus" (revisi 2026-10-09).
+  //
+  // Tanpa konfigurasi ini, Windows melihat perangkat lewat advertising tapi
+  // proses bonding tidak pernah selesai - Windows mencoba, gagal, mencoba
+  // lagi, tanpa pernah selesai. Device tidak pernah paired, HID tidak pernah dapat izin, dan
+  // user melihat "connecting..." tanpa henti.
+  //
+  // Penyebabnya: secara default NimBLE di Arduino TIDAK melakukan bonding
+  // sama sekali (bonding=false, sc=false). Windows 11 untuk HID keyboard
+  //-modern MEMBUTUHKAN bonding + Secure Connections; tanpa itu, pairing
+  // selalu menggantung.
+  //
+  // Tiga argumen setAuthenticationMode(bonding, mitm, sc):
+  //   bonding - true : kunci LTK disimpan, jadi pairing bertahan setelah
+  //                   device dimatikan (dibutuhkan Windows 11)
+  //   mitm    - false: numeric-comparison TIDAK dipakai. Numeri pinning
+  //                   adalah penyebab lain "connecting..." tak selesai, dan
+  //                   user harusridor punya passkey yang dicetak di Serial
+  //   sc      - true : Secure Connections (LE Secure Connections / LESC),
+  //                   wajib untuk Windows 11
+  BLESecurity::setAuthenticationMode(true, false, true);
+  // Force authentication: karakter HID ditolak Windows sebelum bonding
+  // selesai, bukan diam-diam diterima lalu tidak jalan.
+  BLESecurity::setForceAuthentication(true);
+  // Generate passkey acak per koneksi dan cetak ke Serial, supaya kalau
+  // Windows sempat meminta verifikasi kita punya cara menjawab.
+  BLESecurity::setCapability(ESP_IO_CAP_NONE);
+  BLESecurity::regenPassKeyOnConnect(true);
+  BLESecurity::setPassKey(false, BLESecurity::generateRandomPassKey());
+  Serial.println("[SPIKE] BLE: security aktif (bonding=true, mitm=false, sc=true)");
 
   // --- Service 1: HID keyboard (device -> host) ---
   BLEServer* server = BLEDevice::createServer();
