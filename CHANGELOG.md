@@ -207,6 +207,68 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   menghitung ulang dari format lengkap, sehingga angkanya benar-benar berasal
   dari firmware dan bukan dari tebakan.
 
+### Added
+- **`firmware/common/rgb_effects.h` - mesin efek RGB sebagai fungsi MURNI.**
+  Dipisah dari `rgbApplyState()` (yang ada di tiap sketsh profil) supaya
+  algoritma warna bisa diuji di host tanpa hardware. Berkas ini sengaja
+  TIDAK meng-include `Arduino.h`, tidak memakai `millis()`/`delay()`, tidak
+  menyentuh `strip`, dan tidak punya variabel global yang berubah antar
+  panggilan. Semua input lewat parameter, semua output lewat array `out[]`.
+  Animasi (peng incremented phase) tetap urusan pemanggil - mode 2, 3, 4, 5,
+  6, 7 punya frame yang berbeda tiap phase; mode 0, 1, 8 diam.
+  `rgbRand()` memakai xorshift32 supaya hasilnya **deterministik terhadap
+  seed**: memakai `random()` Arduino akan membuat hasil berbeda antar
+  platform, sehingga tidak bisa diuji di Node maupun direproduksi di device.
+  Kecerahan sengaja TIDAK dikalikan di sini - itu urusan
+  `strip.setBrightness()` di sisi hardware, supaya tidak ada yang terpotong
+  dua kali.
+  Header ini baru dipakai di test pada commit ini; `rgbApplyState()` di kedua
+  sketsh belum memanggilnya (itu bagian step 6/15).
+
+- **Test `rgb-effects-test.js` (10 seksi) - menjalankan header asli, bukan
+  salinan.** Test membaca `rgb_effects.h`, menerjemahkannya dari C ke JS,
+  lalu MENJALANKAN hasil terjemahan itu.
+  Ini penting karena versi pertama menyalin algoritmanya secara manual ke
+  file test dan hanya membaca header sebagai teks. **Uji negatif membuktikan
+  7/7 regresi yang disisipkan ke header asli TIDAK TERDETEKSI sama sekali** -
+  test berjalan di salinan, bukan di kode yang diuji. Sekarang satu-satunya
+  salinan yang boleh ada adalah terjemahan mekanis, dan kodenya sendiri
+  hanya ada di satu tempat.
+  Yang diverifikasi: 9 mode mengisi 9 LED dengan warna valid; mode statis
+  diam; mode bergerak berubah seiring phase; breathing tidak pernah gelap/putih
+  total; rainbow 9 warna berbeda; snake tepat 3 LED menyala dan kepala
+  bergeser; randomize deterministik terhadap seed; tidak ada wrap di phase
+  0..65535; kecepatan memengaruhi perubahan; roda HSV menghasilkan warna
+  primer/sekunder yang benar di setiap batas 60 derajat; clamping s/v/h.
+  **Uji negatif: 14 mutasi, 14/14 terdeteksi.**
+
+### Fixed
+- **Roda HSV salah total - setiap warna bergeser.** Dua bentuk rumus `x`
+  yang sempat dipakai keduanya salah:
+  - `x = c * (1 - frac(hp))` -> `h=0` menghasilkan **kuning**, bukan merah
+    (`x` tidak nol di batas sektor).
+  - `x = c * (1 - |frac(hp) - 1|)` -> `h=60` menghasilkan **hijau**, bukan
+    kuning (salah di batas sektor).
+  Yang benar adalah `x = c * (1 - |fmodf(hp,2) - 1|)`, sudah diverifikasi
+  titik per titik: h=0/60/120/180/240/300 menghasilkan
+  merah/kuning/hijau/sian/biru/magenta, dan interpolasi di tengah sektor
+  benar (h=30 oranye, h=90 hijau-kuning). Bug ini **tidak akan terlihat di
+  device** - semua warna akan terlihat "cukup", hanya tidak persis yang
+  dimaksud.-Test yang menangkapnya memeriksa titik-titik batas sektor, bukan
+  cuma "warna berubah saat phase bergeser".
+  Catatan: ini ditemukan setelah `rgbHsv` sempat dianggap benar karena test
+  yang hanya memeriksa "frame berubah" tetap hijau meski warnanya salah.
+
+### Notes
+- Tiga test yang saya tulis sempat salah di awal dan hampir "memperbaiki" kode
+  yang sebenarnya sudah benar: (1) mengira `s=255` = putih, padahal di HSV
+  saturasi penuh = warna murni dan putih butuh `s=0`; (2) memakai luma
+  sederhana untuk menguji snake sehingga "paling terang" bukan kepala saat
+  warnanya bersaturasi rendah; (3) menganggap mode 7 (Randomize) harus berubah
+  tiap phase, padahal kodenya sengaja memakai seed - kalau berubah tiap frame
+  akan flickering, bukan "randomize". Test yang salah lebih berbahaya daripada
+  kode yang salah, karena ia mengarahkan perbaikan ke arah keliru.
+
 ### Fixed
 - **Preset aktif menimpa pilihan layer user dalam ~120 ms.** `lastDeviceLayerEventAt`
   sudah diisi setiap ada `EVT:LAYER:` sejak lama, tapi **tidak pernah dibaca siapa
