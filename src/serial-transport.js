@@ -36,6 +36,9 @@ let autoReconnect = true;      // false setelah user menekan Disconnect sendiri
 let autoBusy = false;          // sedang probe/connect otomatis
 let pollBusy = false;
 let knownPorts = new Set();
+// Port yang sudah di-probe tapi GAGAL pada percobaan terakhir. Disimpan supaya
+// pollPorts() bisa mencoba lagi nanti - bukan hanya saat port "baru" muncul.
+let failedProbes = new Set();
 let pingTimer = null;
 let retryTimer = null;
 
@@ -207,6 +210,8 @@ export async function connect(pathArg) {
   }
   portPath = path;
   lastGoodPort = path;
+  failedProbes.delete(path);
+  clearTimeout(retryTimer);   // berhasil: batalkan retry yang masih terjadwal
   try { localStorage.setItem(LAST_PORT_KEY, path); } catch (e) { }
   setConnected(true);
   hooks.onConnected();
@@ -284,6 +289,7 @@ export async function handleDeviceLost() {
   // Path ini mungkin tidak pernah "hilang" dari enumerasi OS (nomor COM sama, cabut-colok
   // cepat), jadi selain menunggu pollPorts mendeteksi lewat added/removed, langsung coba
   // lagi path ini juga.
+  if (lostPath) failedProbes.delete(lostPath);
   if (lostPath && autoReconnect) { knownPorts.delete(lostPath); scheduleRetry([lostPath]); }
 }
 
@@ -339,29 +345,55 @@ export async function tryAutoConnect(verbose, only) {
   } finally { autoBusy = false; }
 }
 
-// Retry terbatas (maks. 2x, jeda 3 dtk lalu 6 dtk) untuk device yang baru muncul tapi belum
-// siap menjawab (mis. ESP32 masih booting saat Windows baru start). Bukan polling terus.
+// Konstanta jeda retry. Nilai dulu: maksimal 2x percobaan, jeda 3 dtk lalu 6 dtk.
+const RETRY_MAX_ATTEMPTS = 6;
+const RETRY_BASE_MS = 2500;
+const RETRY_MAX_MS = 20000;
+
+// Jeda antar percobaan: 2,5 dtk - 5 dtk - 7,5 dtk - 10 dtk - 12,5 dtk - 15 dtk
+// (dibatasi RETRY_MAX_MS). Backoff naik supaya port yang memang bukan MacroPad
+// tidak di-probe terlalu sering, tapi cukup cepat untuk device yang sedang boot.
+function retryDelay(attempt) {
+  return Math.min(RETRY_BASE_MS * attempt, RETRY_MAX_MS);
+}
+
+// Retry untuk device yang sudah terlihat di daftar port tapi belum siap
+// menjawab (mis. ESP32 masih booting saat Windows baru start).
+//
+// Dulu: maksimal 2x percobaan lalu menyerah PERMANEN. Digabung dengan
+// pollPorts() yang hanya probe saat ada port BARU muncul, hasilnya device
+// yang port-nya muncul sebelum firmware siap TIDAK PERNAH tersambung -
+// karena setelah 2x gagal, tidak ada percobaan ketiga, dan port-nya sudah
+// ada di knownPorts sehingga tidak lagi dianggap "baru". App butuh restart
+// atau dicabut-colok untuk tersambung lagi.
+//
+// Sekarang: 6x percobaan dengan backoff. Setelah habis, pollPorts() yang
+// menjadi jaring pengaman - isinya masih me-probe ulang port yang gagal di-
+// probe, sehingga menunggu tanpa batas, bukan menyerah.
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
-  if (attempt > 2) return;
+  if (attempt > RETRY_MAX_ATTEMPTS) return;
   retryTimer = setTimeout(async () => {
     if (port || !autoReconnect) return;
     const ok = await tryAutoConnect(false, only);
     if (!ok) scheduleRetry(only, attempt + 1);
-  }, attempt * 3000);
+  }, retryDelay(attempt));
 }
 
 // Tombol ↻ dan start awal
 export async function autoDetect() {
   autoReconnect = true;
   clearTimeout(retryTimer);
+  failedProbes = new Set();   // probe ulang dari nol saat user menekan tombol ↻
   if (port) { await refreshPorts(); return; }
   const ok = await tryAutoConnect(true);
   if (!ok && knownPorts.size) scheduleRetry([...knownPorts]);
 }
 
-// Pantau daftar port tiap 2 dtk (enumerasi murah). Probe HANYA jalan kalau ada port BARU
-// muncul, tidak pernah saat daftar tetap atau hanya berkurang.
+// Pantau daftar port tiap 2 dtk (enumerasi murah). Probe jalan kalau ada port
+// BARU muncul, ATAU ada port yang sebelumnya gagal di-probe (device masih
+// booting). Port yang gagal lalu berhasil connect dihapus dari daftar itu,
+// sehingga tidak ada probing berulang atas port yang sudah pasti benar.
 export async function pollPorts() {
   if (pollBusy) return;
   pollBusy = true;
@@ -371,11 +403,22 @@ export async function pollPorts() {
     if (autoBusy) return; // biarkan selesai; perubahan dihitung di putaran berikutnya
     const added = paths.filter(p => !knownPorts.has(p));
     const removed = [...knownPorts].some(p => !paths.includes(p));
-    if (!added.length && !removed) return;
+    // Port yang sudah di-probe tapi GAGAL (mis. device masih booting, atau
+    // enumerate muncul sebelum firmware siap). Perlakukan seperti "baru":
+    // tanpa ini, device seperti itu tidak akan pernah dicoba lagi selama
+    // port-nya tidak berubah - lihat catatan panjang di scheduleRetry().
+    const retryable = paths.filter(p => failedProbes.has(p));
+    if (!added.length && !removed && !retryable.length) return;
     await refreshPorts(paths, true);
-    if (added.length && !port && autoReconnect) {
-      const ok = await tryAutoConnect(false, added); // hanya port yang baru muncul
-      if (!ok) scheduleRetry(added);
+    if (!port && autoReconnect && (added.length || retryable.length)) {
+      const targets = added.length ? added : retryable;
+      const ok = await tryAutoConnect(false, targets);
+      if (ok) {
+        for (const t of targets) failedProbes.delete(t);
+      } else {
+        for (const t of targets) failedProbes.add(t);
+        scheduleRetry(targets);
+      }
     }
   } catch (e) {
   } finally { pollBusy = false; }

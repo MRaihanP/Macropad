@@ -170,6 +170,50 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
 
 ### Fixed
+- **Device yang port-nya muncul sebelum firmware siap tidak PERNAH tersambung.**
+  Dua hal bertemu dan saling menutup jalan:
+  1. `scheduleRetry()` maksimal **2x percobaan** lalu menyerah permanen.
+  2. `pollPorts()` hanya melakukan probe kalau ada port **BARU** muncul.
+
+  Device yang di-colok saat Windows sudah start sering punya port yang muncul
+  di enumerasi *sebelum* firmware selesai boot, jadi probe pertama gagal. Sesudah
+  itu port-nya sudah ada di `knownPorts` sehingga tidak lagi dianggap "baru",
+  dan `pollPorts()` early-return setiap 2 detik tanpa melakukan apa pun. Retry
+  juga sudah habis di percobaan kedua. Akibatnya app tidak pernah tersambung -
+  satu-satunya jalan keluar adalah restart app atau cabut-colok device.
+
+  Diverifikasi dengan simulasi sebelum-dan sesudah: device siap pada detik
+  ke-8 tetap `TIDAK TERHUBUNG` dengan kode lama, dan `TERHUBUNG` di poll ke-4
+  dengan kode baru.
+  - Retry dinaikkan ke **6x percobaan** dengan **backoff**
+    (2,5 dtk - 5 dtk - 7,5 dtk - 10 dtk - 12,5 dtk - 15 dtk, dibatasi 20 dtk).
+    Backoff naik supaya port yang memang bukan MacroPad tidak di-probe terlalu
+    sering, tapi cukup cepat untuk device yang sedang boot.
+  - `pollPorts()` sekarang treats port yang **sudah gagal di-probe** sama
+    seperti port baru. Inilah jaring pengaman yang membuat app menunggu tanpa
+    batas, bukan menyerah - retry 6x hanyalah lapisan pertama.
+  - `failedProbes` dibersihkan di tiga tempat supaya tidak basi: saat
+    `connect()` berhasil (sekalian membatalkan retry terjadwal), saat
+    `handleDeviceLost()` (tak ada probe ke port yang sudah dicabut), dan saat
+    `autoDetect()` (tombol ↻ me-reset, jadi probe benar-benar dari awal).
+    Tanpa pembersihan ini, port yang tidak bisa dibuka akan di-probe setiap 2
+    detik **selamanya**.
+  - Yang sengaja tidak berubah: retry tetap berhenti begitu user menekan
+    Disconnect (`autoReconnect = false`), dan interval `pollPorts` tetap 2
+    detik.
+
+### Added
+- **Test `retry-test.js`** (5 seksi, 21 pemeriksaan). Yang paling dijaga adalah
+  re-probe port gagal - itu inti perbaikannya - plus ketiga tempat pembersihan
+  `failedProbes`. Diverifikasi dengan **uji negatif** yang membuat enam
+  regresi: batas retry dikembalikan ke 2x, early-return tanpa `retryable`,
+  `targets` tidak memakai `retryable`, penandaan gagal dihapus, pembersihan
+  saat connect dihapus, dan backoff dikembalikan ke jeda tetap. **6/6
+  terdeteksi.** Kasus "port hantu di-probe selamanya" ikut diuji karena itu
+  risiko balik dari perubahan ini - menandai terlalu banyak sama buruknya dengan
+  tidak menandai sama sekali.
+
+### Fixed
 - **Reconnect kembali ke layer 4, bukan layer 0.** Akar masalahnya di firmware:
   `currentLayer` adalah bagian dari struct `cfg` yang sama persis dengan isi
   flash, jadi `SAVE` di layer 4 menuliskan `currentLayer=4` ke NVS. Setelah
