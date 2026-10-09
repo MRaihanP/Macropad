@@ -10,9 +10,14 @@
 
 #include <Arduino.h>
 
+// Nama enumerator memakai awalan TP_ (TP_USB / TP_BLE), BUKAN TRANSPORT_USB /
+// TRANSPORT_BLE. Alasannya ada di limits.h: makro #define dengan nama yang
+// sama akan disubstitusikan ke dalam daftar enumerator di bawah, mengubahnya
+// jadi "0 = 0" yang tidak bisa dikompilasi. Makro dan enumerator wajib
+// berbeda nama.
 enum class TransportType : uint8_t {
-  TRANSPORT_USB = 0,    // USB CDC (Serial)
-  TRANSPORT_BLE = 1,    // BLE GATT
+  TP_USB = 0,    // USB CDC (Serial)
+  TP_BLE = 1,    // BLE GATT
 };
 
 // Interface transport - semua implementasi WAJIB menyediakan ini.
@@ -83,9 +88,17 @@ public:
 // Global transport instance - dipakai di seluruh core (handleSerialCommand, events, dll).
 extern Transport* g_transport;
 
-// Helper makro: ganti semua Serial.xxx jadi g_transport->xxx
-// Contoh: Serial.printf(...)  ->  g_transport->printf(...)
-//         Serial.write(...)   ->  g_transport->write(...)
-//         Serial.available()  ->  g_transport->available()
-//         Serial.read()       ->  g_transport->read()
+// Helper makro: semua SERIAL->xxx di core berarti g_transport->xxx.
+//
+// #undef SERIAL WAJIB ada sebelum #define. Core ESP32 mendefinisikan
+// `#define SERIAL 0x0` (indeks port HardwareSerial) di Arduino.h, dan
+// menimpanya tanpa #undef menghasilkan warning:
+//
+//   warning: "SERIAL" redefined
+//
+// Yang ditimpa hanya MAKRO uppercase; objek `Serial` (lowercase) milik core
+// tetap utuh dan tetap dipakai langsung di transport_usb.h.
+#ifdef SERIAL
+#undef SERIAL
+#endif
 #define SERIAL g_transport

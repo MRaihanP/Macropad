@@ -243,6 +243,56 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   **Uji negatif: 14 mutasi, 14/14 terdeteksi.**
 
 ### Fixed
+- **Firmware PROTOTYPE dan FINAL tidak bisa dikompilasi sejak Phase 10.**
+  Dibuktikan user saat mencoba compile; ada **tiga** bug terpisah, semuanya
+  berasal dari Phase 10 (abstraksi transport), bukan dari spike BLE.
+
+  1. **`#define TRANSPORT_USB 0` bentrok dengan enumerator enum.** Makro
+     disubstitusikan ke SELURUH token berikutnya, termasuk di dalam daftar
+     enumerator, sehingga `enum class TransportType { TRANSPORT_USB = 0 }`
+     berubah jadi `{ 0 = 0 }` dan gagal:
+     `error: expected identifier before numeric constant`.
+     **Perbaikan:** enumerator di-rename jadi `TP_USB` / `TP_BLE`. Makro
+     `TRANSPORT_USB`/`TRANSPORT_BLE` tetap ada karena dipakai di `#if`.
+     Makro dan enumerator **wajib** punya nama berbeda - ini kesalahan
+     desain yang tidak akan terulang karena penjelasannya ada di kedua berkas.
+
+  2. **`#define SERIAL g_transport` menimpa `#define SERIAL 0x0` dari core
+     Arduino** tanpa `#undef`, menghasilkan
+     `warning: "SERIAL" redefined`. **Perbaikan:** `#ifdef SERIAL` /
+     `#undef SERIAL` / `#endif` ditambahkan sebelum `#define`. Yang ditimpa
+     hanya makRO uppercase; objek `Serial` (lowercase) milik core tetap utuh.
+
+  3. **`Serial.dtr()` tidak bisa dipanggil.** Pada core ESP32 3.3.11,
+     `USBCDC` mendefinisikan `bool dtr;` sebagai member **protected**, bukan
+     fungsi - hasilnya dua error sekaligus:
+     `error: 'bool USBCDC::dtr' is protected within this context` dan
+     `error: expression cannot be used as a function`.
+     **Perbaikan:** memakai `operator bool()` yang memang publik di
+     `USBCDC`/`HWCDC`, ditambah pengecekan buffer RX. Diverifikasi langsung
+     terhadap `cores/esp32/USBCDC.h` di instalasi Arduino lokal.
+
+### Added
+- **Test `firmware-compile-guard-test.js`** (5 seksi) yang menangkap ketiga
+  kelas bug di atas tanpa toolchain: nama makro vs enumerator tidak boleh
+  sama (disimulasikan dengan preprocessor), `#undef SERIAL` harus ada dan
+  berurutan sebelum `#define`, dan `Serial.dtr()` dilarang muncul.
+  **Uji negatif: 5 mutasi, 5/5 terdeteksi** - termasuk pengembalian masing-masing
+  bug ke bentuk semula.
+  Test ini consciousness yang membaca penjelasan bug di dalam komentar juga
+  mengandung pola yang sama persis ("#define SERIAL", "Serial.dtr()"), jadi
+  komentar dibuang dulu sebelum dicocokkan.
+
+### Notes
+- **Ini kesalahan saya.** Abstraksi transport di Phase 10 saya tulis tanpa
+  satu pun kompilasi, dan static check yang ada ("kurung kurawal seimbang",
+  "simbol domain terdefinisi") secara struktural tidak bisa menangkap bentrok
+  nama makro maupun perubahan API core. Saya sudah menyatakan bahwa firmware
+  "diverifikasi secara statis" - itu benar secara harfiah, tapi menyiratkan
+  tingkat kepastian yang tidak ada. Test baru ini menambah apa yang bisa
+  diperiksa, tapi **tetap bukan pengganti kompilasi**.
+
+### Fixed
 - **Roda HSV salah total - setiap warna bergeser.** Dua bentuk rumus `x`
   yang sempat dipakai keduanya salah:
   - `x = c * (1 - frac(hp))` -> `h=0` menghasilkan **kuning**, bukan merah

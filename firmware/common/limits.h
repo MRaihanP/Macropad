@@ -3,13 +3,29 @@
 // di antara kedua sketsh.
 
 // =================== TRANSPORT SELECTION ===================
-// Pilih transport communication: TRANSPORT_USB (Serial) atau TRANSPORT_BLE.
-// Dipakai kedua profil PROTOTYPE dan FINAL.
+// Pilih media komunikasi: USB CDC (Serial) atau BLE.
+//
+// CATATAN NAMA (revisi 2026-10-09): nama enum di transport.h sengaja memakai
+// awalan TP_ (TP_USB / TP_BLE), BUKAN TRANSPORT_USB / TRANSPORT_BLE.
+//
+// Alasannya: makro di bawah adalah #define biasa yang substituted di SELURUH
+// token berikutnya, termasuk di dalam definisi enum. Dengan nama yang sama,
+// baris
+//     #define TRANSPORT_USB 0
+//     enum class TransportType { TRANSPORT_USB = 0, ... }
+// akan membuat preprocessor mengubah enumerator jadi angka:
+//
+//     enum class TransportType { 0 = 0, 1 = 1, ... }
+//     error: expected identifier before numeric constant
+//
+// Jadi makro dan enumerator HARUS punya nama berbeda. Makro tetap
+// TRANSPORT_USB/TRANSPORT_BLE (dipakai #if di Firmware); enumerator jadi
+// TP_USB/TP_BLE.
 #define TRANSPORT_USB  0
 #define TRANSPORT_BLE  1
 
-// Default ke USB untuk kompatibilitas mundur. Ganti di board_config.h profil
-// saat BLE siap dipakai.
+// Default ke USB untuk kompatibilitas mundur. Ganti di sini (atau di
+// board_config.h profil) saat BLE siap dipakai.
 #ifndef TRANSPORT_TYPE
 #define TRANSPORT_TYPE TRANSPORT_USB
 #endif

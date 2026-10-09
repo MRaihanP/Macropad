@@ -17,9 +17,20 @@ public:
   }
 
   bool isConnected() override {
-    // USB CDC: Serial.dtr() true bila host membuka port.
-    // Atau cek apakah ada data di buffer RX.
-    return Serial.dtr() || Serial.available() > 0;
+    // USB CDC: bagaimana cara tahu host membuka port?
+    //
+    // DULU: `Serial.dtr()`. itu tidak bisa dipakai. Pada core ESP32 3.3.x,
+    // kelas USBCDC mendefinisikan `bool dtr;` sebagai member PROTECTED -
+    // bukan fungsi. Panggilannya jadi dua error sekaligus:
+    //   error: 'bool USBCDC::dtr' is protected within this context
+    //   error: expression cannot be used as a function
+    //
+    // Yang dipakai sekarang: `operator bool()` yang memang disediakan core
+    // untuk USBCDC/HWCDC dan menyatakan "ada host yang membuka port".
+    // Ditambah cek buffer RX: mungkin ada host yang sudah membuka port tapi
+    // belum mengirim apa pun (mis. companion app baru dijalankan).
+    if (Serial) return true;
+    return Serial.available() > 0;
   }
 
   int available() override { return Serial.available(); }
@@ -32,7 +43,7 @@ public:
 
   void flush() override { Serial.flush(); }
 
-  TransportType type() const override { return TransportType::TRANSPORT_USB; }
+  TransportType type() const override { return TransportType::TP_USB; }
 };
 
 // Global instance untuk transport USB.
