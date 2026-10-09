@@ -170,6 +170,40 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
 
 ### Fixed
+- **Reconnect kembali ke layer 4, bukan layer 0.** Akar masalahnya di firmware:
+  `currentLayer` adalah bagian dari struct `cfg` yang sama persis dengan isi
+  flash, jadi `SAVE` di layer 4 menuliskan `currentLayer=4` ke NVS. Setelah
+  device dimatikan dan dinyalakan, `INFO:` melaporkan `currentLayer=4`, dan
+  `applyInfo()` menerimanya apa adanya - sehingga setiap reconnect user terjebak
+  di layer 4.
+  - `connect()` sekarang mengirim `LAYER:0` **sebelum** `INFO`. Device sudah
+    berada di layer 0 saat `INFO` diproses, jadi `currentLayer` yang dilaporkan
+    = 0 dan hanya satu layer yang dimuat.
+  - **Urutan itu penting.** Kalau `INFO` dikirim lebih dulu, app akan memuat
+    layer 4 ke grid lalu berganti ke layer 0 - grid berkedip menampilkan isi
+    yang salah sebelum benar. Ada test yang mengunci urutan ini.
+  - Layer 0 selalu valid karena firmware menjamin `layerCount >= 1`
+    (`macropad_core.h:293`), jadi perintah ini aman dikirim tanpa harus tahu
+    jumlah layer lebih dulu.
+  - **Firmware tidak diubah.** Pilihan sadar: tidak memaksa `currentLayer` ke 0
+    di sisi firmware, karena `LAYER:` yang diterima saat boot tidak selalu
+    berarti "mulai dari awal" - gestur knob (long-press) juga menyentuh
+    `currentLayer`, dan memaksa 0 di boot akan menimpaREFERENSI milik user.
+   App yang tahu konteks sedang dalam sesi baru, jadi app yang meminta.
+  - Fix "preset kembali ke layer terakhir" (commit sebelumnya) tetap utuh dan
+    tidak bertabrakan: `openPresetEditor()` mengirim `LAYER:<target>` sendiri
+    dan tidak dipaksa ke 0.
+
+### Added
+- **Test `reconnect-layer0-test.js`** (5 seksi, 18 pemeriksaan). Menangkap
+  urutan perintah di `connect()`, jaminan `layerCount >= 1` di firmware,
+  keputusan tidak mengubah firmware, jalur pemuatan `INFO:`, dan memastikan
+  fix layer-terakhir-per-preset tidak rusak. Diverifikasi dengan **uji negatif**:
+  `LAYER:0` dihapus total, lalu urutannya dibalik (`INFO` dulu) - keduanya
+  terdeteksi. Kasus kedua penting karena hanya menimbulkan kedipan singkat,
+  bukan kegagalan total, jadi sulit dilaporkan user.
+
+### Fixed
 - **Preset selalu terbuka di layer 0.** `openPresetEditor()` mengirim
   `LAYER:0` secara hardcoded, jadi membuka ulang preset yang sama selalu
   melompat kembali ke layer pertama - padahal user mungkin sedang mengedit

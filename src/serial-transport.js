@@ -219,6 +219,17 @@ export async function connect(pathArg) {
   setTimeout(async () => {
     await sendLine('WHOAMI');
     await sendLine('HWINFO');
+    // Selalu mulai dari layer 0 setiap (re)connect, SEBELUM INFO.
+    //
+    // Firmware menyimpan currentLayer di struct cfg yang sama dengan isi flash,
+    // jadi SAVE di layer 4 membuat device boot kembali di layer 4. Kalau INFO
+    // dikirim lebih dulu, app akan memuat layer 4 ke grid lalu berganti ke
+    // layer 0 - grid berkedip menampilkan isi yang salah sebelum benar.
+    //
+    // LAYER:0 dikirim lebih awal supaya device sudah berada di layer 0 saat INFO
+    // diproses; INFO lalu melaporkan currentLayer=0 dan hanya ada satu layer yang
+    // dimuat.
+    await sendLine('LAYER:0');
     await sendLine('INFO');
     await sendLine('DUMPENC');
     await sendLine('BATT');
