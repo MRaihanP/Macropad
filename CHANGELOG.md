@@ -9,6 +9,139 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
+### Fixed
+- **BLE HID: "sudah pair, beberapa detik kemudian disconnect sendiri, lalu
+  tidak bisa connect lagi."** Spike `spike_ble_hid` (v1) dicoba di device dan
+  gagal dengan gejala persis tersebut. Penyebabnya **bukan** di sisi Windows,
+  tapi di firmware spike - dibuktikan dari source core Arduino ESP32 3.3.11 yang
+  terpasang, bukan dari tebakan. Lima kesalahan terpisah, semuanya saling
+  memperburuk:
+
+  1. **Advertising mati permanen setelah disconnect (sebab utama).**
+     `BLEServer.cpp:93` — `m_advertiseOnDisconnect = false;` itu **default**.
+     `BLEServer.cpp:854-858` — advertising hanya di-restart kalau flag itu true.
+     v1 tidak pernah memanggil `advertiseOnDisconnect(true)` dan tidak punya
+     `BLEServerCallbacks` sama sekali, jadi begitu Windows memutus link,
+     perangkat **berhenti advertise permanen**: hilang dari daftar dan tidak akan
+     pernah ditemukan lagi. Gejala "tidak bisa connect lagi" adalah perangkatnya
+     yang hilang, bukan Windows yang menolak.
+  2. **Passkey yang tak pernah dipakai merusak bond.** v1 menyetel
+     `ESP_IO_CAP_NONE` (Just Works) **tetapi juga** `setPassKey(acak)` +
+     `regenPassKeyOnConnect(true)` + `setForceAuthentication(true)`.
+     Dengan `mitm=false` dan IO_CAP_NONE, pairing tidak pernah memakai passkey;
+     passkey acak yang berubah tiap koneksi hanya membuat Windows menyimpan LTK
+     dari sesi pertama sementara perangkat menagih nilai berbeda setiap connect.
+  3. **Service HID tidak lengkap.** Yang wajib ada: `2a4a` HID Information,
+     `2a4b` Report Map, `2a4c` HID Control Point, `2a4e` Protocol Mode
+     (`BLEHIDDevice.cpp:73-76`), plus Report Reference Descriptor `2908` per
+     report, plus PnP ID `2a50`. v1 hanya membuat `1812` + `2a4d`.
+  4. **Report ID ada di map tapi tidak ada di payload.** Map v1 declares
+     `0x85, 0x10` (Report ID 16) sementara `bleSendKey()` mengirim 8 byte tanpa
+     byte Report ID. Host menggeser semua field → state HID rusak → Windows drop
+     koneksi.
+  5. **Lookup characteristic per ketikan.** `bleSendKey()` mencari service &
+     characteristic lewat UUID setiap dipanggil.
+
+### Added
+- **`firmware/spike_ble_hid2/spike_ble_hid2.ino` — spike BLE HID versi sederhana
+  & awet (THROWAWAY, sekali pakai).** Pengganti spike v1. Delapan perubahan,
+  masing-masing menjawab satu kesalahan di atas:
+  1. `advertiseOnDisconnect(true)` — perbaikan wajib.
+  2. `BLEServerCallbacks` dengan log connect/disconnect, plus `startAdvertising()`
+     eksplisit di dalam `onDisconnect` sebagai jaring kedua, plus **watchdog**
+     yang me-restart advertising setiap 5 detik selama belum terhubung
+     (pengaman ketiga, untuk kasus yang tidak kita antisipasi — mis. host yang
+     menginisiasi terminate tanpa gap event).
+  3. Pakai `BLEHIDDevice` dari library core, persis seperti
+     `examples/Server_Gamepad` — semua characteristic wajib dibuat lengkap
+     tanpa harus ditulis manual.
+  4. Just Works yang jujur: tanpa passkey, tanpa regenerate, tanpa force
+     authentication.
+  5. Report ID 1 di map **dan** di payload; payload 9 byte (Report ID + 8).
+  6. Pointer characteristic disimpan sekali di `setup()`.
+  7. Nama device `MacroPad` — pendek, tanpa spasi, <= 29 karakter. Nama panjang
+     dipangkas Windows sehingga bond lama tidak cocok setelah flash ulang.
+  8. **Perintah Serial untuk diagnosa tanpa flash ulang:** `help`, `key a`,
+     `key ctrl+c`, `usbkey a` (pembanding A/B), `adv`, `status`, `scan`, `echo`,
+     `sub on|off`, `clear` (hapus bond), `ram`.
+
+  Notifikasi NUS **default off** dan harus diaktifkan lewat `sub on`, karena
+  notify tanpa subscriber bisa memicu error pada stack NimBLE.
+
+- **`spike2-test.js` (69 pemeriksaan)** — verifikasi statis spike v2, dibaca
+  langsung dari header core yang terpasang (`%LOCALAPPDATA%\Arduino15\...`), bukan
+  dari asumsi. Yang dijaga: kelima bug v1 di atas, kecocokan UUID dengan
+  `src-tauri/src/ble.rs` (termasuk arah TX/RX yang terbalik adalah kesalahan
+  yang sangat mudah terjadi), batas-batas bentuk kode, dan keterbacaan log.
+  Kalau header core tidak ada, test **SKIP dengan pesan jelas**, bukan hijau
+  palsu.
+
+- **`negative-spike2.mjs` — uji negatif 24 mutasi, 24/24 terdeteksi.** Tiap
+  bug v1 dikembalikan ke bentuk semula di sketch, lalu test harus gagal.
+
+### Notes
+- **Uji negatif menemukan kelemahan pada dirinya sendiri, dua kali.** Ini yang
+  membuat test ini bernama "uji negatif" dan bukan sekadar formalitas:
+  1. `advertiseOnDisconnect(false)` **tidak terdeteksi**. Penyebabnya pemeriksaan
+     pertama hanya mencari `advertiseOnDisconnect\s*\(\s*true\s*\)`, yang ikut
+     cocok dengan panggilan bernilai `false`. Diperbaiki: nilai `true` diverifikasi
+     eksplisit **dan** ditambahkan pemeriksaan bahwa tidak ada panggilan dengan
+     nilai lain. Uji negatif lain di proyek ini (seperti `no-lost-functions`)
+     sudah pernah jadi tidak bisa menangkap kelas regresi ini.
+  2. Satu mutasi "TX characteristic tanpa `PROPERTY_NOTIFY`" sempat tertangkap
+     oleh pemeriksaan yang salah: ia memecah source pada kemunculan pertama
+     `g_nusTx`, yang justru **deklarasi variabel global** tanpa properti
+     sama sekali - bukan blok `createCharacteristic`. Diperbaiki dengan pola
+     yang mencocokkan blok penugasan.
+- **Guard baru di harness mutasi: mutasi yang hanya menyentuh KOMENTAR
+  dianggap tidak valid.** Spike v2 menjelaskan kelima bug-nya di komentar
+  (memang harus, supaya alasannya hilang bersama berkasnya), sehingga pola
+  mutasi bisa mengenai kalimat penjelasan di komentar alih-alih baris kode.
+  Karena `spike2-test.js` membuang komentar sebelum memeriksa, mutasi semacam
+  itu tidak akan pernah terdeteksi dan akan dilaporkan sebagai "test lemah" -
+  padahal masalahnya di daftar mutasi. Guard ini memisahkan dua kasus itu.
+  Ditemukan justru oleh `advertiseOnDisconnect(false)` yang dilaporkan sebagai
+  "tidak terdeteksi".
+- **`spike2-test.js` semula selalu hijau dari sudut pandang runner.** Runner
+  suite menandainya `LEWAT (tidak ada exit code - selalu hijau?)` karena jalur
+  sukses memanggil `process.exit(0)` sementara jalur gagal memanggil
+  `process.exit(1)`: pola itu tidak ada di daftar guard runner, jadi file
+  dianggap tidak punya exit code sama sekali. Diganti jadi satu
+  `process.exitCode = fail > 0 ? 1 : 0` di akhir. Diverifikasi langsung:
+  mutasi → status 1, kode asli → status 0.
+- **Dua bug nyata pada spike v2 yang ditemukan sebelum sempat di-flash**, oleh
+  test dan pemeriksaan karakter:
+  1. `g_serLine` (buffer perintah Serial) di-*declare* **setelah** `loopImpl()`
+     memakainya → **compile error**. Deklarasi dipindahkan ke atas. Ini kelas
+     kesalahan yang sama yang pernah menimpa firmware produksi di Phase 8
+     (`resetEditorState` ikut terhapus saat ekstraksi transport).
+  2. Enam baris komentar tercemar karakter CJK/pik (mis. `器件`, `人的`).
+     Ditambah pemeriksaan di `spike2-test.js` yang menolak karakter CJK/pik
+     di source.
+- **USB HID tetap dipertahankan di spike v2** sebagai pembanding A/B. Kalau
+  `usbkey a` masuk ke Notepad tapi `key a` tidak, itu bukti langsung bahwa
+  masalahnya ada di jalur BLE, bukan di keyboard/report.
+- **Tidak ada yang bisa dibuktikan tanpa device.** Test ini membuktikan bentuk
+  kode dan kecocokan kontrak dengan Rust. Yang tetap harus diuji di device:
+  apakah Windows menerima input report, apakah reconnect setelah cabut-colok
+  berhasil, dan apakah RAM cukup setelah stack BLE. Uji negatif untuk test ini
+  **bukan** pengganti tiga hal tersebut.
+
+### Added
+- **`SUMMARY.md`** — ringkasan posisi proyek: arsitektur, cara kerja, fitur yang
+  sudah ada, riwayat fase, hasil verifikasi, dan pekerjaan yang belum selesai.
+
+### Notes
+- Ringkasan milestone dibuat sebagai catatan posisi sebelum melanjutkan
+  Phase 10 — termasuk catatan bahwa salinan repo di drive `D:` **tidak boleh
+  dipakai lagi** — working copy-nya berisi snapshot yang lebih tua dan merusak
+  (enumerator `TRANSPORT_USB` yang bentrok dengan makro `#define` lagi,
+  `Serial.dtr()` yang dikembalikan, stub BLE yang duplikat dengan `ble.rs`,
+  kunci i18n yang dobel). Repo di `E:` adalah sumber kebenaran.
+- **29 skrip uji masih berada di folder temp, bukan di dalam repo.** Kalau
+  `%TEMP%` dibersihkan, seluruh jaringan pengujian hilang tanpa jejak di git.
+ Langkah berikutnya: pindahkan ke `tests/` + tambahkan `npm test`.
+
 ### Added
 - **Phase 10 (BLE) - fondasi transport.** Abstraksi transport di firmware supaya
   ganti USB ke BLE cukup mengubah satu `#define`, bukan menyentuh seluruh core:
