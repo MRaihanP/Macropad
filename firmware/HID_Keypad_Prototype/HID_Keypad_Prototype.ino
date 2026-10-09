@@ -24,6 +24,13 @@
 #include <Preferences.h>
 
 #include "../common/limits.h"
+#include "../common/transport_usb.h"
+
+// Global USB transport instance - definisi (bukan extern).
+UsbTransport g_usbTransport;
+
+// Binding global transport pointer ke instance USB.
+Transport* g_transport = &g_usbTransport;
 
 // =================== PROFIL: PROTOTYPE ===================
 // Firmware ini adalah sumber kebenaran profil PROTOTYPE. Tidak ada lagi

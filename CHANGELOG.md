@@ -10,6 +10,42 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
+- **Phase 10 (BLE) - fondasi transport.** Abstraksi transport di firmware supaya
+  ganti USB ke BLE cukup mengubah satu `#define`, bukan menyentuh seluruh core:
+  - `firmware/common/transport.h` - interface `Transport` (metode yang dibutuhkan
+    core: `print`, `println`, `printf`, `available`, `read`, `write`, `flush`).
+  - `firmware/common/transport_usb.h` - `UsbTransport`, pembungkus `Serial`.
+  - `firmware/common/limits.h` - `TRANSPORT_USB` (0) / `TRANSPORT_BLE` (1) dan
+    `TRANSPORT_TYPE` yang default ke `TRANSPORT_USB` demi kompatibilitas mundur.
+  - `macropad_core.h` memakainya lewat `extern Transport* g_transport` + macro
+    `SERIAL->`, jadi semua `Serial.` berubah jadi `SERIAL->`. Kedua sketsh
+    mendefinisikan `g_usbTransport` dan `g_transport`.
+- **`src-tauri/src/ble.rs` - modul BLE sisi Rust (317 baris).** Pembungkus WinRT
+  GATT: `DeviceWatcher` untuk scan, `BluetoothLEDevice` + `GattSession` untuk
+  connect, pencarian characteristic di service NUS
+  (`6e400001-b5a3-f393-e0a9-e50e24dcca9e`), write-with-response ke TX
+  (`...0002`), dan subscribe notify ke RX (`...0003`). Data notify masuk ke
+  `VecDeque<u8>` dan dibaca lewat `ble_read`. Dijalankan pada thread terpisah
+  (channel `std::sync::mpsc`) karena WinRT tidak boleh dipanggil dari thread
+  Tauri's async runtime.
+- **Enam perintah Tauri baru**: `ble_scan`, `ble_connect`, `ble_disconnect`,
+  `ble_write`, `ble_read`, `ble_is_connected`, beserta `BleDeviceInfo`.
+  **Status: belum dipakai frontend** - masih command berdiri sendiri, sengaja
+  supaya bisa diuji terpisah dari UI.
+- **Window paint watchdog (`src/paint-watch.js`).** Gejala yang dilaporkan user:
+  app ditutup/dibunuh lalu langsung dijalankan lagi, jendela utama muncul PUTIH
+  padahal JavaScript di dalamnya berjalan normal (serial connect, log, preset
+  switching semua hidup) - renderer WebView2 tidak pernah menghasilkan satu frame.
+  Sinyal "apakah JS hidup" tidak bisa dipakai karena JS-nya memang hidup; yang
+  bisa dipakai `requestAnimationFrame`, yang callback-nya hanya jalan kalau
+  browser benar-benar menghasilkan frame. Menunda 2 detik sebelum melapor
+  ke Rust, lalu Rust melakukan reload sendiri. Diimpor paling akhir di
+  `main.js` supaya side effect-nya secepat mungkin terjadi.
+- **`docs/STATUS-AND-TESTING.md`** - ringkasan posisi pengembangan (sudah /
+  belum) plus prosedur pengujian 6 tingkat, dari yang otomatis sampai yang
+  butuh hardware.
+
+### Changed
 - **Pemeriksaan di `startup-smoke-test.mjs` bahwa setiap fungsi `init*` benar-benar
   dipanggil.** Dua kali dalam Phase 8 ada fungsi yang diekstrak ke modul tapi tidak
   pernah dipanggil - `initAdaptivePage()` (polling auto-switch mati) dan
@@ -418,6 +454,16 @@ gb-page-test, dan
   perlu diubah sama sekali**.
 
 ### Fixed
+- **Dua skrip test usang setelah abstraksi transport Phase 10.**
+  `key-event-test.js` dan `protocol-contract-test.js` masih mencari literal
+  `Serial.printf(`, padahal firmware sekarang memakai macro `SERIAL->printf(`.
+  Akibatnya 5 pemeriksaan gagal palsu (`[KEY]`, `RGB_DUMP:`, `RGB_KEY:`,
+  `EVT:BATT:`, `HWINFO:` dilaporkan TIDAK ADA) padahal string-nya utuh di
+  `macropad_core.h` - hanya nama objeknya yang berubah. Regex-nya sekarang
+  menerima keduanya lewat `(?:Serial\.|SERIAL->)printf`. Yang sempat dicurigai
+  sebagai regresi cara kerja device ternyata bukan; format barisnya sudah
+  diverifikasi masih persis sama.
+
 
 #### Fase 7
 - **Notifikasi overlay menerima teks lewat `Window::eval()`** — Rust menyusun statement
@@ -485,6 +531,27 @@ gb-page-test, dan
 
 ## Belum dikerjakan
 
+### Phase 10 - BLE (lanjutan)
+
+Yang sudah ada: abstraksi transport di firmware (`TRANSPORT_USB` / `TRANSPORT_BLE`,
+default USB), modul WinRT GATT di `src-tauri/src/ble.rs`, dan enam perintah Tauri
+(`ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`, `ble_read`,
+`ble_is_connected`) yang sudah kompilasi bersih. Yang belum:
+
+- **Transport BLE di sisi JavaScript.** Frontend masih talking `tauri-plugin-serial`
+  secara langsung; belum ada cabang kode yang memilih USB atau BLE.
+- **Auto-connect / auto-reconnect.** Belum ada.
+- **Hapus dropdown COM + tombol Refresh/Connect**, sisakan status saja. Belum;
+  sengaja ditahan sampai auto-connect benar-benar bekerja.
+- **Fallback force-connect manual** yang disembunyikan (bukan dihapus) selama 1-2
+  rilis pertama setelah auto-connect — belum.
+- **`BleTransport` di firmware.** Yang ada baru interface + `UsbTransport`;
+  `TRANSPORT_TYPE` masih `TRANSPORT_USB`.
+- Enam perintah BLE sengaja **tidak** disambungkan ke state Tauri yang sebenarnya
+  dulu, supaya bisa diuji terpisah dari UI. Menyambungkannya adalah langkah
+  berikutnya.
+
+
 ### Firmware FINAL
 - **Mesin efek RGB** (breathing/rainbow/wave/snake/random/react). `rgbApplyState()` baru
   menerjemahkan mode ke warna per LED, belum menganimasikannya. Preview di app sudah
@@ -526,6 +593,20 @@ statis: kurung kurawal seimbang, simbol domain terdefinisi, region verbatim utuh
 offset protokol firmware↔app. **Compile Arduino dan uji di device tetap wajib dilakukan** —
 static check tidak menangkap everything.
 
-Sisi Rust dan JavaScript bisa diverifikasi penuh: `cargo test` (6 test) dan 5 skrip uji
-Node yang menguji kode app yang benar-benar berjalan (parser, waiter DUMP, kontrak protokol,
-format event key, simbol firmware).
+Sisi Rust dan JavaScript bisa diverifikasi penuh. Status terakhir (setelah Phase 10):
+
+| Yang diuji | Hasil |
+|---|---|
+| `cargo check` | bersih, 0 error |
+| `cargo test --lib` | 9 passed, 0 failed |
+| `npx vite build` | sukses, 32 modul |
+| 21 skrip uji Node | 21/21 PASS |
+
+Rincian skrip uji: parser protokol, waiter DUMP, kontrak protokol firmware↔app, format
+event key, simbol firmware, state machine quadrature encoder, smoke test startup,
+a11y, i18n, transport serial, halaman RGB, UI baterai, state device, adaptive contract,
+settings, dan 5 skrip diff "verbatim proof" yang membandingkan hasil ekstraksi modul
+dengan versi aslinya di commit yang dipin.
+
+Prosedur pengujian lengkap (6 tingkat, dari yang otomatis sampai yang butuh hardware)
+ada di `docs/STATUS-AND-TESTING.md`.

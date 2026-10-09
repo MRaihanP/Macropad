@@ -2,6 +2,18 @@
 // Diekstrak verbatim dari HID_Keypad.ino agar tidak ada konstanta terduplikasi
 // di antara kedua sketsh.
 
+// =================== TRANSPORT SELECTION ===================
+// Pilih transport communication: TRANSPORT_USB (Serial) atau TRANSPORT_BLE.
+// Dipakai kedua profil PROTOTYPE dan FINAL.
+#define TRANSPORT_USB  0
+#define TRANSPORT_BLE  1
+
+// Default ke USB untuk kompatibilitas mundur. Ganti di board_config.h profil
+// saat BLE siap dipakai.
+#ifndef TRANSPORT_TYPE
+#define TRANSPORT_TYPE TRANSPORT_USB
+#endif
+
 // =================== KONFIGURASI DASAR ===================
 #define ROWS 3
 #define COLS 3

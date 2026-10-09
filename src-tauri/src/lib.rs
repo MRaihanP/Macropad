@@ -4,6 +4,11 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// Logging helper
+pub fn log(msg: &str) {
+    eprintln!("[LOG] {}", msg);
+}
 #[cfg(desktop)]
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri::{
@@ -24,6 +29,23 @@ use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPRO
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 use windows::core::{PWSTR, PCWSTR, Interface};
+
+// =================== BLE TRANSPORT ===================
+mod ble;
+use ble::BleTransport;
+
+// Trait transport untuk medium yang bisa dipakai dari thread mana
+// pun (mis. USB serial). BLE TIDAK mengimplementasikan trait ini:
+// objek WinRT-nya tidak bersifat Send, sehingga BleTransport
+// dimiliki oleh satu thread worker khusus (lihat BleRequest).
+pub trait Transport: Send + Sync {
+    fn begin(&mut self) -> Result<bool, String>;
+    fn is_connected(&self) -> bool;
+    fn available(&self) -> i32;
+    fn read(&mut self) -> i32;
+    fn write(&mut self, data: &[u8]) -> Result<usize, String>;
+    fn flush(&mut self);
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct AppEntry {
@@ -504,6 +526,7 @@ fn system_locale() -> Option<String> {
 ///
 /// Dipisah dari `system_locale` supaya murni (tidak menyentuh Windows) dan
 /// bisa diuji langsung di unit test.
+#[cfg(test)]
 fn language_of(locale: &str) -> String {
     locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase()
 }
@@ -565,6 +588,101 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+// ==================== WATCHDOG PAINT JENDELA UTAMA ====================
+//
+// Jendela utama kadang PUTIH Total setelah aplikasi dijalankan ulang: JS di
+// dalamnya tetap jalan (serial connect, log, preset switching), tapi renderer
+// WebView2 tidak pernah menghasilkan frame. Penyebab umumnya webview instance
+// sebelumnya belum sepenuhnya keluar saat yang baru start, sehingga profil
+// WebView2 dipakai dua proses browser sekaligus dan renderer yang baru
+// menggantung.
+//
+// Sinyal "JS hidup" tidak berguna di sini karena memang hidup; yang hilang
+// adalah pelukisan. Karena itu paint-watch.js melaporkan lewat
+// requestAnimationFrame - callback itu hanya jalan kalau browser benar-benar
+// menghasilkan frame - dan Rust memakai laporan itu untuk memuat ulang
+// jendela sendiri.
+//
+// reports: 0 = belum ada laporan, 1 = script jalan, 2 = frame pertama tampil.
+static MAIN_PAINT_REPORT: AtomicU64 = AtomicU64::new(0);
+static APP_STARTED: AtomicU64 = AtomicU64::new(0);
+
+fn paint_report(level: u64) {
+    // Hanya naik: reload memicu modul JS berjalan lagi dan melapor ulang.
+    let _ = MAIN_PAINT_REPORT.fetch_max(level, Ordering::SeqCst);
+    let started = APP_STARTED.load(Ordering::SeqCst);
+    if level >= 2 && started != 0 {
+        // Berguna waktu debug: dari situ kelihatan kalau jendela lambat render
+        // tanpa harus menunggu sampai watchdog turun tangan.
+        eprintln!("[main] jendela ter-paint pada t+{} ms", now_ms().saturating_sub(started));
+    }
+    if level >= 2 { paint_watch_stop(); }
+}
+
+#[tauri::command]
+fn paint_script_ran() { paint_report(1); }
+
+#[tauri::command]
+fn paint_first_frame() { paint_report(2); }
+
+// Berhenti watchdog begitu frame pertama benar-benar terlihat.
+fn paint_watch_stop() {
+    let _ = MAIN_PAINT_REPORT.fetch_max(3, Ordering::SeqCst);
+}
+
+//
+//
+// Satu thread ringan yang:
+//   1. menunggu jendela utama benar-benar tampil (kalau app jalan lewat
+//      autostart, jendela disembunyikan dan memang tidak ada frame - jangan
+//      reload dalam kondisi itu),
+//   2. memberi halaman waktu memuat dan melukis dirinya sendiri,
+//   3. kalau frame pertama tidak pernah datang, muat ulang jendela.
+fn spawn_paint_watchdog(handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        // script saja yang mem-paint, jadi pastikan dulu tidak sedang autostart
+        let mut shown = false;
+        for _ in 0..20 {
+            let visible = handle
+                .get_webview_window(MAIN_WINDOW)
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            if visible {
+                shown = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // Autostart: tidak ada yang perlu diawasi, jendela memang disembunyikan.
+        if !shown {
+            return;
+        }
+
+        // Batas 3 percobaan. Cukup untuk kasus umum; kalau masih putih, systemic
+        // dan reload tidak akan menolong.
+        for attempt in 1..=3 {
+            std::thread::sleep(Duration::from_millis(5000));
+            if MAIN_PAINT_REPORT.load(Ordering::SeqCst) >= 3 {
+                return;
+            }
+            let w = match handle.get_webview_window(MAIN_WINDOW) {
+                Some(w) => w,
+                None => return,
+            };
+            // Kalau jendela disembunyikan/di-minimize saat menunggu, jangan reload.
+            if !w.is_visible().unwrap_or(false) {
+                return;
+            }
+            let report = MAIN_PAINT_REPORT.load(Ordering::SeqCst);
+            eprintln!(
+                "[main] jendela belum ter-paint (laporan={}, percobaan={}) -> reload",
+                report, attempt
+            );
+            let _ = w.reload();
+        }
+    });
+}
+
 // ==================== OVERLAY NOTIFIKASI ====================
 // Jendela terpisah: transparan, tanpa dekorasi, always-on-top, tidak bisa fokus & klik tembus,
 // jadi tidak mengganggu window apa pun di bawahnya. Konten digambar oleh overlay.html.
@@ -576,6 +694,19 @@ static HIDE_AT: AtomicU64 = AtomicU64::new(0);      // kapan overlay boleh disem
 static HIDE_WATCHER: AtomicBool = AtomicBool::new(false);
 static OVERLAY_INIT: Mutex<()> = Mutex::new(());    // cegah dua thread membuat overlay bersamaan
 const EVENT_NOTIFY: &str = "overlay-notify";       // channel resmi Rust -> overlay.html
+
+// Kapan jendela overlay dibuat (ms epoch) dan kapan terakhir ada percobaan
+// pemulihan. Dipakai watchdog di bawah.
+static OVERLAY_BORN: AtomicU64 = AtomicU64::new(0);
+static OVERLAY_RETRY: AtomicU64 = AtomicU64::new(0);
+static OVERLAY_RELOADS: AtomicU64 = AtomicU64::new(0);
+
+// Halaman overlay butuh waktu untuk inisialisasi WebView2 + memuat script,
+// jadi jangan ganggu sebelum grace period ini lewat.
+const OVERLAY_LOAD_GRACE_MS: u64 = 4000;
+// Jeda antar percobaan pemulihan: mencegah reload berulang tiap notifikasi
+// (mis. saat user menekan banyak tombol dalam waktu singkat).
+const OVERLAY_RETRY_COOLDOWN_MS: u64 = 10_000;
 
 fn build_overlay(app: &tauri::AppHandle, strict: bool) -> Result<tauri::WebviewWindow, String> {
     let mut b = tauri::WebviewWindowBuilder::new(app, OVERLAY_WINDOW, tauri::WebviewUrl::App("overlay.html".into()))
@@ -603,8 +734,62 @@ fn ensure_overlay(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String
         Ok(w) => w,
         Err(e1) => build_overlay(app, false).map_err(|e2| format!("{} | percobaan 2: {}", e1, e2))?,
     };
+    // Catat waktu lahir supaya watchdog tahu kapan harus mulai curiga halaman
+    // tidak akan pernah siap.
+    OVERLAY_BORN.store(now_ms(), Ordering::SeqCst);
     let _ = w.set_ignore_cursor_events(true);
     Ok(w)
+}
+
+// ==================== PEMULIHAN HALAMAN OVERLAY ====================
+//
+// Gejala "notifikasi tidak muncul sama sekali" punya satu penyebab yang
+// sangat mudah terjadi: halaman overlay.html gagal dimuat atau gagal
+// menjalankan script-nya. Contoh di mode dev: jendela dibuat 3 detik setelah
+// start, sementara vite masih mengoptimasi dependensi, jadi overlay.html
+// sempat dijawab error/404. Overlay.js tidak pernah jalan, command
+// `overlay_ready` tidak pernah dipanggil, jadi OVERLAY_READY tetap false
+// SELAMANYA. Setiap notifikasi lalu diam-diam masuk antrean yang tidak
+// pernah ditampilkan - jendela overlay tetap show/hide dengan isi kosong.
+//
+// Karena itu: begitu ada notifikasi sementara halaman belum siap, jangan
+// cuma menunggu. Muat ulang halamannya. Kalau reload tidak menolong,
+// buang jendela dan biarkan ensure_overlay() membuat yang baru.
+fn recover_overlay_page(app: &tauri::AppHandle, w: &tauri::WebviewWindow) {
+    if OVERLAY_READY.load(Ordering::SeqCst) { return; }
+
+    let now = now_ms();
+    let born = OVERLAY_BORN.load(Ordering::SeqCst);
+    // Masih dalam grace period: webview mungkin sedang inisialisasi.
+    if born == 0 || now < born + OVERLAY_LOAD_GRACE_MS { return; }
+    // Masih dalam cooldown percobaan sebelumnya.
+    if now < OVERLAY_RETRY.load(Ordering::SeqCst) + OVERLAY_RETRY_COOLDOWN_MS { return; }
+    OVERLAY_RETRY.store(now, Ordering::SeqCst);
+
+    // Halaman dianggap restart: emit berikutnya harus diantrekan, bukan
+    // dikirim ke webview yang belum punya listener.
+    OVERLAY_READY.store(false, Ordering::SeqCst);
+
+    let percobaan = OVERLAY_RELOADS.fetch_add(1, Ordering::SeqCst) + 1;
+    if percobaan == 1 {
+        eprintln!(
+            "[overlay] halaman belum siap {} ms setelah window dibuat, muat ulang",
+            now - born
+        );
+        if let Err(e) = w.reload() {
+            eprintln!("[overlay] reload gagal: {}", e);
+        }
+    } else {
+        // Sudah dicoba reload dan tetap tidak siap: webview-nya yang rusak,
+        // bukan halamannya. Buang jendela supaya dibuat ulang dengan webview
+        // baru (ensure_overlay() dipanggil ulang oleh pemanggil).
+        eprintln!(
+            "[overlay] percobaan ke-{} tetap gagal, buat ulang jendela overlay",
+            percobaan
+        );
+        let _ = w.destroy();
+    }
+    let _ = app;
 }
 
 // Antrean notifikasi yang belum bisa dikirim karena halaman overlay belum siap
@@ -626,6 +811,10 @@ fn deliver_overlay(w: &tauri::WebviewWindow, payload: &serde_json::Value) {
 fn overlay_ready(app: tauri::AppHandle) -> Result<(), String> {
     let w = ensure_overlay(&app)?;
     OVERLAY_READY.store(true, Ordering::SeqCst);
+    // Halaman hidup lagi: reset penghitung pemulihan supaya kalau nanti rusak
+    // lagi, tidak perlu menunggu cooldown yang sudah terpakai.
+    OVERLAY_RELOADS.store(0, Ordering::SeqCst);
+    OVERLAY_RETRY.store(0, Ordering::SeqCst);
     let queued = { let mut q = PENDING_NOTIFY.lock().unwrap_or_else(|e| e.into_inner()); std::mem::take(&mut *q) };
     if let Some(last) = queued.last() { deliver_overlay(&w, last); }
     Ok(())
@@ -634,8 +823,15 @@ fn overlay_ready(app: tauri::AppHandle) -> Result<(), String> {
 // async: jalan di thread pool, BUKAN main thread, supaya tidak pernah memblokir UI/serial
 #[tauri::command]
 async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<u64>) -> Result<(), String> {
-    let w = ensure_overlay(&app)?;
+    let mut w = ensure_overlay(&app)?;
     let hold = hold.unwrap_or(3000).clamp(300, 10000);
+
+    // Halaman overlay belum siap? Coba pulihkan (reload / buat ulang jendela).
+    // Kalau jendela sempat dibuang, ambil handle yang baru.
+    if !OVERLAY_READY.load(Ordering::SeqCst) {
+        recover_overlay_page(&app, &w);
+        w = ensure_overlay(&app)?;
+    }
 
     // Posisi & show hanya saat overlay sedang tersembunyi (hindari show/hide beruntun)
     if !w.is_visible().unwrap_or(false) {
@@ -643,7 +839,11 @@ async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<
             let x = m.position().x + (m.size().width as i32 - size.width as i32) / 2;
             let _ = w.set_position(tauri::PhysicalPosition::new(x, m.position().y));
         }
-        let _ = w.show();
+        // Jangan ditelan diam-diam: tanpa show() notifikasi benar-benar tidak terlihat.
+        if let Err(e) = w.show() {
+            eprintln!("[overlay] gagal menampilkan jendela: {}", e);
+            return Err(format!("Gagal menampilkan overlay: {}", e));
+        }
     }
 
     let payload = serde_json::json!({ "text": text, "kind": kind, "hold": hold });
@@ -676,6 +876,202 @@ async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
+// ==================== BLE COMMANDS (Phase 10) ===================
+// Objek WinRT (BluetoothLEDevice, GattCharacteristic, dst)
+// berbasis IUnknown yang TIDAK bersifat Send, jadi tidak boleh
+// menyeberang thread maupun disimpan di static. Seluruh state
+// BLE dimiliki oleh satu thread worker khusus; command Tauri
+// hanya mengirim pesan lewat channel dan menunggu balasan.
+// Dulu ble_connect membuat transport lalu langsung dibuang,
+// sehingga koneksi tidak pernah bertahan ke command berikutnya.
+
+#[derive(Serialize)]
+struct BleDeviceInfo {
+    id: String,
+    name: String,
+    is_paired: bool,
+}
+
+enum BleRequest {
+    Scan(tokio::sync::oneshot::Sender<Result<Vec<BleDeviceInfo>, String>>),
+    Connect {
+        id: String,
+        resp: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Disconnect(tokio::sync::oneshot::Sender<Result<(), String>>),
+    Write {
+        data: Vec<u8>,
+        resp: tokio::sync::oneshot::Sender<Result<usize, String>>,
+    },
+    Read {
+        max_len: usize,
+        resp: tokio::sync::oneshot::Sender<Vec<u8>>,
+    },
+    IsConnected(tokio::sync::oneshot::Sender<bool>),
+}
+
+static BLE_TX: std::sync::OnceLock<std::sync::mpsc::Sender<BleRequest>> =
+    std::sync::OnceLock::new();
+
+fn ble_tx() -> std::sync::mpsc::Sender<BleRequest> {
+    BLE_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<BleRequest>();
+        std::thread::Builder::new()
+            .name("ble-worker".into())
+            .spawn(move || ble_worker(rx))
+            .expect("gagal memulai thread BLE");
+        tx
+    })
+    .clone()
+}
+
+// Thread pemilik seluruh objek WinRT BLE. WinRT membutuhkan
+// COM terinisialisasi di thread ini.
+fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
+    // WinRT membutuhkan COM terinisialisasi di thread ini.
+    // HRESULT diabaikan: thread mungkin sudah terinisialisasi.
+    let _ = unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        )
+    };
+
+    let mut transport: Option<BleTransport> = None;
+    while let Ok(req) = rx.recv() {
+        match req {
+            BleRequest::Scan(resp) => {
+                // Ekstrak data yang bisa dikirim antar thread
+                // (DeviceInformation sendiri tidak Send).
+                let r = BleTransport::scan().map(|devices| {
+                    devices
+                        .into_iter()
+                        .map(|d| BleDeviceInfo {
+                            id: d.Id().map(|s| s.to_string()).unwrap_or_default(),
+                            name: d.Name().map(|s| s.to_string()).unwrap_or_default(),
+                            is_paired: d
+                                .Pairing()
+                                .ok()
+                                .and_then(|p| p.IsPaired().ok())
+                                .unwrap_or(false),
+                        })
+                        .collect()
+                });
+                let _ = resp.send(r);
+            }
+            BleRequest::Connect { id, resp } => {
+                let r = BleTransport::scan()
+                    .and_then(|devices| {
+                        devices
+                            .into_iter()
+                            .find(|d| d.Id().map(|s| s.to_string()).unwrap_or_default() == id)
+                            .ok_or_else(|| "Device not found".to_string())
+                    })
+                    .and_then(|device_info| {
+                        let mut t = BleTransport::new();
+                        t.connect(&device_info)?;
+                        transport = Some(t);
+                        log("[BLE] Connected via command");
+                        Ok(())
+                    });
+                let _ = resp.send(r);
+            }
+            BleRequest::Disconnect(resp) => {
+                let r = match transport.take() {
+                    Some(mut t) => {
+                        t.disconnect();
+                        Ok(())
+                    }
+                    None => Err("BLE tidak terhubung".to_string()),
+                };
+                let _ = resp.send(r);
+            }
+            BleRequest::Write { data, resp } => {
+                let r = match transport.as_mut() {
+                    Some(t) => t.write(&data),
+                    None => Err("BLE tidak terhubung".to_string()),
+                };
+                let _ = resp.send(r);
+            }
+            BleRequest::Read { max_len, resp } => {
+                let mut out = Vec::with_capacity(max_len);
+                if let Some(t) = transport.as_mut() {
+                    let n = (t.available().max(0) as usize).min(max_len);
+                    for _ in 0..n {
+                        let b = t.read();
+                        if b < 0 {
+                            break;
+                        }
+                        out.push(b as u8);
+                    }
+                }
+                let _ = resp.send(out);
+            }
+            BleRequest::IsConnected(resp) => {
+                let _ = resp.send(transport.as_ref().is_some_and(|t| t.is_connected()));
+            }
+        }
+    }
+}
+
+#[tauri::command]
+async fn ble_scan() -> Result<Vec<BleDeviceInfo>, String> {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Scan(resp))
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ble_connect(id: String) -> Result<(), String> {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Connect { id, resp })
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ble_disconnect() -> Result<(), String> {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Disconnect(resp))
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ble_write(data: Vec<u8>) -> Result<usize, String> {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Write { data, resp })
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ble_read(max_len: usize) -> Result<Vec<u8>, String> {
+    let max_len = max_len.clamp(1, 4096);
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Read { max_len, resp })
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ble_is_connected() -> bool {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    if ble_tx().send(BleRequest::IsConnected(resp)).is_err() {
+        return false;
+    }
+    rx.await.unwrap_or(false)
+}
+
+
+
 pub fn run() {
     let mut builder = tauri::Builder::default();
 
@@ -696,13 +1092,25 @@ pub fn run() {
     builder
         .setup(|app| {
             setup_tray(app)?;
+            APP_STARTED.store(now_ms(), Ordering::SeqCst);
+            // Self-heal jendela putih (lihat WATCHDOG PAINT di atas).
+            spawn_paint_watchdog(app.handle().clone());
             // Overlay dibuat TERTUNDA di thread lain, setelah jendela utama selesai memuat WebView2-nya.
             // Membuat dua WebView2 bersamaan saat startup rawan membuat jendela utama putih/hitam & hang.
             {
                 let h = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(3000));
-                    let _ = ensure_overlay(&h);
+                    if let Err(e) = ensure_overlay(&h) {
+                        // Di mode dev, 3 detik kadang belum cukup: vite masih bisa
+                        // mengoptimasi dependensi dan overlay.html sempat dijawab error.
+                        // Coba lagi supaya jendela siap jauh sebelum notifikasi pertama.
+                        eprintln!("[overlay] gagal dibuat ({}), coba lagi 2,5 detik", e);
+                        std::thread::sleep(Duration::from_millis(2500));
+                        if let Err(e) = ensure_overlay(&h) {
+                            eprintln!("[overlay] tetap gagal setelah dua percobaan: {}", e);
+                        }
+                    }
                 });
             }
 
@@ -754,15 +1162,25 @@ pub fn run() {
             presets_get,
             presets_save,
             notify,
-            overlay_ready
+            overlay_ready,
+            paint_script_ran,
+            paint_first_frame,
+            // Phase 10 BLE commands
+            ble_scan,
+            ble_connect,
+            ble_disconnect,
+            ble_write,
+            ble_read,
+            ble_is_connected,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
+
 mod tests {
-    use super::*;
+    use super::{AppEntry, AppData, find_app, clip_utf8, language_of, system_locale, autostart_status, autostart_set, get_foreground_exe, scan_bindable_apps, presets_get, presets_save, notify, overlay_ready};
 
     fn e(name: &str) -> AppEntry {
         AppEntry { name: name.to_string(), id: format!("C:\\{}.lnk", name), custom: false }

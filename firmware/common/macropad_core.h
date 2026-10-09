@@ -6,6 +6,15 @@
 // ada di folder sketchnya masing-masing.
 // ==================================================================
 
+#include "transport.h"
+
+// Global transport instance - diinisialisasi di sketsh profil (transport_usb.cpp / transport_ble.cpp).
+extern Transport* g_transport;
+
+// Makro SERIAL menggantikan Serial.* di seluruh core.
+// Implementasi aktual (USB/BLE) disediakan oleh sketsh profil.
+#define SERIAL g_transport
+
 // =================== STRUKTUR KEY MAPPING ===================
 enum ActionType : uint8_t {
   ACTION_NONE = 0,
@@ -148,7 +157,7 @@ void flashLed() {
 }
 
 void broadcastLayerChanged() {
-  Serial.printf("EVT:LAYER:%d\n", activeCfg->currentLayer);
+  SERIAL->printf("EVT:LAYER:%d\n", activeCfg->currentLayer);
 }
 
 // ---- Kedipan indikator non-blocking ----
@@ -247,17 +256,17 @@ void resetAppCfg() { resetCfgStruct(appCfg); }
 // sehingga edit user hilang tanpa jejak.
 bool saveConfigToFlash() {
   if (!prefs.begin("macropad", false)) {
-    Serial.println("[ERROR] SAVE gagal: tidak bisa membuka partisi NVS");
+    SERIAL->println("[ERROR] SAVE gagal: tidak bisa membuka partisi NVS");
     return false;
   }
   size_t w = prefs.putBytes("cfg", &cfg, sizeof(cfg));
   prefs.end();
   if (w != sizeof(cfg)) {
-    Serial.printf("[ERROR] SAVE gagal: hanya %u dari %u byte tersimpan\n",
+    SERIAL->printf("[ERROR] SAVE gagal: hanya %u dari %u byte tersimpan\n",
                   (unsigned)w, (unsigned)sizeof(cfg));
     return false;
   }
-  Serial.println("[FLASH] Config tersimpan");
+  SERIAL->println("[FLASH] Config tersimpan");
   return true;
 }
 
@@ -270,14 +279,14 @@ void loadConfigFromFlash() {
     prefs.getBytes("cfg", &cfg, sizeof(cfg));
     prefs.end();
     if (cfg.version != CONFIG_VERSION) {
-      Serial.println("[FLASH] Versi config lama, pakai default");
+      SERIAL->println("[FLASH] Versi config lama, pakai default");
       setDefaultConfig();
     } else {
-      Serial.println("[FLASH] Config dimuat dari flash");
+      SERIAL->println("[FLASH] Config dimuat dari flash");
     }
   } else {
     prefs.end();
-    Serial.println("[FLASH] Tidak ada config valid, pakai default");
+    SERIAL->println("[FLASH] Tidak ada config valid, pakai default");
     setDefaultConfig();
   }
 
@@ -372,7 +381,7 @@ void serviceOpenApp() {
 }
 
 void sendAppEvent(const char* appName) {
-  Serial.printf("EVT:APP:%s\n", appName);
+  SERIAL->printf("EVT:APP:%s\n", appName);
 }
 
 const unsigned long HOST_TIMEOUT_MS = 4000;
@@ -386,7 +395,7 @@ void openApp(const char* appName) {
   if (companionConnected()) {
     sendAppEvent(appName);
   } else {
-    Serial.println("[APP] Companion tidak terhubung, fallback Windows Search");
+    SERIAL->println("[APP] Companion tidak terhubung, fallback Windows Search");
     executeOpenApp(appName);
   }
 }
@@ -435,7 +444,7 @@ void scanMatrix() {
           //
           // Panjang terburuk: "[KEY] 7,2,2,3," + 47 char + newline = 62 byte, masih di
           // bawah 64. Jangan tambah field tanpa menghitung ulang.
-          Serial.printf("[KEY] %d,%d,%d,%d,%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
+          SERIAL->printf("[KEY] %d,%d,%d,%d,%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
           flashLed();
           rgbKeyFlash(r, c);
         }
@@ -457,7 +466,7 @@ void checkEncoder() {
       encMoved[i] = false;
       interrupts();
       executeAction(dirCW ? activeCfg->encCW[i] : activeCfg->encCCW[i]);
-      Serial.printf("EVT:ENC:%d:%s\n", i, dirCW ? "CW" : "CCW");
+      SERIAL->printf("EVT:ENC:%d:%s\n", i, dirCW ? "CW" : "CCW");
       flashLed();
     }
   }
@@ -471,7 +480,7 @@ void checkEncoder() {
       encBtnDebouncedState[i] = encBtnRawState[i];
       if (!encBtnDebouncedState[i]) { // eksekusi saat dilepas
         executeAction(activeCfg->encBtn[i]);
-        Serial.printf("[ENC_BTN] Knob %d: aksi terkonfigurasi dijalankan\n", i);
+        SERIAL->printf("[ENC_BTN] Knob %d: aksi terkonfigurasi dijalankan\n", i);
         flashLed();
       }
     }
@@ -510,7 +519,7 @@ void checkEncoder() {
         layerSwitchTriggered = false;
       } else {
         executeAction(activeCfg->encBtn[p]);
-        Serial.println("[ENC_BTN] Aksi terkonfigurasi dijalankan");
+        SERIAL->println("[ENC_BTN] Aksi terkonfigurasi dijalankan");
         flashLed();
       }
       encoderLedActive = false;
@@ -531,13 +540,13 @@ void checkEncoder() {
     } else if (!layerSwitchTriggered && elapsed >= LONG_PRESS_MS) {
       layerSwitchTriggered = true;
       activeCfg->currentLayer = (activeCfg->currentLayer + 1) % activeCfg->layerCount;
-      Serial.printf("[LAYER] Pindah ke layer %d\n", activeCfg->currentLayer);
+      SERIAL->printf("[LAYER] Pindah ke layer %d\n", activeCfg->currentLayer);
       broadcastLayerChanged();
       statusLed(true); // solid
     } else if (layerSwitchTriggered && !escapeTriggered && elapsed >= ESCAPE_HOLD_MS) {
       escapeTriggered = true;
       activeCfg = &cfg;           // paksa balik ke Default SEKARANG JUGA, tidak nunggu companion
-      Serial.println("EVT:ESCAPE");
+      SERIAL->println("EVT:ESCAPE");
       broadcastLayerChanged();    // broadcast currentLayer Default yang sebenarnya, menimpa EVT:LAYER tadi
     } else if (escapeTriggered) {
       if (now - holdBlinkLast >= ESCAPE_BLINK_INTERVAL_MS) {
@@ -570,14 +579,14 @@ void rgbStateReset() {
 }
 
 void rgbDump() {
-  Serial.printf("RGB_DUMP:enabled=%d,mode=%d,random=%d,bri=%d,speed=%d,color=%d:%d:%d,dirty=%d\n",
+  SERIAL->printf("RGB_DUMP:enabled=%d,mode=%d,random=%d,bri=%d,speed=%d,color=%d:%d:%d,dirty=%d\n",
                 rgbState.enabled ? 1 : 0, rgbState.mode, rgbState.random, rgbState.bri, rgbState.speed,
                 rgbState.color[0], rgbState.color[1], rgbState.color[2], rgbState.dirty ? 1 : 0);
   for (uint8_t r = 0; r < ROWS; r++)
     for (uint8_t c = 0; c < COLS; c++)
-      Serial.printf("RGB_KEY:%d,%d,%d:%d:%d\n", r, c,
+      SERIAL->printf("RGB_KEY:%d,%d,%d:%d:%d\n", r, c,
                     rgbState.keys[r][c][0], rgbState.keys[r][c][1], rgbState.keys[r][c][2]);
-  Serial.println("RGB_DUMP_END");
+  SERIAL->println("RGB_DUMP_END");
 }
 
 uint8_t battPercentFromMv(uint32_t mv) {
@@ -616,12 +625,12 @@ void reportBatt() {
 
   uint32_t pinMv = 0;
   uint32_t battMv = readBatteryMv(&pinMv);
-  Serial.printf("EVT:BATT:pct=%d,mv=%lu,charging=%d,usb=%d,profile=%s\n",
+  SERIAL->printf("EVT:BATT:pct=%d,mv=%lu,charging=%d,usb=%d,profile=%s\n",
                 battPercentFromMv(battMv), (unsigned long)battMv,
                 (cs == CHARGE_CHARGING) ? 1 : 0,
                 usbHostConnected() ? 1 : 0, HW_PROFILE_NAME);
   if (chargeChanged)
-    Serial.printf("EVT:CHG:state=%d\n", (int)cs);
+    SERIAL->printf("EVT:CHG:state=%d\n", (int)cs);
 }
 
 ActionType parseActionType(const String& s) {
@@ -662,14 +671,14 @@ bool parseIntRange(const String &s, long minV, long maxV, long &out) {
 }
 
 void dumpEncoderConfig() {
-  Serial.printf("ENC_BEGIN:count=%d\n", NUM_ENCODERS);
+  SERIAL->printf("ENC_BEGIN:count=%d\n", NUM_ENCODERS);
   for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
-    Serial.printf("IDX:%d\n", i);
-    Serial.printf("CW,%d,%s\n", activeCfg->encCW[i].type, activeCfg->encCW[i].value);
-    Serial.printf("CCW,%d,%s\n", activeCfg->encCCW[i].type, activeCfg->encCCW[i].value);
-    Serial.printf("BTN,%d,%s\n", activeCfg->encBtn[i].type, activeCfg->encBtn[i].value);
+    SERIAL->printf("IDX:%d\n", i);
+    SERIAL->printf("CW,%d,%s\n", activeCfg->encCW[i].type, activeCfg->encCW[i].value);
+    SERIAL->printf("CCW,%d,%s\n", activeCfg->encCCW[i].type, activeCfg->encCCW[i].value);
+    SERIAL->printf("BTN,%d,%s\n", activeCfg->encBtn[i].type, activeCfg->encBtn[i].value);
   }
-  Serial.println("ENC_END");
+  SERIAL->println("ENC_END");
 }
 
 // cmd tidak pernah dimutasi di dalam fungsi ini (semua pemakaiannya hanya ==,
@@ -683,14 +692,14 @@ void handleSerialCommand(const String& cmd) {
   lastHostSeenMs = millis();
 
   if (cmd == "WHOAMI") {
-    Serial.printf("WHOAMI:MacroPad:v1:rows=%d,cols=%d,encoders=%d\n", ROWS, COLS, NUM_ENCODERS);
+    SERIAL->printf("WHOAMI:MacroPad:v1:rows=%d,cols=%d,encoders=%d\n", ROWS, COLS, NUM_ENCODERS);
     return;
   }
 
-  if (cmd == "PING") { Serial.println("PONG"); return; }
+  if (cmd == "PING") { SERIAL->println("PONG"); return; }
 
   if (cmd == "INFO") {
-    Serial.printf("INFO:layerCount=%d,currentLayer=%d,maxLayers=%d,rows=%d,cols=%d,encoders=%d,context=%s\n",
+    SERIAL->printf("INFO:layerCount=%d,currentLayer=%d,maxLayers=%d,rows=%d,cols=%d,encoders=%d,context=%s\n",
                   activeCfg->layerCount, activeCfg->currentLayer, MAX_LAYERS, ROWS, COLS, NUM_ENCODERS,
                   (activeCfg == &cfg) ? "DEFAULT" : "APP");
     return;
@@ -698,62 +707,62 @@ void handleSerialCommand(const String& cmd) {
 
   // SAVE/LOAD SELALU ke Default Preset (cfg), TIDAK PERNAH ke appCfg — terlepas context aktif
   if (cmd == "SAVE") { saveConfigToFlash(); return; }
-  if (cmd == "LOAD") { loadConfigFromFlash(); Serial.println("[OK] Config dimuat ulang"); return; }
+  if (cmd == "LOAD") { loadConfigFromFlash(); SERIAL->println("[OK] Config dimuat ulang"); return; }
 
   if (cmd == "RESET") {
     setDefaultConfig();
-    Serial.println("[OK] Config direset ke default (ketik SAVE untuk permanen)");
+    SERIAL->println("[OK] Config direset ke default (ketik SAVE untuk permanen)");
     return;
   }
 
   // ---- Context switching: App Preset ----
   if (cmd == "CONTEXT:DEFAULT") {
     activeCfg = &cfg;
-    Serial.println("[OK] Context: DEFAULT");
+    SERIAL->println("[OK] Context: DEFAULT");
     return;
   }
   if (cmd == "CONTEXT:APP:NEW") {
     resetAppCfg();
     activeCfg = &appCfg;
-    Serial.println("[OK] Context: APP (baru, blank)");
+    SERIAL->println("[OK] Context: APP (baru, blank)");
     return;
   }
 
   // ---- Slot App Preset (cache RAM) ----
   if (cmd.startsWith("SLOT:")) {
     int c2 = cmd.indexOf(':', 5);
-    if (c2 < 0) { Serial.println("[ERROR] Format SLOT tidak lengkap"); return; }
+    if (c2 < 0) { SERIAL->println("[ERROR] Format SLOT tidak lengkap"); return; }
     long nL;
-    if (!parseIntRange(cmd.substring(5, c2), 0, APP_SLOTS - 1, nL)) { Serial.println("[ERROR] Slot di luar batas"); return; }
+    if (!parseIntRange(cmd.substring(5, c2), 0, APP_SLOTS - 1, nL)) { SERIAL->println("[ERROR] Slot di luar batas"); return; }
     int n = (int)nL;
     String op = cmd.substring(c2 + 1);
     if (op == "NEW") resetCfgStruct(slotCfg[n]);
-    else if (op != "USE") { Serial.println("[ERROR] Op SLOT harus NEW/USE"); return; }
+    else if (op != "USE") { SERIAL->println("[ERROR] Op SLOT harus NEW/USE"); return; }
     slotCfg[n].currentLayer = 0;
     activeCfg = &slotCfg[n];
-    Serial.printf("[OK] Context: SLOT %d (%s)\n", n, op.c_str());
+    SERIAL->printf("[OK] Context: SLOT %d (%s)\n", n, op.c_str());
     return;
   }
 
   if (cmd == "CONTEXT:APP:RESUME") {
     activeCfg = &appCfg;
-    Serial.println("[OK] Context: APP (resume, data dipertahankan)");
+    SERIAL->println("[OK] Context: APP (resume, data dipertahankan)");
     return;
   }
 
   if (cmd == "ADDLAYER") {
-    if (activeCfg->layerCount >= MAX_LAYERS) { Serial.println("[ERROR] Sudah mencapai jumlah layer maksimum"); return; }
+    if (activeCfg->layerCount >= MAX_LAYERS) { SERIAL->println("[ERROR] Sudah mencapai jumlah layer maksimum"); return; }
     for (uint8_t r = 0; r < ROWS; r++)
       for (uint8_t c = 0; c < COLS; c++)
         activeCfg->layerMap[activeCfg->layerCount][r][c] = {ACTION_NONE, ""};
     snprintf(activeCfg->layerNames[activeCfg->layerCount], NAME_LEN, "Layer %d", activeCfg->layerCount);
     activeCfg->layerCount++;
-    Serial.printf("[OK] Layer ditambah, total sekarang %d\n", activeCfg->layerCount);
+    SERIAL->printf("[OK] Layer ditambah, total sekarang %d\n", activeCfg->layerCount);
     return;
   }
 
   if (cmd == "DELLAYER") {
-    if (activeCfg->layerCount <= 1) { Serial.println("[ERROR] Minimal harus ada 1 layer"); return; }
+    if (activeCfg->layerCount <= 1) { SERIAL->println("[ERROR] Minimal harus ada 1 layer"); return; }
     uint8_t idx = activeCfg->currentLayer;
     for (uint8_t l = idx; l < activeCfg->layerCount - 1; l++) {
       for (uint8_t r = 0; r < ROWS; r++)
@@ -763,7 +772,7 @@ void handleSerialCommand(const String& cmd) {
     }
     activeCfg->layerCount--;
     if (activeCfg->currentLayer >= activeCfg->layerCount) activeCfg->currentLayer = activeCfg->layerCount - 1;
-    Serial.printf("[OK] Layer %d dihapus, total sekarang %d, currentLayer=%d\n", idx, activeCfg->layerCount, activeCfg->currentLayer);
+    SERIAL->printf("[OK] Layer %d dihapus, total sekarang %d, currentLayer=%d\n", idx, activeCfg->layerCount, activeCfg->currentLayer);
     broadcastLayerChanged();
     return;
   }
@@ -775,10 +784,10 @@ void handleSerialCommand(const String& cmd) {
     int idx1 = cmd.indexOf(':', 7);
     int idx2 = cmd.indexOf(':', idx1 + 1);
     int idx3 = cmd.indexOf(':', idx2 + 1);
-    if (idx1 < 0 || idx2 < 0 || idx3 < 0) { Serial.println("[ERROR] Format SETENC tidak lengkap"); return; }
+    if (idx1 < 0 || idx2 < 0 || idx3 < 0) { SERIAL->println("[ERROR] Format SETENC tidak lengkap"); return; }
 
     long encIdxL;
-    if (!parseIntRange(cmd.substring(7, idx1), 0, NUM_ENCODERS - 1, encIdxL)) { Serial.println("[ERROR] Index encoder di luar batas"); return; }
+    if (!parseIntRange(cmd.substring(7, idx1), 0, NUM_ENCODERS - 1, encIdxL)) { SERIAL->println("[ERROR] Index encoder di luar batas"); return; }
     uint8_t encIdx = (uint8_t)encIdxL;
     String which = cmd.substring(idx1 + 1, idx2);
     String typeStr = cmd.substring(idx2 + 1, idx3);
@@ -792,9 +801,9 @@ void handleSerialCommand(const String& cmd) {
     if (which == "CW") activeCfg->encCW[encIdx] = newAction;
     else if (which == "CCW") activeCfg->encCCW[encIdx] = newAction;
     else if (which == "BTN") activeCfg->encBtn[encIdx] = newAction;
-    else { Serial.println("[ERROR] Target SETENC harus CW/CCW/BTN"); return; }
+    else { SERIAL->println("[ERROR] Target SETENC harus CW/CCW/BTN"); return; }
 
-    Serial.printf("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
+    SERIAL->printf("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
     return;
   }
 
@@ -803,9 +812,9 @@ void handleSerialCommand(const String& cmd) {
     int16_t target;
     if (dir == "LEFT") target = (int16_t)activeCfg->currentLayer - 1;
     else if (dir == "RIGHT") target = (int16_t)activeCfg->currentLayer + 1;
-    else { Serial.println("[ERROR] Arah harus LEFT atau RIGHT"); return; }
+    else { SERIAL->println("[ERROR] Arah harus LEFT atau RIGHT"); return; }
 
-    if (target < 0 || target >= activeCfg->layerCount) { Serial.println("[ERROR] Tidak bisa digeser, sudah di ujung"); return; }
+    if (target < 0 || target >= activeCfg->layerCount) { SERIAL->println("[ERROR] Tidak bisa digeser, sudah di ujung"); return; }
 
     for (uint8_t r = 0; r < ROWS; r++)
       for (uint8_t c = 0; c < COLS; c++) {
@@ -819,64 +828,64 @@ void handleSerialCommand(const String& cmd) {
     strncpy(activeCfg->layerNames[target], tmpName, NAME_LEN);
 
     activeCfg->currentLayer = (uint8_t)target;
-    Serial.printf("[OK] Layer digeser ke posisi %d\n", activeCfg->currentLayer);
+    SERIAL->printf("[OK] Layer digeser ke posisi %d\n", activeCfg->currentLayer);
     broadcastLayerChanged();
     return;
   }
 
   if (cmd.startsWith("RENAMELAYER:")) {
     int idx1 = cmd.indexOf(':', 12);
-    if (idx1 < 0) { Serial.println("[ERROR] Format RENAMELAYER tidak lengkap"); return; }
+    if (idx1 < 0) { SERIAL->println("[ERROR] Format RENAMELAYER tidak lengkap"); return; }
     long layerL;
-    if (!parseIntRange(cmd.substring(12, idx1), 0, activeCfg->layerCount - 1, layerL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    if (!parseIntRange(cmd.substring(12, idx1), 0, activeCfg->layerCount - 1, layerL)) { SERIAL->println("[ERROR] Layer index tidak valid"); return; }
     uint8_t layer = (uint8_t)layerL;
     String name = cmd.substring(idx1 + 1);
     strncpy(activeCfg->layerNames[layer], name.c_str(), NAME_LEN - 1);
     activeCfg->layerNames[layer][NAME_LEN - 1] = '\0';
-    Serial.printf("[OK] Layer %d diganti nama jadi \"%s\"\n", layer, activeCfg->layerNames[layer]);
+    SERIAL->printf("[OK] Layer %d diganti nama jadi \"%s\"\n", layer, activeCfg->layerNames[layer]);
     return;
   }
 
   if (cmd == "DUMPNAMES") {
-    Serial.println("NAMES_BEGIN");
-    for (uint8_t l = 0; l < activeCfg->layerCount; l++) Serial.printf("%d,%s\n", l, activeCfg->layerNames[l]);
-    Serial.println("NAMES_END");
+    SERIAL->println("NAMES_BEGIN");
+    for (uint8_t l = 0; l < activeCfg->layerCount; l++) SERIAL->printf("%d,%s\n", l, activeCfg->layerNames[l]);
+    SERIAL->println("NAMES_END");
     return;
   }
 
   if (cmd.startsWith("LAYER:")) {
     long lL;
-    if (!parseIntRange(cmd.substring(6), 0, activeCfg->layerCount - 1, lL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    if (!parseIntRange(cmd.substring(6), 0, activeCfg->layerCount - 1, lL)) { SERIAL->println("[ERROR] Layer index tidak valid"); return; }
     activeCfg->currentLayer = (uint8_t)lL;
-    Serial.printf("[LAYER] Pindah manual ke layer %d\n", activeCfg->currentLayer);
+    SERIAL->printf("[LAYER] Pindah manual ke layer %d\n", activeCfg->currentLayer);
     broadcastLayerChanged();
     return;
   }
 
   if (cmd.startsWith("DUMP:")) {
     long layerL;
-    if (!parseIntRange(cmd.substring(5), 0, activeCfg->layerCount - 1, layerL)) { Serial.println("[ERROR] Layer index tidak valid"); return; }
+    if (!parseIntRange(cmd.substring(5), 0, activeCfg->layerCount - 1, layerL)) { SERIAL->println("[ERROR] Layer index tidak valid"); return; }
     uint8_t layer = (uint8_t)layerL;
-    Serial.printf("DUMP_BEGIN:%d\n", layer);
+    SERIAL->printf("DUMP_BEGIN:%d\n", layer);
     for (uint8_t r = 0; r < ROWS; r++)
       for (uint8_t c = 0; c < COLS; c++) {
         KeyAction a = activeCfg->layerMap[layer][r][c];
-        Serial.printf("%d,%d,%d,%s\n", r, c, a.type, a.value);
+        SERIAL->printf("%d,%d,%d,%s\n", r, c, a.type, a.value);
       }
-    Serial.println("DUMP_END");
+    SERIAL->println("DUMP_END");
     return;
   }
 
   if (cmd.startsWith("SET:")) {
     int idx1 = cmd.indexOf(':', 4), idx2 = cmd.indexOf(':', idx1 + 1);
     int idx3 = cmd.indexOf(':', idx2 + 1), idx4 = cmd.indexOf(':', idx3 + 1);
-    if (idx1 < 0 || idx2 < 0 || idx3 < 0 || idx4 < 0) { Serial.println("[ERROR] Format SET tidak lengkap"); return; }
+    if (idx1 < 0 || idx2 < 0 || idx3 < 0 || idx4 < 0) { SERIAL->println("[ERROR] Format SET tidak lengkap"); return; }
 
     long layerL, rowL, colL;
     if (!parseIntRange(cmd.substring(4, idx1), 0, activeCfg->layerCount - 1, layerL) ||
         !parseIntRange(cmd.substring(idx1 + 1, idx2), 0, ROWS - 1, rowL) ||
         !parseIntRange(cmd.substring(idx2 + 1, idx3), 0, COLS - 1, colL)) {
-      Serial.println("[ERROR] Index di luar batas"); return;
+      SERIAL->println("[ERROR] Index di luar batas"); return;
     }
     uint8_t layer = (uint8_t)layerL, row = (uint8_t)rowL, col = (uint8_t)colL;
     String typeStr = cmd.substring(idx3 + 1, idx4);
@@ -886,24 +895,24 @@ void handleSerialCommand(const String& cmd) {
     strncpy(activeCfg->layerMap[layer][row][col].value, value.c_str(), MACRO_MAX_LEN - 1);
     activeCfg->layerMap[layer][row][col].value[MACRO_MAX_LEN - 1] = '\0';
 
-    Serial.printf("[OK] Set L%d R%d C%d -> %s : %s\n", layer, row, col, typeStr.c_str(), value.c_str());
+    SERIAL->printf("[OK] Set L%d R%d C%d -> %s : %s\n", layer, row, col, typeStr.c_str(), value.c_str());
     return;
   }
 
   if (cmd.startsWith("GET:")) {
     int idx1 = cmd.indexOf(':', 4), idx2 = cmd.indexOf(':', idx1 + 1);
-    if (idx1 < 0 || idx2 < 0) { Serial.println("[ERROR] Format GET tidak lengkap"); return; }
+    if (idx1 < 0 || idx2 < 0) { SERIAL->println("[ERROR] Format GET tidak lengkap"); return; }
 
     long layerL, rowL, colL;
     if (!parseIntRange(cmd.substring(4, idx1), 0, activeCfg->layerCount - 1, layerL) ||
         !parseIntRange(cmd.substring(idx1 + 1, idx2), 0, ROWS - 1, rowL) ||
         !parseIntRange(cmd.substring(idx2 + 1), 0, COLS - 1, colL)) {
-      Serial.println("[ERROR] Index di luar batas"); return;
+      SERIAL->println("[ERROR] Index di luar batas"); return;
     }
     uint8_t layer = (uint8_t)layerL, row = (uint8_t)rowL, col = (uint8_t)colL;
 
     KeyAction a = activeCfg->layerMap[layer][row][col];
-    Serial.printf("L%d R%d C%d -> type=%d value=%s\n", layer, row, col, a.type, a.value);
+    SERIAL->printf("L%d R%d C%d -> type=%d value=%s\n", layer, row, col, a.type, a.value);
     return;
   }
 
@@ -911,7 +920,7 @@ void handleSerialCommand(const String& cmd) {
     // rgbSlots tetap RGB_COUNT di kedua profil: di FINAL itu jumlah LED fisik,
     // di PROTOTYPE itu jumlah key yang disimulasikan. App memakai angka yang sama
     // untuk menandai "RGB 1".."RGB 9" di kedua board.
-    Serial.printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\n",
+    SERIAL->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\n",
                   HW_PROFILE_NAME, NUM_ENCODERS, HAS_STATUS_LED, HAS_RGB, RGB_COUNT,
                   HAS_VDIV, HAS_CHG_STAT, HW_DATA_SIMULATED);
     return;
@@ -921,37 +930,37 @@ void handleSerialCommand(const String& cmd) {
     uint32_t pinMv = 0;
     uint32_t battMv = readBatteryMv(&pinMv);
     ChargeState cs = readChargeState();
-    Serial.printf("BATT:pin_mv=%lu,batt_mv=%lu,pct=%d,charging=%d,usb=%d\n",
+    SERIAL->printf("BATT:pin_mv=%lu,batt_mv=%lu,pct=%d,charging=%d,usb=%d\n",
                   (unsigned long)pinMv, (unsigned long)battMv, battPercentFromMv(battMv),
                   (cs == CHARGE_CHARGING) ? 1 : 0, usbHostConnected() ? 1 : 0);
     return;
   }
 
   if (cmd.startsWith("RGB:")) {
-    if (cmd == "RGB:ON")  { rgbState.enabled = true;  rgbApplyState(); Serial.println("[OK] RGB on");  return; }
-    if (cmd == "RGB:OFF") { rgbState.enabled = false; rgbApplyState(); Serial.println("[OK] RGB off"); return; }
+    if (cmd == "RGB:ON")  { rgbState.enabled = true;  rgbApplyState(); SERIAL->println("[OK] RGB on");  return; }
+    if (cmd == "RGB:OFF") { rgbState.enabled = false; rgbApplyState(); SERIAL->println("[OK] RGB off"); return; }
 
     if (cmd.startsWith("RGB:EN:")) {
       long en;
-      if (!parseIntRange(cmd.substring(7), 0, 1, en)) { Serial.println("[ERROR] Format RGB:EN:0|1"); return; }
+      if (!parseIntRange(cmd.substring(7), 0, 1, en)) { SERIAL->println("[ERROR] Format RGB:EN:0|1"); return; }
       rgbState.enabled = (en == 1);
       rgbState.dirty = true;
       rgbApplyState();
-      Serial.printf("[OK] RGB %s\n", rgbState.enabled ? "on" : "off");
+      SERIAL->printf("[OK] RGB %s\n", rgbState.enabled ? "on" : "off");
       return;
     }
     if (cmd.startsWith("RGB:BRI:")) {
       long bL;
-      if (!parseIntRange(cmd.substring(8), 0, 255, bL)) { Serial.println("[ERROR] Brightness 0-255"); return; }
+      if (!parseIntRange(cmd.substring(8), 0, 255, bL)) { SERIAL->println("[ERROR] Brightness 0-255"); return; }
       rgbState.bri = (uint8_t)bL;
       rgbState.dirty = true;
       rgbApplyState();
-      Serial.printf("[OK] RGB brightness %d\n", rgbState.bri);
+      SERIAL->printf("[OK] RGB brightness %d\n", rgbState.bri);
       return;
     }
     if (cmd.startsWith("RGB:ALL:")) {
       int r, g, b;
-      if (sscanf(cmd.c_str() + 8, "%d:%d:%d", &r, &g, &b) != 3 || r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { Serial.println("[ERROR] Format RGB:ALL:r:g:b"); return; }
+      if (sscanf(cmd.c_str() + 8, "%d:%d:%d", &r, &g, &b) != 3 || r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { SERIAL->println("[ERROR] Format RGB:ALL:r:g:b"); return; }
       rgbState.color[0] = (uint8_t)r; rgbState.color[1] = (uint8_t)g; rgbState.color[2] = (uint8_t)b;
       for (uint8_t rr = 0; rr < ROWS; rr++)
         for (uint8_t cc = 0; cc < COLS; cc++) {
@@ -961,19 +970,19 @@ void handleSerialCommand(const String& cmd) {
         }
       rgbState.dirty = true;
       rgbApplyState();
-      Serial.println("[OK] RGB semua diset");
+      SERIAL->println("[OK] RGB semua diset");
       return;
     }
     if (cmd.startsWith("RGB:KEY:")) {
       int row, col, r, g, b;
       if (sscanf(cmd.c_str() + 8, "%d:%d:%d:%d:%d", &row, &col, &r, &g, &b) != 5 || row < 0 || row >= ROWS || col < 0 || col >= COLS ||
-          r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { Serial.println("[ERROR] Format RGB:KEY:row:col:r:g:b"); return; }
+          r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) { SERIAL->println("[ERROR] Format RGB:KEY:row:col:r:g:b"); return; }
       rgbState.keys[row][col][0] = (uint8_t)r;
       rgbState.keys[row][col][1] = (uint8_t)g;
       rgbState.keys[row][col][2] = (uint8_t)b;
       rgbState.dirty = true;
       rgbApplyState();
-      Serial.printf("[OK] RGB %d (R%d C%d) diset\n", (int)RGB_INDEX[row][col] + 1, row, col);
+      SERIAL->printf("[OK] RGB %d (R%d C%d) diset\n", (int)RGB_INDEX[row][col] + 1, row, col);
       return;
     }
     if (cmd.startsWith("RGB:MODE:")) {
@@ -982,7 +991,7 @@ void handleSerialCommand(const String& cmd) {
       if (sscanf(cmd.c_str() + 9, "%d:%d:%d:%d:%d:%d", &mode, &rnd, &r, &g, &b, &speed) != 6 ||
           mode < 0 || mode > 8 || (rnd != 0 && rnd != 1) ||
           r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255 || speed < 0 || speed > 255) {
-        Serial.println("[ERROR] Format RGB:MODE:mode:random:r:g:b:speed"); return;
+        SERIAL->println("[ERROR] Format RGB:MODE:mode:random:r:g:b:speed"); return;
       }
       rgbState.mode   = (uint8_t)mode;
       rgbState.random = (uint8_t)rnd;
@@ -990,15 +999,15 @@ void handleSerialCommand(const String& cmd) {
       rgbState.speed = (uint8_t)speed;
       rgbState.dirty = true;
       rgbApplyState();
-      Serial.printf("[OK] RGB mode %d\n", rgbState.mode);
+      SERIAL->printf("[OK] RGB mode %d\n", rgbState.mode);
       return;
     }
     if (cmd == "RGB:SAVE") {
       if (rgbPersist()) {
         rgbState.dirty = false;
-        Serial.println("[OK] RGB disimpan");
+        SERIAL->println("[OK] RGB disimpan");
       } else {
-        Serial.println("[ERROR] RGB gagal disimpan");
+        SERIAL->println("[ERROR] RGB gagal disimpan");
       }
       return;
     }
@@ -1007,15 +1016,15 @@ void handleSerialCommand(const String& cmd) {
       rgbApplyState();
       rgbPersist();
       rgbDump();
-      Serial.println("[OK] RGB reset ke default");
+      SERIAL->println("[OK] RGB reset ke default");
       return;
     }
     if (cmd == "RGB:DUMP") { rgbDump(); return; }
-    Serial.println("[ERROR] Command RGB tidak dikenal");
+    SERIAL->println("[ERROR] Command RGB tidak dikenal");
     return;
   }
 
-  Serial.println("[ERROR] Command tidak dikenal");
+  SERIAL->println("[ERROR] Command tidak dikenal");
 }
 
 // Buffer baris serial.
@@ -1035,11 +1044,11 @@ bool serialOverflow = false;
 void serialLineReset() { serialLineLen = 0; serialOverflow = false; }
 
 void checkSerialInput() {
-  while (Serial.available()) {
-    char c = Serial.read();
+  while (SERIAL->available()) {
+    char c = SERIAL->read();
     if (c == '\n') {
       if (serialOverflow) {
-        Serial.println("[ERROR] Baris terlalu panjang, dilewati");
+        SERIAL->println("[ERROR] Baris terlalu panjang, dilewati");
       } else if (serialLineLen > 0) {
         serialLine[serialLineLen] = '\0';
         handleSerialCommand(String(serialLine));
@@ -1066,9 +1075,10 @@ void updateLed() {
 
 // =================== SETUP ===================
 void setup() {
-  Serial.setRxBufferSize(4096); // harus sebelum begin(); batch upload preset bisa beberapa KB
-  Serial.begin(115200);
-  delay(300);
+  // Detail medium diserahkan ke transport: UsbTransport::begin()
+  // sudah mengatur buffer RX (4096 - batch upload preset bisa
+  // beberapa KB), baud 115200, dan jeda stabilisasi CDC.
+  SERIAL->begin();
   USB.productName("MacroPad3x3");
   USB.manufacturerName("DIY Macropad");
   USB.serialNumber("MACROPAD-" HW_PROFILE_NAME);
@@ -1076,8 +1086,8 @@ void setup() {
   Keyboard.begin();
   ConsumerControl.begin();
 
-  Serial.println("=== ESP32-S3 Macro Pad Firmware v5 ===");
-  Serial.printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
+  SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
+  SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
   loadConfigFromFlash();
   for (uint8_t i = 0; i < APP_SLOTS; i++) resetCfgStruct(slotCfg[i]);
   resetAppCfg(); // siapkan appCfg kosong dari awal (belum dipakai sampai ada CONTEXT:APP:NEW)

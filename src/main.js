@@ -54,6 +54,10 @@ import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "
 // mana pun yang merender teks dijalankan - kalau tidak, user akan melihat
 // teks dalam bahasa dasar sesaat lalu otomatis berubah.
 import { initI18n, initLanguageSelect, registerRerender, t } from "./i18n.js";
+// Watchdog paint. Diimpor terakhir supaya side effect-nya (laporan ke Rust)
+// secepat mungkin terjadi. Lihat paint-watch.js untuk penjelasan kenapa
+// jendela utama bisa putih padahal JS di dalamnya berjalan.
+import "./paint-watch.js";
 
 await initI18n();
 initLanguageSelect(el('languageSelect'));

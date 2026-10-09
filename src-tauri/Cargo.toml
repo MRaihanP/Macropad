@@ -24,11 +24,17 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-serialplugin = "2.17.1"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+# Dukungan async WinRT (IAsyncOperation bisa di-await).
+# windows 0.61 memakai windows-future tanpa fitur std, jadi
+# fitur std (dan modul future) harus diaktifkan di sini.
+windows-future = "0.2"
 # Hanya fitur yang benar-benar dipakai src/lib.rs. Devices_Bluetooth* dan
 # Foundation* pernah ada tapi tidak direferensikan di mana pun - menambah waktu
 # kompilasi tanpa fungsi. Kalau nanti BLE benar-benar dikerjakan (Phase 10),
 # tambahkan kembali di sini.
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Threading",
@@ -37,6 +43,13 @@ windows = { version = "0.58", features = [
   "Win32_Storage_FileSystem",
   # i18n: GetUserDefaultLocaleName untuk deteksi bahasa Windows.
   "Win32_Globalization",
+  # Phase 10 BLE: WinRT Bluetooth GATT APIs.
+  "Devices_Bluetooth",
+  "Devices_Bluetooth_GenericAttributeProfile",
+  "Devices_Bluetooth_Advertisement",
+  "Devices_Enumeration",
+  "Foundation",
+  "Storage_Streams",
 ] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
