@@ -23,6 +23,7 @@ import {
 import {
   initTransport, sendLine, sendBatch, connect, disconnect,
   autoDetect, pollPorts, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  updateConnectButton,
 } from "./serial-transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -182,6 +183,11 @@ initTransport({
   onAutoConnectFail: () => { },
 });
 el('btnRefreshPorts').onclick = autoDetect;
+// Label tombol sambung/putus berasal dari JS (berubah sesuai status koneksi),
+// jadi applyI18n() akan menimpanya dengan teks statis setiap kali user ganti
+// bahasa. Daftarkan render ulang agar label ikut diterjemahkan DAN tetap
+// mencerminkan status koneksi yang sedang berjalan.
+registerRerender(() => updateConnectButton(isConnected()));
 el('btnConnect').onclick = () => {
   if (isConnected()) { disconnect(true); return; }
   if (isAutoBusy()) { log(t('transport.autoBusy')); return; }

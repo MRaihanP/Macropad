@@ -48,8 +48,6 @@
       </div>
       <div class="status">
         <label class="autostart" id="autostartLabel"><input type="checkbox" id="autostartToggle"><span data-i18n="header.autostart">Jalankan saat Windows start</span></label>
-        <select id="portSelect"></select>
-        <button class="small" id="btnRefreshPorts" data-i18n-attr="aria-label:header.refreshPorts|title:header.refreshPorts">↻</button>
         <span class="dot" id="dot" aria-hidden="true"></span>
         <!-- role="status" = live region polite: perubahan koneksi diumumkan screen
              reader tanpa memutus apa yang sedang dibacakan. -->
@@ -66,9 +64,43 @@
           </svg>
           <span id="battPct">85%</span>
         </span>
-        <button id="btnConnect" class="primary">Connect</button>
       </div>
     </header>
+
+    <!-- ============ KONEKSI MANUAL (FALLBACK) ============
+         Sengaja DI LUAR <div id="app">. Semua halaman aplikasi ada di dalam
+         #app, dan setConnected() menyembunyikan #app saat koneksi putus
+         (el('app').style.display = 'none'). Kalau panel ini diletakkan di
+         halaman Setting, begitu device tercabut panelnya ikut hilang - user
+         kehilangan satu-satunya cara memaksa menyambungkan device tepat di
+         saat dia paling membutuhkannya.
+
+         Auto-connect USB sudah bekerja sendiri (tryAutoConnect/pollPorts di
+         serial-transport.js), jadi controls ini tidak diperlukan untuk
+         pemakaian normal. Yang disimpan di sini adalah JARING PENGAMAN:
+         kalau auto-connect gagal - device sedang boot lambat, port COM
+         berubah, atau enumerasi Windows sedang salah - user masih bisa
+         memilih port dan menyambung sendiri. Konsekuensinya: controls ini
+         disembunyikan, tidak dihapus, dan akan dihapus hanya setelah
+         auto-connect terbukti andal (lihat K7). -->
+    <details class="manual-connect" id="manualConnect">
+      <summary data-i18n="header.manualConnect">Koneksi manual</summary>
+      <div class="manual-connect-body">
+        <label class="hint" for="portSelect" data-i18n="header.portLabel">Port device</label>
+        <div class="manual-connect-row">
+          <select id="portSelect" data-i18n-attr="aria-label:header.portLabel"></select>
+          <button class="small" id="btnRefreshPorts" data-i18n-attr="aria-label:header.refreshPorts|title:header.refreshPorts">↻</button>
+          <!-- Label tombol ini DIKELOLA JS (updateConnectButton di
+               serial-transport.js), bukan oleh data-i18n. Alasannya: labelnya
+               berubah antara "Sambung" dan "Putuskan" mengikuti status koneksi.
+               Kalau memakai data-i18n, applyI18n() akan menimpanya dengan teks
+               statis setiap ganti bahasa dan tombol akan selalu membaca
+               "Sambung" padahal device sedang tersambung. -->
+          <button id="btnConnect" class="primary">Sambung</button>
+        </div>
+        <div class="hint" data-i18n="header.manualConnectHint">Device biasanya tersambung otomatis. Buka ini hanya kalau status di atas tidak berubah ke "Tersambung".</div>
+      </div>
+    </details>
 
     <!-- ============ PAGE: HOME ============ -->
     <div id="page-home" class="page">

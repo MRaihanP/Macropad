@@ -23,6 +23,34 @@ h2 { font-size: 0.8rem; margin: 0 0 10px; color: var(--muted); font-weight: 500;
 .autostart input { accent-color: var(--accent); margin: 0; cursor: inherit; }
 .autostart:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); flex-shrink: 0; }
+
+/* ============ KONEKSI MANUAL (FALLBACK AUTO-CONNECT) ============
+   disembunyikan di balik <details> yang tertutup secara default.
+   Sengaja memakai <details>/<summary> bawaan HTML, bukan tombol +
+   display:none buatan sendiri: sudah punya semantik disclosure, sudah
+   bisa dioperasikan keyboard, dan state "terbuka" dikelola browser. */
+.manual-connect { margin: 0 0 12px; }
+.manual-connect > summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--muted);
+  padding: 6px 2px;
+  user-select: none;
+  width: fit-content;
+}
+.manual-connect > summary:hover { color: var(--text); }
+.manual-connect > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.manual-connect-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--panel-hi);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.manual-connect-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.manual-connect-row select { flex: 1; min-width: 160px; }
 .dot.on { background: var(--accent); }
 
 button, select { font-family: var(--sans); font-size: 0.82rem; font-weight: 500; border: 1px solid var(--line);

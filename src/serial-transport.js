@@ -276,10 +276,24 @@ export async function handleDeviceLost() {
   if (lostPath && autoReconnect) { knownPorts.delete(lostPath); scheduleRetry([lostPath]); }
 }
 
+// Label tombol sambung/putus.
+//
+// Dipisah dari setConnected() karena label ini berubah dua kali: oleh
+// perubahan status koneksi, DAN oleh applyI18n() setiap kali user ganti bahasa.
+// Kalau hanya dipasang lewat setConnected(), applyI18n akan menimpanya dengan
+// teks statis dan tombol kembali selalu membaca "Sambung" padahal device
+// sedang tersambung. Fungsi murni ini jadi satu-satunya sumber label.
+export function updateConnectButton(state) {
+  el('btnConnect').textContent = state ? t('transport.disconnect') : t('header.connect');
+}
+
 export function setConnected(state) {
   el('dot').classList.toggle('on', state);
   el('statusText').textContent = state ? t('transport.connected') : t('transport.notConnected');
-  el('btnConnect').textContent = state ? t('transport.disconnect') : t('transport.connect');
+  // Tombol ini sudah pindah ke panel "Koneksi manual" (tersembunyi di balik
+  // <details>). Labelnya tetap perlu ikut berubah karena tombol itu berfungsi
+  // ganda: menyambung saat putus, memutus saat tersambung.
+  updateConnectButton(state);
   el('app').style.display = state ? 'block' : 'none';
   if (!state) hooks.onDisconnected();
 }

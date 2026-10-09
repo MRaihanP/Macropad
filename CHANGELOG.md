@@ -127,6 +127,48 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   sehingga perubahan koneksi dan baris log baru diumumkan tanpa memutus apa
   yang sedang dibacakan.
 
+### Changed
+- **Phase 10.4 (sebagian) - kontrol koneksi manual disembunyikan, bukan dihapus.**
+  Auto-connect USB sudah bekerja sendiri (`tryAutoConnect()` / `pollPorts()` /
+  `autoDetect()` di `serial-transport.js`), jadi dropdown COM dan tombol
+  Sambung/Putuskan tidak lagi perlu terlihat di header. Header sekarang hanya
+  memuat status: titik indikator + teks status + badge profil + baterai.
+  - Panel baru **Koneksi manual (advanced)** memakai `<details>`/`<summary>`
+    bawaan HTML, bukan tombol + `display:none` buatan sendiri - sudah punya
+    semantik disclosure dan bisa dioperasikan keyboard. Tertutup secara
+    default.
+  - Kontrol **dipindahkan**, bukan dihapus. Satu-satunya cara pulih dari
+    auto-connect yang gagal (device boot lambat, port COM berubah, enumerasi
+    Windows salah) harus tetap ada.
+  - **Panelnya sengaja diletakkan DI LUAR `<div id="app">`.** Ini bukan
+    detail penempatan: `setConnected()` menyembunyikan `#app` saat koneksi
+    putus, dan semua halaman aplikasi ada di dalam `#app`. Kalau panel manual
+    diletakkan di halaman Setting, begitu device tercabut panelnya ikut
+    hilang - user kehilangan satu-satunya cara memaksa menyambungkan device
+    tepat di saat dia paling membutuhkannya. `manual-connect-test.js` betrayal
+    memverifikasi posisi ini secara eksplisit.
+  - Tombol `#btnConnect` **tidak memakai `data-i18n`**. Labelnya diubah JS
+    antara "Sambung" dan "Putuskan" mengikuti status koneksi; kalau diberi
+    `data-i18n`, `applyI18n()` akan menimpanya dengan teks statis setiap ganti
+    bahasa dan tombol akan selalu membaca "Sambung" padahal device sedang
+    tersambung. Label sekarang punya satu sumber: `updateConnectButton()` di
+    `serial-transport.js`, didaftarkan lewat `registerRerender()` supaya ikut
+    diterjemahkan tanpa kehilangan status. (`registerRerender` sendiri
+    sebelumnya sudah di-`import` di `main.js` tapi belum pernah dipakai.)
+  - Kunci i18n baru: `header.manualConnect`, `header.portLabel`,
+    `header.manualConnectHint` (ID + EN). `header.connect` sudah ada dan
+    dipakai ulang, tidak diduplikasi.
+
+### Added
+- **Test `manual-connect-test.js`** (7 seksi, 38 pemeriksaan) untuk Phase 10.4A.
+  Yang paling dijaga adalah posisi panel di luar `#app` - kalau panel ikut
+  tersembunyi saat disconnect, user terkunci tanpa jalan keluar. Seksi lain:
+  kontrol tidak lagi di header tapi masih ada di dokumen, auto-connect tetap
+  terpanggil, label tombol tidak bertabrakan dengan i18n, kunci locale lengkap
+  dan tidak dobel, serta `focus-visible` pada `<summary>`.
+  Diverifikasi dengan **uji negatif**: panel dipindahkan ke dalam `#app`, test
+  dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
+
 ### Fixed
 - **Kontrol RGB tanpa nama yang bisa dibaca (Phase 9.4).**
   Dua slider (`#rgbBri`, `#rgbSpeed`) punya `<span>` teks di sebelahnya.

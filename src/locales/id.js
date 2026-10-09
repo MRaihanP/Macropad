@@ -16,6 +16,9 @@ export const id = {
 // ---- Header / status koneksi ----
 'header.subtitle': 'ESP32-S3 · matriks 3×3 + encoder · Native App',
 'header.autostart': 'Jalankan saat Windows start',
+  'header.manualConnect': 'Koneksi manual (advanced)',
+  'header.portLabel': 'Port device',
+  'header.manualConnectHint': 'Device biasanya tersambung otomatis. Buka ini hanya kalau status di header tidak berubah menjadi Tersambung.',
 'header.refreshPorts': 'Pindai ulang port serial',
 'header.notConnected': 'Tidak terhubung',
 'header.battery': 'Baterai',
