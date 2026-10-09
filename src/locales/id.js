@@ -243,6 +243,7 @@ export const id = {
 'editor.empty': 'kosong',
 'layer.n': 'Layer {n}',
 'parser.appOpening': '[APP] Membuka: {name}',
+  'parser.layerDuringDump': 'Perpindahan ke layer {n} ditunda sampai dump layer selesai',
 'parser.staleEvent': '[APP] Event lama diabaikan',
 'parser.dumpInvalid': '[ERROR] Baris DUMP tidak valid, dilewati: {line}',
 'parser.namesInvalid': '[ERROR] Baris NAMES tidak valid, dilewati: {line}',

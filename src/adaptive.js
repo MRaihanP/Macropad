@@ -21,7 +21,7 @@ import {
   mapping, encConfig, layerNames, layerCount, currentLayer,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
-import { sendLine, sendBatch, isConnected } from './serial-transport.js';
+import { sendLine, sendBatch, isConnected, dumpInProgress } from './serial-transport.js';
 import { t } from './i18n.js';
 
 // ---- State ----
@@ -91,6 +91,36 @@ let hooks = {
   setDirty: () => { },
 };
 export function initAdaptive(h) { hooks = Object.assign({}, hooks, h); }
+
+// ---- Jeda setelah user pindah layer dari device ----
+//
+// Long-press knob di device mengirim EVT:LAYER:. Tanpa jeda, preset Adaptive
+// yang sedang aktif bisa langsung memaksa balik ke layer 0 dalam hitungan
+// polling (~120 ms), sehingga pilihan layer user hilang tanpa sebab.
+//
+// Yang ditunda HANYA perpindahan otomatis. Klik tab di app bukan termasuk -
+// user sudah menyatakannya sendiri, dan menundanya akan terasa seperti
+// aplikasi tidak responsif.
+const LAYER_CHOICE_HOLD_MS = 1500;
+
+// Waktu EVT:LAYER: terakhir, disuntik oleh protocol-parser.js. Lihat catatan
+// import di atas soal kenapa bukan di-import langsung.
+let lastDeviceLayerEventAt = 0;
+// Dipakai protocol-parser.js setiap kali device melaporkan perpindahan layer.
+export function noteDeviceLayerEvent() { lastDeviceLayerEventAt = Date.now(); }
+export function resetLayerChoiceHold() { lastDeviceLayerEventAt = 0; }
+
+function autoSwitchBlockedByLayerChoice() {
+  // 0 = belum pernah ada event, jadi bukan tundaan yang masih aktif.
+  if (lastDeviceLayerEventAt === 0) return false;
+  if (Date.now() - lastDeviceLayerEventAt < LAYER_CHOICE_HOLD_MS) return true;
+  // Dump yang sedang berjalan: preset memuat ulang seluruh layer dan memanggil
+  // DUMP untuk masing-masing. Menjalankan auto-switch di tengah itu akan
+  // menyisipkan perintah baru ke stream dump yang sedang dibaca, dan DUMP_END
+  // bisa resolve waiter yang salah. Tunggu saja - dump ini hampir selalu
+  // selesai dalam hitungan milidetik.
+  return dumpInProgress;
+}
 
 // ---- Waiter DUMP ----
 // Dipetakan per layer, bukan satu slot global: dengan satu slot, dump latar
@@ -490,6 +520,10 @@ async function pollFocusedApp() {
     }
     if (Date.now() - pendingFocusSince < FOCUS_DEBOUNCE_MS) return;
     if (escapeFrozenForExe === exe) return;
+    // User baru saja memilih layer dari device (knob) atau ada dump yang
+    // sedang berjalan. Pemindahan otomatis menunggu - poll 1.2 detik
+    // berikutnya akan mencoba lagi tanpa intervene apa pun.
+    if (autoSwitchBlockedByLayerChoice()) return;
 
     const matched = presetsData.presets.find(p => p.enabled && p.exeName === exe);
     const targetId = matched ? matched.id : null;
@@ -512,6 +546,7 @@ async function pollFocusedApp() {
 }
 
 export function resetAdaptiveRuntimeState() {
+  lastDeviceLayerEventAt = 0;
   // Peta "layer terakhir" hanya berlaku selama satu sesi koneksi. Device sudah
   // tidak menampilkan isi preset mana pun setelah putus, jadi layer yang
   // tercatat dari sesi lalu tidak lagi punya arti.

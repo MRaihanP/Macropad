@@ -37,7 +37,7 @@ import { handleRgbLine } from './rgb-page.js';
 import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from './battery-ui.js';
 import {
   suppressDeviceEcho, activePresetName, activePresetLayers,
-  resolveDumpWaiters, handleEscapeGesture,
+  resolveDumpWaiters, handleEscapeGesture, noteDeviceLayerEvent,
 } from './adaptive.js';
 
 // ---- State yang hanya dimiliki parser ----
@@ -46,12 +46,23 @@ import {
 // device Sudah pindah layer di tengah dump.
 let dumpParseLayer = NaN;
 
-// Kapan device terakhir melaporkan perpindahan layer. DII-TULIS tapi belum ada
-// yang membaca - sisa rencana "pause auto-switch sesaat setelah user pindah layer
-// di knob". Sengaja tidak dihapus supaya niatnya tidak hilang, tapi jangan
-// dihitung sebagai state yang berfungsi.
-let lastDeviceLayerEventAt = 0;
-export const getLastDeviceLayerEventAt = () => lastDeviceLayerEventAt;
+// Event layer yang datang saat ada dump SEDANG BERJALAN sengaja ditunda,
+// bukan langsung diterapkan.
+//
+// Alasannya: dump memakai DUMP_BEGIN:<n> untuk menandai layer tujuan, dan
+// DUMP_END penutupnya me-resolve waiter berdasarkan layer itu. Kalau device
+// pindah layer di tengah dump, stream baris bercampur dan isi preset bisa
+// tersimpan setengah jadi.
+//
+// Menunda event-nya membuat dump selesai dulu, baru layer yang diabaikan itu
+// diterapkan - aman karena dua hal tidak saling menginterupsi.
+let pendingLayerAfterDump = null;
+export function takePendingLayerAfterDump() {
+  const n = pendingLayerAfterDump;
+  pendingLayerAfterDump = null;
+  return n;
+}
+export const hasPendingLayerAfterDump = () => pendingLayerAfterDump !== null;
 
 // Profil & kemampuan hardware, dibaca dari HWINFO. Penting karena firmware
 // PROTOTIPE mengirim angka SIMULASI untuk baterai/RGB; app harus menandai agar
@@ -62,8 +73,8 @@ export let deviceProfile = { connected: false };
 // app terlihat masih terhubung ke board yang sudah dicabut.
 export function resetDeviceProfile() {
   deviceProfile = { connected: false };
-  lastDeviceLayerEventAt = 0;
   dumpParseLayer = NaN;
+  pendingLayerAfterDump = null;   // device sudah tidak ada; jangan tunda apa pun
 }
 
 // ---- Hook ke main.js ----
@@ -128,7 +139,18 @@ export function handleLine(line) {
 
   if (line.startsWith('EVT:LAYER:')) {
     const n = parseInt(line.substring(10));
-    lastDeviceLayerEventAt = Date.now();   // lihat catatan di deklarasinya
+    // Beri tahu adaptive.js supaya auto-switch menunda diri - pilihan layer user
+    // tidak boleh langsung ditimpa preset aktif. Arah panggilan ini
+    // parser -> adaptive, yang memang sudah jadi arah import yang ada; kalau
+    // dibalik, muncul siklus import.
+    noteDeviceLayerEvent();
+    // Dump yang sedang berjalan sengaja diabaikan, lalu diterapkan setelah selesai.
+    // Lihat catatan panjang di deklarasi pendingLayerAfterDump.
+    if (dumpInProgress) {
+      pendingLayerAfterDump = n;
+      log(t('parser.layerDuringDump', { n }));
+      return;
+    }
     if (n !== currentLayer && applyLayerEvent(n)) {
       // Device sudah pindah layer dengan sendirinya (long-press knob), jadi jangan
       // kirim LAYER: balik - cukup baca isinya.
@@ -146,6 +168,19 @@ export function handleLine(line) {
     const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
     dumpParseLayer = NaN;
     resolveDumpWaiters(done);
+
+    // Dump benar-benar selesai - baru terapkan layer yang tadi datang di
+    // tengah dump. URUTAN PENTING: resolveDumpWaiters() di atas memakai
+    // currentLayer sebagai fallback kalau device tidak menyebut nomor layer
+    // (DUMP_BEGIN: hilang/rusak). Kalau currentLayer sudah diubah dulu di sini,
+    // fallback itu menunjuk layer yang salah dan waiter yang salah me-resolve.
+    if (hasPendingLayerAfterDump()) {
+      const pending = takePendingLayerAfterDump();
+      if (pending !== currentLayer && applyLayerEvent(pending)) {
+        hooks.renderTabs();
+        hooks.loadLayer(pending);
+      }
+    }
     return;
   }
   if (dumpInProgress) {

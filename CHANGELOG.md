@@ -208,6 +208,61 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   dari firmware dan bukan dari tebakan.
 
 ### Fixed
+- **Preset aktif menimpa pilihan layer user dalam ~120 ms.** `lastDeviceLayerEventAt`
+  sudah diisi setiap ada `EVT:LAYER:` sejak lama, tapi **tidak pernah dibaca siapa
+  pun** - sudah diverifikasi di seluruh riwayat repo. Akibatnya memutar knob ke
+  layer 3 akan langsung ditimpa balik ke layer 0 oleh preset Adaptive yang
+  sedang aktif, karena polling window foreground berjalan tiap ~1,2 detik dan
+  tidak tahu bahwa user baru saja memilih layer.
+  - Auto-switch sekarang ditunda **1,5 detik** setelah `EVT:LAYER:`. Yang
+    ditunda hanya perpindahan **otomatis**; klik tab di app tidak ikut ditunda
+    karena itu pernyataan langsung dari user.
+  - **Auto-switch juga diblokir selama ada dump yang berjalan.** Dump memuat
+    ulang seluruh layer dan memanggil `DUMP` untuk masing-masing; auto-switch
+    di tengah itu akan menyisipkan perintah ke stream dump yang sedang dibaca.
+  - `EVT:LAYER:` yang datang **di tengah dump** sekarang ditunda, bukan
+    langsung diterapkan atau diabaikan. Kalau langsung diterapkan,
+    `currentLayer` ikut berubah dan `DUMP_END` yang me-resolve waiter memakai
+    `currentLayer` sebagai fallback bisa me-resolve waiter yang salah - isi
+    preset yang tersimpan ke disk jadi keliru.
+  - Urutan di `DUMP_END` penting: `resolveDumpWaiters()` harus dipanggil
+    **sebelum** layer tertunda diterapkan. Kalau dibalik, fallback
+    `currentLayer` sudah menunjuk layer yang salah saat resolve. **Bug urutan
+    ini ditemukan oleh `layer-hold-behaviour-test.js`, bukan oleh test
+    berbasis teks** - test regex tidak bisa membedakan `if (x)` dari
+    `if (false && x)`, keduanya sama-sama lolos.
+
+### Changed
+- **Nilai `lastDeviceLayerEventAt` dipindahkan dari `protocol-parser.js` ke
+  `adaptive.js`, dikirim lewat panggilan `noteDeviceLayerEvent()`.**
+  Versi pertama meng-`import` `getLastDeviceLayerEventAt()` dari
+  `protocol-parser.js` ke `adaptive.js` - itu **membuat siklus import**,
+  karena `protocol-parser.js` sudah mengimpor `adaptive.js` (untuk logika
+  escape & preset). Kebijakan proyek sejak Phase 8 melarang siklus, jadi arah
+  panggilan dibalik ke arah yang memang sudah ada: parser → adaptive.
+  `dumpInProgress` tetap di-import langsung dari `serial-transport.js`
+  karena modul itu tidak mengimpor `adaptive.js`, jadi tidak membentuk siklus.
+
+### Added
+- **`import-cycle-check.mjs`** - membangun graf import seluruh `src/` dan
+  mencari siklus dengan DFS. Modularisasi Phase 8 pecah `main.js` jadi 15 modul
+  dengan aturan "tidak saling mengimpor balik", tapi aturan itu tidak pernah
+  diawasi alat - siklus baru bisa masuk diam-diam. Mengabaikan komentar dulu,
+  karena `device-state.js` menyebut `import { ROWS } from './device-state.js'`
+  di dalam penjelasan dan akan dilaporkan mengimpor dirinya sendiri.
+  Diverifikasi dengan uji negatif yang menyuntikkan `adaptive -> protocol-parser`
+  dan memastikan siklus terdeteksi.
+- **`layer-hold-test.js`** (6 seksi, 26 pemeriksaan) - bentuk kode: ambang jeda
+  terdefinisi, `0` tidak memblokir selamanya, helper benar-benar dipanggil,
+  `dumpInProgress` ikut memblokir, dan graf import tetap satu arah.
+- **`layer-hold-behaviour-test.js`** - menguji **perilaku**, bukan teks:
+  menjalankan ulang alur `DUMP_END` dengan state tiruan dan membuktikan bahwa
+  perilaku lama benar-benar merusak (waiter resolve dengan layer 2, bukan 0)
+  sementara perilaku baru benar. Inilah test yang menemukan bug urutan di atas.
+- Kunci i18n baru `parser.layerDuringDump` (ID + EN) untuk pesan log saat
+  perpindahan layer ditunda.
+
+### Fixed
 - **Status "belum disimpan" di halaman RGB tidak diumumkan ke screen reader
   (Phase 9.3).** `#rgbSaveState` menampilkan teks "belum disimpan" setiap kali
   RGB diubah. Tanpa live region, teks itu hanya terlihat - screen reader tidak

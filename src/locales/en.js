@@ -246,6 +246,7 @@ export const en = {
 'editor.empty': 'empty',
 'layer.n': 'Layer {n}',
 'parser.appOpening': '[APP] Opening: {name}',
+  'parser.layerDuringDump': 'Switch to layer {n} deferred until the layer dump finishes',
 'parser.staleEvent': '[APP] Stale event ignored',
 'parser.dumpInvalid': '[ERROR] Invalid DUMP line, skipped: {line}',
 'parser.namesInvalid': '[ERROR] Invalid NAMES line, skipped: {line}',
