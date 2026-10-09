@@ -169,6 +169,44 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   Diverifikasi dengan **uji negatif**: panel dipindahkan ke dalam `#app`, test
   dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
 
+### Added
+- **Spesifikasi protokol di `README.md`.** Sebelumnya `README.md` masih
+  template Tauri bawaan 7 baris - tidak ada spesifikasi protokol di mana pun
+  selain implisit di dalam test. Sekarang ditulis sekali sebagai rujukan
+  manusia: seluruh perintah app ke device beserta formatnya, seluruh baris
+  device ke app, konstanta yang harus cocok dengan firmware, dan tiga batasan
+  yang mudah dilanggar (`[KEY]` maksimal 62 byte, `currentLayer` ikut
+  tersimpan ke flash, `DUMP:<n>` tidak memindahkan layer aktif).
+- **Test `version-test.js`.** Mengunci versi `package.json`, `Cargo.toml`, dan
+  `tauri.conf.json` tetap sama. Ketiganya dulu tidak sinkron (0.1.0 vs 0.2.0)
+  dan Tauri **tidak** memverifikasi angka ini, jadi penyimpangan bisa terjadi
+  diam-diam tanpa build gagal.
+- **Test `readme-protocol-test.js`.** Memastikan README tidak berbohong:
+  setiap perintah yang didokumentasikan harus ada di firmware, setiap prefix
+  yang didokumentasikan harus benar-benar dicetak firmware, dan angka di
+  README (`RGB_COUNT`, `APP_SLOTS`, batas 62 byte) dibandingkan langsung dengan
+  `limits.h`/`macropad_core.h` - bukan hanya dicek "firmware = 9", karena itu
+  tetap hijau kalau README menulis 16.
+  Diverifikasi dengan **uji negatif** yang membuat empat kebohongan (README
+  kembali jadi template Tauri, perintah fiktif `BLE:SCAN`, angka `[KEY]` salah,
+  jumlah RGB slots salah) - keempatnya terdeteksi.
+
+### Changed
+- `package.json` 0.1.0 → **0.2.0** agar sama dengan `Cargo.toml` dan
+  `tauri.conf.json`.
+- README mencatat jujur bahwa firmware hanya bisa diverifikasi secara statis di
+  lingkungan build ini (tidak ada toolchain Arduino), dan compile + uji di
+  device tetap wajib.
+
+### Notes
+- **Koreksi pada test, bukan pada README.** Versi pertama
+  `readme-protocol-test.js` salah menghitung panjang baris `[KEY]` sebagai 56
+  byte karena kelewatan menghitung prefix literal `"[KEY] "` (6 karakter).
+  Test menyimpulkan README salah, padahal README dan `key-event-test.js` yang
+  sudah ada sama-sama benar (61 + newline = 62). Test yang diperbaiki sekarang
+  menghitung ulang dari format lengkap, sehingga angkanya benar-benar berasal
+  dari firmware dan bukan dari tebakan.
+
 ### Fixed
 - **Device yang port-nya muncul sebelum firmware siap tidak PERNAH tersambung.**
   Dua hal bertemu dan saling menutup jalan:
