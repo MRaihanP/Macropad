@@ -11,9 +11,9 @@
 // Global transport instance - diinisialisasi di sketsh profil (transport_usb.cpp / transport_ble.cpp).
 extern Transport* g_transport;
 
-// Makro SERIAL menggantikan Serial.* di seluruh core.
-// Implementasi aktual (USB/BLE) disediakan oleh sketsh profil.
-#define SERIAL g_transport
+// Makro SERIAL sudah didefinisikan di transport.h (dengan #undef untuk
+// menimpa definisi core ESP32). Implementasi aktual (USB/BLE) disediakan
+// oleh sketsh profil.
 
 // =================== STRUKTUR KEY MAPPING ===================
 enum ActionType : uint8_t {
@@ -401,6 +401,7 @@ void openApp(const char* appName) {
 }
 
 void executeConsumer(const char* name) {
+  hidTrace("CONSUMER", name);
   if (strcasecmp(name, "VOLUP") == 0) { ConsumerControl.press(CONSUMER_CONTROL_VOLUME_INCREMENT); ConsumerControl.release(); }
   else if (strcasecmp(name, "VOLDOWN") == 0) { ConsumerControl.press(CONSUMER_CONTROL_VOLUME_DECREMENT); ConsumerControl.release(); }
   else if (strcasecmp(name, "MUTE") == 0) { ConsumerControl.press(CONSUMER_CONTROL_MUTE); ConsumerControl.release(); }
@@ -445,6 +446,14 @@ void scanMatrix() {
           // Panjang terburuk: "[KEY] 7,2,2,3," + 47 char + newline = 62 byte, masih di
           // bawah 64. Jangan tambah field tanpa menghitung ulang.
           SERIAL->printf("[KEY] %d,%d,%d,%d,%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
+          // Jejak medium: memberi tahu lewat Serial Monitor input ini dikirim ke
+          // USB HID atau BLE HID. Prefix [IN:...] sengaja terpisah dari baris
+          // [KEY] di atas karena companion app mem-parsanya dengan regex ketat.
+          {
+            char detail[MACRO_MAX_LEN + 24];
+            snprintf(detail, sizeof(detail), "L%d R%d C%d type=%d", activeCfg->currentLayer, r, c, action.type);
+            hidTrace("KEY", detail);
+          }
           flashLed();
           rgbKeyFlash(r, c);
         }
@@ -467,6 +476,7 @@ void checkEncoder() {
       interrupts();
       executeAction(dirCW ? activeCfg->encCW[i] : activeCfg->encCCW[i]);
       SERIAL->printf("EVT:ENC:%d:%s\n", i, dirCW ? "CW" : "CCW");
+      hidTrace("ENC", dirCW ? "CW" : "CCW");
       flashLed();
     }
   }
@@ -520,6 +530,7 @@ void checkEncoder() {
       } else {
         executeAction(activeCfg->encBtn[p]);
         SERIAL->println("[ENC_BTN] Aksi terkonfigurasi dijalankan");
+        hidTrace("ENC_BTN", "knob utama");
         flashLed();
       }
       encoderLedActive = false;
@@ -1024,6 +1035,11 @@ void handleSerialCommand(const String& cmd) {
     return;
   }
 
+  // Titik ekstensi perintah milik profil (diagnostics IFACE/BLE, dll).
+  // Dijalankan sebelum error "tidak dikenal" supaya profil bisa menambah
+  // command sendiri tanpa core perlu tahu apa pun soal BLE.
+  if (PROFILE_TRY_COMMAND(cmd)) return;
+
   SERIAL->println("[ERROR] Command tidak dikenal");
 }
 
@@ -1115,6 +1131,10 @@ void setup() {
   rgbStateReset();
   rgbRestore();
   rgbApplyState();
+
+  // Hook milik profil (default kosong). Dipakai HID_Keypad_Prototype.ino untuk
+  // menyalakan BLE HID setelah semua pin & config siap.
+  PROFILE_HOOK_SETUP();
 }
 
 void loop() {
@@ -1129,4 +1149,7 @@ void loop() {
   updateLed();
   updateRgb();
   reportBatt();
+
+  // Hook milik profil (default kosong), mis. heartbeat advertising BLE.
+  PROFILE_HOOK_LOOP();
 }

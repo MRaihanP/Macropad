@@ -10,11 +10,6 @@
 
 #include <Arduino.h>
 
-// Nama enumerator memakai awalan TP_ (TP_USB / TP_BLE), BUKAN TRANSPORT_USB /
-// TRANSPORT_BLE. Alasannya ada di limits.h: makro #define dengan nama yang
-// sama akan disubstitusikan ke dalam daftar enumerator di bawah, mengubahnya
-// jadi "0 = 0" yang tidak bisa dikompilasi. Makro dan enumerator wajib
-// berbeda nama.
 enum class TransportType : uint8_t {
   TP_USB = 0,    // USB CDC (Serial)
   TP_BLE = 1,    // BLE GATT
@@ -44,12 +39,6 @@ public:
   // Return jumlah byte yang tertulis.
   virtual size_t write(const uint8_t* data, size_t len) = 0;
 
-  // Tulis string mentah (tanpa newline).
-  virtual void print(const char* s) = 0;
-
-  // Tulis string diikuti newline.
-  virtual void println(const char* s) = 0;
-
   // Flush buffer output (kalau ada buffering).
   virtual void flush() = 0;
 
@@ -57,22 +46,18 @@ public:
   // Implementasi default di base class memakai write().
   virtual void printf(const char* format, ...) = 0;
 
+  // Print line with optional format (newline appended by default).
+  // Provides Arduino Print::println compatibility for code that uses
+  // SERIAL->println("...") throughout macropad_core.h.
+  virtual void println(const char* str) = 0;
+
   // Get transport type.
   virtual TransportType type() const = 0;
 };
 
-// Base class dengan implementasi default print/println/printf -> write.
+// Base class dengan implementasi default printf -> write.
 class TransportBase : public Transport {
 public:
-  void print(const char* s) override {
-    write((const uint8_t*)s, strlen(s));
-  }
-
-  void println(const char* s) override {
-    print(s);
-    write((const uint8_t*)"\n", 1);
-  }
-
   void printf(const char* format, ...) override {
     char buffer[256];
     va_list args;
@@ -83,21 +68,27 @@ public:
       write((const uint8_t*)buffer, len);
     }
   }
+
+  // Default println: write string + newline.
+  void println(const char* str) override {
+    size_t len = strlen(str);
+    write((const uint8_t*)str, len);
+    const char nl = '\n';
+    write((const uint8_t*)&nl, 1);
+  }
 };
 
 // Global transport instance - dipakai di seluruh core (handleSerialCommand, events, dll).
 extern Transport* g_transport;
 
-// Helper makro: semua SERIAL->xxx di core berarti g_transport->xxx.
-//
-// #undef SERIAL WAJIB ada sebelum #define. Core ESP32 mendefinisikan
-// `#define SERIAL 0x0` (indeks port HardwareSerial) di Arduino.h, dan
-// menimpanya tanpa #undef menghasilkan warning:
-//
-//   warning: "SERIAL" redefined
-//
-// Yang ditimpa hanya MAKRO uppercase; objek `Serial` (lowercase) milik core
-// tetap utuh dan tetap dipakai langsung di transport_usb.h.
+// Helper makro: ganti semua Serial.xxx jadi g_transport->xxx
+// Contoh: Serial.printf(...)  ->  g_transport->printf(...)
+//         Serial.write(...)   ->  g_transport->write(...)
+//         Serial.available()  ->  g_transport->available()
+//         Serial.read()       ->  g_transport->read()
+// Catatan: core ESP32 mendefinisikan SERIAL sebagai 0x0 di Arduino.h.
+// Karena kita memakai SERIAL sebagai nama objek transport, definisi lama
+// harus dibuang dulu agar tidak memicu warning "SERIAL redefined".
 #ifdef SERIAL
 #undef SERIAL
 #endif

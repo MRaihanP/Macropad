@@ -24,8 +24,17 @@
 #include "USBHIDConsumerControl.h"
 #include <Preferences.h>
 
+// FINAL tidak punya BLE HID: HID_BLE_SUPPORT=0 membuat NimBLE tidak ikut
+// masuk binary (hemat ~230 KB flash). HID_LINK_DEFAULT tidak perlu ditulis -
+// nilainya USB, satu-satunya mode yang dikompilasi.
+//
+// Untuk mengaktifkan BLE HID di FINAL nanti: set ke 1, tambahkan
+// HID_LINK_DEFAULT HID_LINK_USB, lalu salin blok hook dari HID_Keypad_Prototype.
+#define HID_BLE_SUPPORT 0
+
 #include "../common/limits.h"
 #include "../common/transport_usb.h"
+#include "../common/hid_link.h"
 
 // Global USB transport instance - definisi (bukan extern).
 UsbTransport g_usbTransport;
@@ -93,8 +102,11 @@ const uint8_t ENC_A_PINS[NUM_ENCODERS]   = {10, 13};
 #define CHG_STAT_PIN 18
 #endif
 
-USBHIDKeyboard Keyboard;
-USBHIDConsumerControl ConsumerControl;
+// Facade dari hid_link.h. Dengan HID_BLE_SUPPORT=0, HidKeyboard/HidConsumer
+// selalu meneruskan ke USB HID - perilaku persis seperti objek aslinya
+// (USBHIDKeyboard / USBHIDConsumerControl) sebelumnya.
+HidKeyboard   Keyboard;
+HidConsumer   ConsumerControl;
 Preferences prefs;
 // =================== PERIPHERAL: LED STATUS / RGB / VOLTAGE DIVIDER ===================
 #if HAS_RGB

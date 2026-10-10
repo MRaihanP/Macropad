@@ -9,6 +9,186 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
+### Added
+- **`firmware/common/transport_ble.h` - NUS (Nordic UART Service) sebagai jalur
+  protokol companion app lewat BLE.** Ditempelkan ke BLE HID lewat **server dan
+  koneksi yang sama**, jadi tidak ada pairing tambahan dan tidak ada link BLE
+  kedua yang harus dijaga.
+
+  UUID persis seperti yang dibaca companion app (`src-tauri/src/ble.rs`):
+  service `6e400001`, TX (write dari app) `6e400002`, RX (notify ke app)
+  `6e400003`.
+
+  Tiga syarat dari spike yang sudah terbukti di device:
+  - `notify()` **wajib** memakai connection handle eksplisit - tanpa handle,
+    output tidak sampai di Windows.
+  - Characteristic `6e400002` **tanpa** `_ENC`: write pertama dari app bisa
+    terjadi sebelum link terenkripsi saat pairing pertama, dan dengan `_ENC`
+    write itu ditolak sehingga app gagal connect.
+  - `write()` dipecah ke <= 244 byte (MTU 247 - 3). Baris `DUMP:` untuk config
+    penuh bisa > 200 byte, dan notify sebesar itu gagal diam-diam.
+
+  RX berupa ring buffer 2048 byte dengan `portMUX`, karena `onWrite()` berjalan
+  di task host NimBLE sedangkan `available()`/`read()` dipanggil dari loop
+  Arduino. Buffer dibersihkan tiap kali mode BLE dinyalakan supaya perintah
+  half-read dari sesi sebelumnya tidak terbaca sebagai baris utuh.
+
+- **`g_transport` sekarang ikut berganti saat `IFACE:USB` / `IFACE:BLE`.**
+  Mode HID dan jalur protokol **selalu sama**: kalau input keyboard lewat BLE,
+  maka `EVT:`/`[KEY]`/jawaban perintah juga lewat BLE.
+
+  Karena `SERIAL` adalah makro ke `g_transport`, seluruh core
+  (`broadcastLayerChanged`, `reportBatt`, `handleSerialCommand`,
+  `checkSerialInput`, `hidTrace`) **otomatis mengikuti tanpa diubah satu baris
+  pun** di `macropad_core.h`.
+
+  Log `[IFACE]` sengaja dicetak **sebelum** `g_transport` dialihkan, supaya bukti
+  bahwa perintah diterima tetap terlihat di Serial Monitor - tidak hilang tepat
+  di saat paling dibutuhkan.
+
+- **Perintah diagnostik `NUS:TEST`.** Mengirim `EVT:LAYER:0` lewat jalur protokol
+  yang sedang aktif, untuk membuktikan NUS bekerja tanpa companion app harus
+  terbuka. Field baru di `IFACE`: `nus_sub` (jumlah subscriber notifikasi NUS),
+  `proto` (jalur protokol aktif: `USB`/`BLE`), dan `rx_buf` (byte menunggu di
+  ring buffer).
+
+### Fixed
+- **Pemisahan USB HID <-> BLE HID dengan satu variabel yang bisa diubah lewat Serial.**
+  Menggantikan pendekatan fan-out sebelumnya (satu report terkirim ke USB HID
+  **dan** BLE HID sekaligus -> Windows mencatat dua karakter per penekanan).
+
+  `g_hidLink` (`hid_link.h`) menentukan backend HID yang sedang aktif, dan
+  **tepat satu** backend menerima report:
+
+  | Perintah | Efek |
+  |---|---|
+  | `IFACE` | status link + koneksi BLE |
+  | `IFACE:USB` | `bleHidStop()` - peer diputus, advertising dimatikan. Semua jalur BLE berhenti, tombol hanya menghasilkan input USB |
+  | `IFACE:BLE` | `bleHidStart()` - advertising dinyalakan, tombol hanya menghasilkan input BLE |
+
+  `hidLinkSet()` melepas semua tombol di **kedua** backend sebelum berganti, agar
+  tidak ada tombol nyangkut di host yang ditinggalkan.
+
+  USB HID tetap ter-`begin()` dan USB CDC tetap hidup di kedua mode - Serial
+  Monitor adalah satu-satunya cara mendiagnosis, jadi tidak boleh ikut mati.
+  Device USB selama mode BLE bersifat bisu: terdaftar di Windows sebagai keyboard
+  tapi tidak menerima report, jadi tidak menghasilkan input apa pun.
+
+- **Jejak input dibedakan per medium: `[IN:USB]` / `[IN:BLE]`.** Ditelusuri pada
+  setiap key, putaran knob, tombol knob, dan aksi consumer control.
+  Sengaja memakai prefix terpisah dari `[KEY]` - companion app mem-parsanya dengan
+  regex ketat `^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$` yang tidak boleh berubah;
+  baris `[IN:...]` jatuh ke pencatat log biasa di `protocol-parser.js`.
+
+- **`#pragma once` di `limits.h`.** Wajib sekarang karena `limits.h` masuk lewat
+  dua jalur berbeda (sketsh langsung, lalu `hid_link.h`), dan berkas itu
+  mendefinisikan variabel (`RGB_INDEX`) serta tipe (`ChargeState`, `RgbState`).
+
+### Added
+- **`firmware/common/hid_link.h`** - facade `HidKeyboard`/`HidConsumer`,
+  `g_hidLink`, `hidLinkSet()`, `hidTrace()`. API facade identik dengan yang
+  dipakai core dari `USBHIDKeyboard`, jadi `macropad_core.h` tidak berubah
+  untuk integrasi ini.
+- **`firmware/common/ble_diag.h`** - `IFACE`, `IFACE:USB`, `IFACE:BLE`,
+  `HID:SELF:<k>[+<k>]`, `BLE:ADV`, `BLE:BOND:CLEAR`, `BLE:RAM`. Dipasang lewat
+  makro `PROFILE_TRY_COMMAND(cmd)` yang dipanggil core sebagai baris terakhir
+  `handleSerialCommand()`.
+- **`bleHidStop()` / `bleHidStart()` / `bleHidAdvertising()` / `bleHidConnected()`**
+  di `ble_hid.h` - kontrol sisi BLE untuk syarat "IFACE:USB mematikan semua
+  fungsi BLE".
+
+### Removed
+- **`HidKeyboardFanout` / `HidConsumerFanout`.** Fan-out mengirim ke dua medium
+  sekaligus. Digantikan facade `hid_link.h` yang memilih satu backend.
+- **`BLE_HID_ENABLE`.** Digantikan `HID_BLE_SUPPORT` agar tidak ada dua saklar
+  tumpang tindih untuk hal yang sama.
+
+### Added
+- **`firmware/common/ble_hid.h` - BLE HID (HID over GATT) untuk profil PROTOTYPE,
+  hidup BERSAMAAN dengan USB CDC + USB HID.**
+  Port dari `BLE_Keypad_Test/BLE_Keypad_Test.ino` yang sudah terbukti connect dan
+  mengetik di Windows. Yang dipertahankan persis: report map (Report ID 1 keyboard
+  + Report ID 2 consumer), characteristic `2a4a`/`2a4b`/`2a4c`/`2a4d`/`2a4e`
+  dengan Report Reference descriptor `2908`, PnP ID `2a50` + Battery `180F`,
+  Just Works (bonding + SC, `BLE_HS_IO_NO_INPUT_OUTPUT`), MTU 247,
+  `advertiseOnDisconnect(true)`, dan `notify()` dengan connection handle
+  eksplisit (handle diambil dari `onConnect`/`onMTUChange`/
+  `onAuthenticationComplete`/`onSubscribe`, di-reset di `onDisconnect`).
+  Nama device tetap `"MacroPad3x3"` supaya bond yang sudah ada di host tidak
+  rusak.
+
+  Yang berbeda dari aslinya: modul ini bukan firmware mandiri. Ia tidak memakai
+  `Transport`/USB sama sekali, hanya mengirim report HID ke host BLE yang
+  terhubung. `HidKeyboardFanout` / `HidConsumerFanout` meneruskan setiap
+  pemanggilan ke USB HID **dan** BLE HID sekaligus, jadi objek `Keyboard` dan
+  `ConsumerControl` di sketsh berubah tipe saja — `macropad_core.h` tidak
+  diubah satu baris pun. USB HID tetap dikirim apa adanya, apa pun kondisi BLE.
+
+  Pemetaan tombol memakai pengkodean `USBHIDKeyboard.h` persis (`0x80..0x87`
+  modifier, `>= 0x88` non-printing key `k - 0x88`, di bawahnya ASCII), supaya
+  `KEY_LEFT_CTRL`, `KEY_RETURN`, dan `Keyboard.print()` punya arti yang sama di
+  kedua medium.
+
+  Hapus bond tanpa Serial: tahan tombol [0][0] saat boot (diambil dari
+  `BLE_Keypad_Test`).
+
+- **`PROFILE_HOOK_SETUP()` / `PROFILE_HOOK_LOOP()` di `limits.h` — titik ekstensi
+  per profil.** Default-nya `do {} while (0)`, jadi profil yang tidak memakai
+  hook tidak berubah sama sekali (nol biaya runtime). Dipanggil di akhir
+  `setup()`/`loop()` core. `PROFILE_HOOK_LOOP()` dipakai profil PROTOTYPE untuk
+  watchdog advertising (start ulang `advertise()` tiap 5 detik selama belum
+  ada koneksi) — pengaman ketiga kalau host memulai terminate tanpa gap event.
+
+- **`BLE_HID_ENABLE` di `HID_Keypad_Prototype.ino` (default 1).** Set `0` untuk
+  mengembalikan firmware ke USB-only tanpa menyentuh berkas lain.
+
+- **Perbaikan warning `"SERIAL" redefined`.** `transport.h` kini `#undef SERIAL`
+  lebih dulu sebelum `#define SERIAL g_transport`, karena core ESP32
+  mendefinisikan `SERIAL` sebagai `0x0` di `Arduino.h`. Definisi duplikat di
+  `macropad_core.h` dihapus (sudah disediakan `transport.h`).
+
+### Added
+- **Task 1 — `firmware/common/transport_ble.h` (BLE transport: NUS + HID over GATT).**
+  `BleTransport : TransportBase` — implementasi `Transport` untuk BLE dengan dua
+  peran sekaligus:
+  1. **NUS** (Nordic UART Service, UUID `6e400001/2/3-...`) — jalur protokol
+     companion app (PING, INFO, SET:*, dst). UUID identik dengan
+     `src-tauri/src/ble.rs`. RX pakai ring buffer 2048 byte dengan `portMUX`.
+  2. **HID over GATT** (service `1812`) — keyboard (Report ID 1) + consumer
+     control (Report ID 2). Report map & tata letak characteristic diambil
+     verbatim dari `BLE_Keypad_Test.ino` yang terbukti pairing + mencetak key
+     di Windows dan Android.
+
+  Temuan kritis yang dibawa dari spike (lihat `ble-hid-plan.md` §2):
+  - `notify()` **wajib** memakai connection handle eksplisit — tanpa handle,
+    notify diam-diam tidak menghasilkan output di Windows.
+  - `onConnect` tidak selalu terpanggil di Windows, jadi `bleConnHandle`
+    di-update dari 4 callback (`onConnect`, `onMTUChange`,
+    `onAuthenticationComplete`, `onSubscribe`) dan di-reset di `onDisconnect`.
+  - NUS UUID wajib masuk advertising — scanner Rust memakai AQS filter
+    `ProtocolId` pada service UUID, bukan nama device.
+  - NUS characteristic **tidak** memakai `_ENC` — write pertama dari app bisa
+    terjadi sebelum link terenkripsi saat pairing pertama.
+  - `write()` chunk ke 244 byte (MTU 247 − 3) supaya line panjang (`DUMP:`
+    config bisa > 200 byte) tidak gagal terkirim.
+  - Hapus bond tanpa Serial: tahan tombol "1" saat boot (aktif jika sketch
+    profil mendefinisikan `BLE_CLEAR_ROW_PIN`/`BLE_CLEAR_COL_PIN`).
+
+- **Transport switch compile-time di `HID_Keypad_Prototype.ino`.**
+  `TRANSPORT_TYPE` di `limits.h` memilih `UsbTransport` atau `BleTransport`.
+  Keduanya tidak aktif bersamaan. Default sementara `TRANSPORT_BLE` selama
+  Task 1.
+
+- **Guard USB HID di `macropad_core.h` setup().** `USB.productName/begin()`,
+  `Keyboard.begin()`, `ConsumerControl.begin()` hanya dipanggil saat
+  `TRANSPORT_TYPE == TRANSPORT_USB`. Di mode BLE, perangkat USB HID tidak
+  enumerasi (tidak mengganggu pengujian BLE).
+
+### Changed
+- `firmware/common/limits.h` — default `TRANSPORT_TYPE` sementara
+  `TRANSPORT_BLE` (selama Task 1). Kembalikan ke `TRANSPORT_USB` setelah
+  Task 1 selesai.
+
 ### Fixed
 - **BLE HID: "sudah pair, beberapa detik kemudian disconnect sendiri, lalu
   tidak bisa connect lagi."** Spike `spike_ble_hid` (v1) dicoba di device dan

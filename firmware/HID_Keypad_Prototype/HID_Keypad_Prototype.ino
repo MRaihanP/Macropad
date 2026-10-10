@@ -15,16 +15,56 @@
   Tools > USB Mode        : "USB-OTG (TinyUSB)"
   Tools > USB CDC On Boot : "Enabled"
   Tools > Upload Mode     : "USB-OTG CDC (TinyUSB)"
-*/
 
+  HID LINK (USB HID <-> BLE HID):
+  Input HID hanya dikirim ke SATU backend pada satu waktu, dipilih lewat
+  perintah Serial Monitor (115200):
+
+    IFACE         status link aktif + koneksi BLE
+    IFACE:USB     semua jalur BLE dihentikan (peer diputus, advertising mati);
+                  tombol hanya menghasilkan input USB HID
+    IFACE:BLE     input hanya lewat BLE HID, advertising dinyalakan
+    HID:SELF:<k>  kirim 1 report ke backend aktif saja, untuk tes
+    BLE:ADV / BLE:BOND:CLEAR / BLE:RAM
+
+  Jejak tiap input diberi tag medium-nya: [IN:USB] atau [IN:BLE].
+  Device BLE bernama "MacroPad3x3" (HID over GATT, service 1812).
+
+  Menghapus bond tanpa Serial: TAHAN tombol [0][0] (kiri atas) saat boot.
+*/
 #include <Arduino.h>
 #include "USB.h"
 #include "USBHIDKeyboard.h"
 #include "USBHIDConsumerControl.h"
 #include <Preferences.h>
 
+// =================== KONFIGURASI HID LINK ===================
+// HID_BLE_SUPPORT  : 1 = firmware punya BLE HID. Set 0 untuk binary ramping
+//                    tanpa NimBLE.
+// HID_LINK_DEFAULT : backend HID setelah boot. Bisa diubah runtime lewat
+//                    perintah Serial "IFACE:USB" / "IFACE:BLE".
+//
+// Mode hanya memilih ke mana report HID dikirim. USB CDC (Serial Monitor)
+// tetap hidup di kedua mode supaya debugging selalu mungkin.
+#define HID_BLE_SUPPORT  1
+#define HID_LINK_DEFAULT HID_LINK_USB
+
+// ---------------------------------------------------------------------------
+// Hook profil -> core (menimpa default kosong yang ada di limits.h)
+// ---------------------------------------------------------------------------
+// Harus ditulis SEBELUM limits.h karena limits.h memakai #ifndef. Badan
+// fungsinya ada di bagian bawah berkas ini, setelah semua pin & HID siap.
+void profileSetupHook();
+void profileLoopHook();
+bool profileTryCommand(const String& cmd);
+#define PROFILE_HOOK_SETUP()     profileSetupHook()
+#define PROFILE_HOOK_LOOP()      profileLoopHook()
+#define PROFILE_TRY_COMMAND(cmd) profileTryCommand(cmd)
+
 #include "../common/limits.h"
 #include "../common/transport_usb.h"
+#include "../common/hid_link.h"
+#include "../common/ble_diag.h"
 
 // Global USB transport instance - definisi (bukan extern).
 UsbTransport g_usbTransport;
@@ -60,8 +100,12 @@ const uint8_t ENC_A_PINS[NUM_ENCODERS]   = {10};
 // ---- LED status biasa ----
 const uint8_t STATUS_LED_PIN = 12;
 
-USBHIDKeyboard Keyboard;
-USBHIDConsumerControl ConsumerControl;
+// Objek HID yang dipakai core. Nama "Keyboard"/"ConsumerControl" tetap sama,
+// tapi tipenya facade hid_link.h yang mengarahkan report ke backend aktif
+// (USB HID atau BLE HID) sesuai g_hidLink. Core tidak berubah satu baris pun.
+HidKeyboard   Keyboard;
+HidConsumer   ConsumerControl;
+
 Preferences prefs;
 // =================== PERIPHERAL: LED STATUS / RGB / VOLTAGE DIVIDER ===================
 #if HAS_RGB
@@ -222,6 +266,60 @@ void rgbRestore() {
     if (prefs.getBytes("state", &tmp, sizeof(tmp)) == sizeof(tmp)) rgbState = tmp;
   }
   prefs.end();
+}
+
+// ---------------------------------------------------------------------------
+// BLE HID - hook milik profil
+// ---------------------------------------------------------------------------
+// Dipanggil dari core lewat PROFILE_HOOK_SETUP()/PROFILE_HOOK_LOOP() di
+// limits.h. Hook default-nya kosong, jadi profil FINAL tidak ikut berubah.
+#if HID_BLE_SUPPORT
+
+// Tombol yang dipakai gesture "hapus bond saat boot": [0][0] (kiri atas).
+#define BLE_CLEAR_ROW 0
+#define BLE_CLEAR_COL 0
+
+static unsigned long bleAdvWatchdogAt = 0;
+const unsigned long BLE_ADV_WATCHDOG_MS = 5000;
+
+void profileSetupHook() {
+  // Samakan dengan BLE_Keypad_Test: tahan tombol [0][0] saat boot untuk
+  // menghapus semua bond (berguna setelah flashing ulang / ganti nama).
+  digitalWrite(ROW_PINS[BLE_CLEAR_ROW], LOW);
+  delayMicroseconds(50);
+  bool clearBonds = (digitalRead(COL_PINS[BLE_CLEAR_COL]) == LOW);
+  digitalWrite(ROW_PINS[BLE_CLEAR_ROW], HIGH);
+
+  bleHidInit();
+
+  if (clearBonds) bleHidClearBonds();
+
+  // Hormati HID_LINK_DEFAULT: kalau firmware di-flash dengan mode BLE, jangan
+  // advertise kalau boot-nya memang bermaksud USB-only.
+  if (g_hidLink == HidLink::USB) {
+    NimBLEDevice::getAdvertising()->stop();
+  }
+  SERIAL->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\n", hidLinkName(g_hidLink));
+}
+
+void profileLoopHook() {
+  // Watchdog advertising: HANYA jalan saat mode BLE yang aktif. Di mode USB
+  // semua fungsi BLE harus diam, termasuk advertising.
+  if (g_hidLink != HidLink::BLE) return;
+  if (bleHidConnected()) return;
+  if (bleHidAdvertising()) return;
+
+  unsigned long now = millis();
+  if ((long)(now - bleAdvWatchdogAt) < 0) return;
+  bleAdvWatchdogAt = now + BLE_ADV_WATCHDOG_MS;
+  bleHidStart();
+}
+#endif
+
+// Perintah diagnostik: IFACE, IFACE:USB, IFACE:BLE, HID:SELF, BLE:ADV,
+// BLE:BOND:CLEAR, BLE:RAM.
+bool profileTryCommand(const String& cmd) {
+  return bleDiagCommand(cmd);
 }
 
 #include "../common/macropad_core.h"
