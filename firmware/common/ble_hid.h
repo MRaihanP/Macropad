@@ -30,6 +30,7 @@
 
 // SERIAL (makro -> g_transport) dipakai untuk log baris "[BLE] ...".
 #include "transport.h"
+#include "ble_shared.h"
 
 // Nama device BLE. SENGJA sama dengan "MacroPad3x3" supaya bond di host
 // (yang dibuat saat firmware BLE_Keypad_Test masih terpasang) tetap cocok
@@ -40,7 +41,7 @@
 
 // Nilai sentinel "tidak ada koneksi". 0xFFFF tidak pernah jadi conn handle
 // yang valid, jadi aman dipakai sebagai penanda.
-#define BLE_HID_NO_HANDLE 0xFFFF
+// BLE_HID_NO_HANDLE didefinisikan di ble_shared.h
 
 // Report map: keyboard boot-compatible (Report ID 1) + consumer control
 // (Report ID 2). Salinan verbatim dari BLE_Keypad_Test.ino.
@@ -116,7 +117,9 @@ static bool bleControlToUsage(char c, uint8_t* mod, uint8_t* usage) {
 // Handle koneksi tunggal. Callback NimBLE berjalan di task host, jadi
 // variabel ini volatile.
 // ------------------------------------------------------------------
-static volatile uint16_t bleHidConnHandle = BLE_HID_NO_HANDLE;
+// Handle koneksi tunggal. Didefinisikan di sini (global, bukan static),
+// dideklarasikan extern di ble_shared.h agar file lain bisa mengakses.
+volatile uint16_t bleHidConnHandle = BLE_HID_NO_HANDLE;
 
 static bool     bleAdvOk   = true;
 static uint16_t bleAdvSize  = 0;
@@ -127,15 +130,11 @@ static uint16_t bleScanSize = 0;
 //
 // UUID INI IKUT DIDAFTARKAN di advertising (lihat bleHidInit) karena scanner
 // companion app memfilter device berdasarkan service UUID, bukan nama.
-#define BLE_NUS_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-#define BLE_NUS_TX_UUID     "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-#define BLE_NUS_RX_UUID     "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+// UUID NUS didefinisikan di ble_shared.h
 
-static NimBLECharacteristic* bleNusTx = nullptr;
-static NimBLECharacteristic* bleNusRx = nullptr;
-static volatile uint16_t      bleNusSubCount   = 0;
-static volatile uint32_t      bleNusWriteCount = 0;
-static char                   bleNusLastWrite[64] = {0};
+
+
+
 
 // Suffix log, biar jelas baris log itu datang dari BLE atau USB.
 static void bleLog(const char* msg) {
@@ -156,6 +155,7 @@ public:
     uint16_t n = len < sizeof(bleNusLastWrite) - 1 ? len : sizeof(bleNusLastWrite) - 1;
     memcpy(bleNusLastWrite, v.data(), n);
     bleNusLastWrite[n] = '\0';
+    bleNusPush(v.data(), len);   // masukkan ke ring buffer transport
     SERIAL->printf("[BLE] NUS RX: %u byte, isi=\"%s\"\n", (unsigned)len, bleNusLastWrite);
   }
 };
