@@ -125,10 +125,8 @@ static uint16_t bleScanSize = 0;
 // UUID Nordic UART Service - jalur PROTOCOL companion app. Harus sama persis
 // dengan companion app (src-tauri/src/ble.rs).
 //
-// PENTING: UUID ini SENGAJA belum didaftarkan di advertising pada fase ini.
-// Mendaftarkannya adalah langkah terpisah karena mengubah isi payload
-// advertising, dan kita ingin memisahkan dua penyebab kegagalan sekaligus:
-// (a) perubahan GATT layout vs (b) payload advertising lewat batas 31 byte.
+// UUID INI IKUT DIDAFTARKAN di advertising (lihat bleHidInit) karena scanner
+// companion app memfilter device berdasarkan service UUID, bukan nama.
 #define BLE_NUS_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_NUS_TX_UUID     "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_NUS_RX_UUID     "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
@@ -193,8 +191,9 @@ static void bleAdvReport() {
   // Ukuran scan response jadi harus dihitung sendiri: 1 byte length +
   // 1 byte type + isi nama. Fungsionalitasnya tidak terpengaruh.
   bleScanSize = (uint16_t)(2 + strlen(BLE_HID_DEVICE_NAME));
-  SERIAL->printf("[BLE] adv ok: adv=%u/%d scan=%u/%d%s\n",
-                 (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ,
+  int sisa = (int)BLE_HS_ADV_MAX_SZ - (int)bleAdvSize;
+  SERIAL->printf("[BLE] adv ok: adv=%u/%d (sisa %d) scan=%u/%d%s\n",
+                 (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ, sisa,
                  (unsigned)bleScanSize, (int)BLE_HS_ADV_MAX_SZ,
                  bleAdvOk ? "" : " ADA YANG GAGAL");
 }
@@ -464,6 +463,15 @@ static void bleHidInit() {
   bleAdvCheck(adv->setName(BLE_HID_DEVICE_NAME), "name");
   bleAdvCheck(adv->setAppearance(0x03C1), "appearance");   // 0x03C1 = keyboard
   bleAdvCheck(adv->addServiceUUID("1812"), "uuid 1812");
+
+  // UUID NUS ikut advertising karena scanner companion app memfilter
+  // berdasarkan service UUID, bukan berdasarkan nama device.
+  //
+  // Ini yang dulu membuat device tidak pernah ditemukan: 11 + 18 = 29 byte,
+  // masih muat di 31 - TAPI hanya karena nama sudah pindah ke scan response.
+  // Kalau urutannya salah, payload jadi 24 + 18 = 42 byte, addData() menolak
+  // diam-diam, dan UUID hilang tanpa jejak.
+  bleAdvCheck(adv->addServiceUUID(BLE_NUS_SERVICE_UUID), "uuid NUS");
 
   adv->start(0);
 
