@@ -1070,6 +1070,25 @@ async fn ble_is_connected() -> bool {
     rx.await.unwrap_or(false)
 }
 
+#[tauri::command]
+async fn ble_switch_interface(iface: String) -> Result<(), String> {
+    // Kirim perintah IFACE:USB atau IFACE:BLE ke firmware
+    let cmd = match iface.as_str() {
+        "usb" => "IFACE:USB",
+        "ble" => "IFACE:BLE",
+        _ => return Err("Invalid interface. Use 'usb' or 'ble'".to_string()),
+    };
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::Write {
+            data: cmd.as_bytes().to_vec(),
+            resp,
+        })
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    let result = rx.await.map_err(|e| e.to_string())?;
+    result.map(|_| ())
+}
+
 
 
 pub fn run() {
@@ -1172,6 +1191,7 @@ pub fn run() {
             ble_write,
             ble_read,
             ble_is_connected,
+            ble_switch_interface,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

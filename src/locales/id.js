@@ -19,6 +19,7 @@ export const id = {
   'header.manualConnect': 'Koneksi manual (advanced)',
   'header.portLabel': 'Port device',
   'header.manualConnectHint': 'Device biasanya tersambung otomatis. Buka ini hanya kalau status di header tidak berubah menjadi Tersambung.',
+  'header.transport': 'Transport',
 'header.refreshPorts': 'Pindai ulang port serial',
 'header.notConnected': 'Tidak terhubung',
 'header.battery': 'Baterai',
@@ -282,3 +283,4 @@ export const id = {
 'parser.layerNotif': '{from} · {to}',
 
 };
+

@@ -22,6 +22,7 @@ export const en = {
   'header.manualConnect': 'Manual connection (advanced)',
   'header.portLabel': 'Device port',
   'header.manualConnectHint': 'The device usually connects on its own. Open this only if the status in the header never changes to Connected.',
+  'header.transport': 'Transport',
 'header.refreshPorts': 'Rescan serial ports',
 'header.notConnected': 'Not connected',
 'header.battery': 'Battery',
@@ -285,3 +286,5 @@ export const en = {
 'parser.layerNotif': '{from} · {to}',
 
 };
+
+
