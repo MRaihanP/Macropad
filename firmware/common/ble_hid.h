@@ -122,10 +122,58 @@ static bool     bleAdvOk   = true;
 static uint16_t bleAdvSize  = 0;
 static uint16_t bleScanSize = 0;
 
+// UUID Nordic UART Service - jalur PROTOCOL companion app. Harus sama persis
+// dengan companion app (src-tauri/src/ble.rs).
+//
+// PENTING: UUID ini SENGAJA belum didaftarkan di advertising pada fase ini.
+// Mendaftarkannya adalah langkah terpisah karena mengubah isi payload
+// advertising, dan kita ingin memisahkan dua penyebab kegagalan sekaligus:
+// (a) perubahan GATT layout vs (b) payload advertising lewat batas 31 byte.
+#define BLE_NUS_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_NUS_TX_UUID     "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_NUS_RX_UUID     "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+static NimBLECharacteristic* bleNusTx = nullptr;
+static NimBLECharacteristic* bleNusRx = nullptr;
+static volatile uint16_t      bleNusSubCount   = 0;
+static volatile uint32_t      bleNusWriteCount = 0;
+static char                   bleNusLastWrite[64] = {0};
+
 // Suffix log, biar jelas baris log itu datang dari BLE atau USB.
 static void bleLog(const char* msg) {
   SERIAL->printf("[BLE] %s\n", msg);
 }
+
+// 6e400002: app menulis perintah ke sini.
+//
+// NimBLE 2.x memanggil onWrite TANPA payload - data diambil dari nilai
+// characteristic itu sendiri (getValue()). Fase ini belum meneruskan ke parser
+// perintah; cukup dicatat supaya jalur app -> firmware terbukti hidup.
+class BleNusTxCallbacks : public NimBLECharacteristicCallbacks {
+public:
+  void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
+    NimBLEAttValue v = chr->getValue();
+    uint16_t len = v.length();
+    bleNusWriteCount++;
+    uint16_t n = len < sizeof(bleNusLastWrite) - 1 ? len : sizeof(bleNusLastWrite) - 1;
+    memcpy(bleNusLastWrite, v.data(), n);
+    bleNusLastWrite[n] = '\0';
+    SERIAL->printf("[BLE] NUS RX: %u byte, isi=\"%s\"\n", (unsigned)len, bleNusLastWrite);
+  }
+};
+
+// 6e400003: app men-subscribe notifikasi di sini. Hanya setelah ini notify
+// benar-benar sampai ke companion app.
+class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {
+public:
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) override {
+    bleNusSubCount++;
+    SERIAL->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
+  }
+};
+
+static BleNusTxCallbacks bleNusTxCb;
+static BleNusRxCallbacks bleNusRxCb;
 
 // NimBLE menolak payload advertising > 31 byte secara DIAM-DIAM:
 // NimBLEAdvertisementData::addData() mengembalikan false tanpa laporan ke
@@ -370,6 +418,25 @@ static void bleHidInit() {
   ccIn->setValue(zero2, 2);
   bleAddReportRef(ccIn, 2, 1);
   BleConsumer.attach(ccIn);
+
+  // NUS - jalur PROTOCOL companion app (EVT:, [KEY], jawaban perintah).
+  // Berada di server & koneksi yang sama dengan HID, jadi tidak ada pairing
+  // tambahan dan tidak ada link BLE kedua yang harus dijaga.
+  //
+  // 6e400002 SENGAJA tanpa _ENC: write pertama dari app bisa terjadi sebelum
+  // link terenkripsi saat pairing pertama; dengan _ENC write itu ditolak.
+  NimBLEService* nus = server->createService(BLE_NUS_SERVICE_UUID);
+  static const uint8_t nusIdle[1] = {0};
+
+  bleNusTx = nus->createCharacteristic(BLE_NUS_TX_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  bleNusTx->setCallbacks(&bleNusTxCb);
+  bleNusTx->setValue(nusIdle, 1);
+
+  bleNusRx = nus->createCharacteristic(BLE_NUS_RX_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  bleNusRx->setCallbacks(&bleNusRxCb);
+  bleNusRx->setValue(nusIdle, 1);
 
   server->start();
 

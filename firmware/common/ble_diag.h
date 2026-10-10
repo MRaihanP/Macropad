@@ -65,12 +65,13 @@ static void bleDiagSelfTest(const String& spec) {
 static bool bleDiagCommand(const String& cmd) {
   if (cmd == "IFACE") {
 #if HID_BLE_SUPPORT
-    SERIAL->printf("IFACE:link=%s,ble_conn=%d,advertising=%d,adv=%u,scan=%u\n",
+    SERIAL->printf("IFACE:link=%s,conn=%d,adv=%u,scan=%u,nus_sub=%u,nus_wr=%u\n",
                    hidLinkName(g_hidLink),
                    (int)bleHidConnected(),
-                   (int)bleHidAdvertising(),
                    (unsigned)bleAdvSize,
-                   (unsigned)bleScanSize);
+                   (unsigned)bleScanSize,
+                   (unsigned)bleNusSubCount,
+                   (unsigned)bleNusWriteCount);
 #else
     SERIAL->printf("IFACE:link=%s,ble_support=0\n", hidLinkName(g_hidLink));
 #endif
@@ -93,6 +94,28 @@ static bool bleDiagCommand(const String& cmd) {
     return true;
   }
 
+  // Membuktikan jalur firmware -> app (notify) tanpa companion app harus
+  // terbuka: menulis payload nyata ke characteristic 6e400003.
+  if (cmd == "BLE:ECHO") {
+#if HID_BLE_SUPPORT
+    const char* msg = "EVT:LAYER:0";
+    uint16_t h = bleHidConnHandle;
+    if (bleNusRx == nullptr) {
+      SERIAL->println("[ERROR] NUS RX characteristic belum ada");
+    } else if (h == BLE_HID_NO_HANDLE) {
+      SERIAL->println("[ERROR] belum ada koneksi BLE");
+    } else if (bleNusSubCount == 0) {
+      SERIAL->printf("[WARN] NUS: belum ada subscriber; notify akan diabaikan\n");
+      bleNusRx->notify((const uint8_t*)msg, strlen(msg), h);
+    } else {
+      bool ok = bleNusRx->notify((const uint8_t*)msg, strlen(msg), h);
+      SERIAL->printf("[%s] NUS notify \"%s\"\n", ok ? "OK" : "GAGAL", msg);
+    }
+#else
+    SERIAL->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+#endif
+    return true;
+  }
   if (cmd.startsWith("HID:SELF:")) { bleDiagSelfTest(cmd.substring(9)); return true; }
 
   if (cmd == "BLE:ADV") {
