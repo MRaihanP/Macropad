@@ -65,10 +65,12 @@ static void bleDiagSelfTest(const String& spec) {
 static bool bleDiagCommand(const String& cmd) {
   if (cmd == "IFACE") {
 #if HID_BLE_SUPPORT
-    SERIAL->printf("IFACE:link=%s,ble_conn=%d,advertising=%d\n",
+    SERIAL->printf("IFACE:link=%s,ble_conn=%d,advertising=%d,adv=%u,scan=%u\n",
                    hidLinkName(g_hidLink),
                    (int)bleHidConnected(),
-                   (int)bleHidAdvertising());
+                   (int)bleHidAdvertising(),
+                   (unsigned)bleAdvSize,
+                   (unsigned)bleScanSize);
 #else
     SERIAL->printf("IFACE:link=%s,ble_support=0\n", hidLinkName(g_hidLink));
 #endif

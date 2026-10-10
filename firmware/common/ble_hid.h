@@ -118,9 +118,33 @@ static bool bleControlToUsage(char c, uint8_t* mod, uint8_t* usage) {
 // ------------------------------------------------------------------
 static volatile uint16_t bleHidConnHandle = BLE_HID_NO_HANDLE;
 
+static bool     bleAdvOk   = true;
+static uint16_t bleAdvSize  = 0;
+static uint16_t bleScanSize = 0;
+
 // Suffix log, biar jelas baris log itu datang dari BLE atau USB.
 static void bleLog(const char* msg) {
   SERIAL->printf("[BLE] %s\n", msg);
+}
+
+// NimBLE menolak payload advertising > 31 byte secara DIAM-DIAM:
+// NimBLEAdvertisementData::addData() mengembalikan false tanpa laporan ke
+// Serial, jadi UUID bisa hilang tanpa jejak kalau nilai balik diabaikan.
+static void bleAdvCheck(bool ok, const char* what) {
+  if (ok) return;
+  bleAdvOk = false;
+  SERIAL->printf("[BLE] ADV GAGAL: %s\n", what);
+}
+
+static void bleAdvReport() {
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  if (adv == nullptr) return;
+  bleAdvSize  = (uint16_t)adv->getAdvertisementData().getPayload().size();
+  bleScanSize = (uint16_t)adv->getScanData().getPayload().size();
+  SERIAL->printf("[BLE] adv ok: adv=%u/%d scan=%u/%d%s\n",
+                 (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ,
+                 (unsigned)bleScanSize, (int)BLE_HS_ADV_MAX_SZ,
+                 bleAdvOk ? "" : " ADA YANG GAGAL");
 }
 
 class BleHidServerCallbacks : public NimBLEServerCallbacks {
@@ -346,11 +370,36 @@ static void bleHidInit() {
   server->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  adv->setName(BLE_HID_DEVICE_NAME);
-  adv->setAppearance(0x03C1);      // keyboard
-  adv->addServiceUUID("1812");
+
+  // ---- URUTAN PENTING ----
+  // enableScanResponse(true) HARUS dipanggil SEBELUM setName().
+  //
+  // Alasannya ada di NimBLE: setName() menaruh nama ke scan response HANYA kalau
+  // m_scanResp sudah true, selain itu ke advertising payload. Dan
+  // enableScanResponse() hanya menyalakan flag - TIDAK memindahkan data yang
+  // sudah terlanjur ada. Jadi kalau urutannya terbalik (seperti versi lama),
+  // nama "MacroPad3x3" (13 byte) ikut memakan advertising payload dan menyisakan
+  // hanya 7 byte.
+  //
+  // 7 byte itu tidak cukup untuk UUID NUS 128-bit (18 byte) yang akan
+  // ditambahkan di fase berikutnya. Dan NimBLE menolak payload > 31 byte secara
+  // diam-diam (NimBLEAdvertisementData::addData() -> return false), sehingga
+  // UUID bisa hilang tanpa jejak dan device tidak pernah muncul di daftar.
   adv->enableScanResponse(true);
+
+  // Nilai balik TIDAK BOLEH diabaikan - addData() gagal tanpa suara kalau
+  // payload melewati batas, dan urutan salah satu saja sudah cukup untuk
+  // membuatnya terjadi.
+  bleAdvCheck(adv->setName(BLE_HID_DEVICE_NAME), "name");
+  bleAdvCheck(adv->setAppearance(0x03C1), "appearance");   // 0x03C1 = keyboard
+  bleAdvCheck(adv->addServiceUUID("1812"), "uuid 1812");
+
   adv->start(0);
+
+  // Laporkan ukuran payload SEBENARNYA, bukan hasil hitungan manual. Ini satu-
+  // satu-satunya cara memastikan payload advertising tidak diam-diam kehilangan
+  // UUID.
+  bleAdvReport();
 
   bleLog("Advertising sebagai " BLE_HID_DEVICE_NAME " (HID over GATT)");
 }
