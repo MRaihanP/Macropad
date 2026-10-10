@@ -151,7 +151,7 @@ public:
   void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
     NimBLEAttValue v = chr->getValue();
     uint16_t len = v.length();
-    bleNusWriteCount++;
+    do { uint32_t tmp = bleNusWriteCount + 1; bleNusWriteCount = tmp; } while (0);
     uint16_t n = len < sizeof(bleNusLastWrite) - 1 ? len : sizeof(bleNusLastWrite) - 1;
     memcpy(bleNusLastWrite, v.data(), n);
     bleNusLastWrite[n] = '\0';
@@ -165,7 +165,7 @@ public:
 class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {
 public:
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) override {
-    bleNusSubCount++;
+    do { uint16_t tmp = bleNusSubCount + 1; bleNusSubCount = tmp; } while (0);
     SERIAL->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
   }
 };

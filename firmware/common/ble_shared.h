@@ -81,7 +81,8 @@ inline int bleNusAvail() {
 
 inline void bleNusClear() {
   portENTER_CRITICAL(&bleNusMux);
-  bleNusHead = bleNusTail = 0;
+  bleNusHead = 0;
+  bleNusTail = 0;
   portEXIT_CRITICAL(&bleNusMux);
 }
 
