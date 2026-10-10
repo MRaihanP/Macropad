@@ -48,8 +48,31 @@ public:
     return bleNusPop(&b) ? (int)b : -1;
   }
 
-  // Belum diimplementasi - arrive di fase 5 bersama pemecahan chunk 244 byte.
-  size_t write(const uint8_t*, size_t) override { return 0; }
+// Dikirim lewat notify ke 6e400003 (RX characteristic). WAJIB chunking:
+// satu baris protokol yang panjang - misalnya jawaban DUMP: untuk 9 tombol
+// atau RGB:DUMP - bisa melebihi batas satu notifikasi ATT (244 byte).
+  size_t write(const uint8_t* data, size_t len) override {
+    if (!isConnected()) return 0;
+    if (bleNusSubCount == 0) return 0;   // tanpa subscriber notify diabaikan
+
+    uint16_t h = bleHidConnHandle;
+    if (h == BLE_HID_NO_HANDLE) return 0;
+
+    size_t sent = 0;
+    while (sent < len) {
+      size_t n = len - sent;
+      if (n > BLE_NUS_MAX_CHUNK) n = BLE_NUS_MAX_CHUNK;
+
+      if (!bleNusRx->notify(data + sent, n, h)) {
+        delay(6);
+        h = bleHidConnHandle;
+        if (h == BLE_HID_NO_HANDLE) break;
+        if (!bleNusRx->notify(data + sent, n, h)) break;
+      }
+      sent += n;
+    }
+    return sent;
+  }
 
   void flush() override {}
 
