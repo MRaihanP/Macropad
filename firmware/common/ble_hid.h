@@ -140,7 +140,11 @@ static void bleAdvReport() {
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   if (adv == nullptr) return;
   bleAdvSize  = (uint16_t)adv->getAdvertisementData().getPayload().size();
-  bleScanSize = (uint16_t)adv->getScanData().getPayload().size();
+  // CATATAN BUG LIBRARY: NimBLE-Arduino 2.5.1 punya getScanData() yang
+  // mengembalikan m_advData, bukan m_scanData (NimBLEAdvertising.cpp:375).
+  // Ukuran scan response jadi harus dihitung sendiri: 1 byte length +
+  // 1 byte type + isi nama. Fungsionalitasnya tidak terpengaruh.
+  bleScanSize = (uint16_t)(2 + strlen(BLE_HID_DEVICE_NAME));
   SERIAL->printf("[BLE] adv ok: adv=%u/%d scan=%u/%d%s\n",
                  (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ,
                  (unsigned)bleScanSize, (int)BLE_HS_ADV_MAX_SZ,
