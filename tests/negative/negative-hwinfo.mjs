@@ -21,14 +21,14 @@ const cases = [
   {
     name: 'iface= dihapus dari HWINFO (app jadi tidak tahu mode HID)',
     file: CORE,
-    from: ',simulated=%d,iface=%s,proto=%s\r\n",',
-    to: ',simulated=%d,proto=%s\r\n",',
+    from: ',simulated=%d,iface=%s,proto=%s\n",',
+    to: ',simulated=%d,proto=%s\n",',
   },
   {
     name: 'iface diisi string hardcode (selalu "usb" walau mode BLE)',
     file: CORE,
-    from: 'HW_DATA_SIMULATED,\r\n                  hidLinkName(g_hidLink), protoLinkName(g_protoLink));\r\n    return',
-    to: 'HW_DATA_SIMULATED,\r\n                  "usb");\r\n    return',
+    from: 'HW_DATA_SIMULATED,\n                  hidLinkName(g_hidLink), protoLinkName(g_protoLink));\n    return',
+    to: 'HW_DATA_SIMULATED,\n                  "usb");\n    return',
   },
   {
     name: 'iface kembali huruf besar (app harus normalisasi)',
@@ -45,8 +45,8 @@ const cases = [
   {
     name: 'proto= muncul di HWINFO (F2 mengerjakan langkah F3)',
     file: CORE,
-    from: ',iface=%s,proto=%s\r\n",',
-    to: ',iface=%s,proto=%s,foo=%s\r\n",',
+    from: ',iface=%s,proto=%s\n",',
+    to: ',iface=%s,proto=%s,foo=%s\n",',
   },
   {
     name: 'field lama rgbSlots dihapus (ganti nama tanpa alasan)',
