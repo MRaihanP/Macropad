@@ -63,21 +63,38 @@ bool profileTryCommand(const String& cmd);
 
 #include "../common/limits.h"
 #include "../common/transport_usb.h"
+#include "../common/transport_ble.h"
 #include "../common/hid_link.h"
 #include "../common/ble_diag.h"
 
 // Global USB transport instance - definisi (bukan extern).
 UsbTransport g_usbTransport;
 
-// Binding global transport pointer ke instance USB.
+// BLE NUS transport instance - untuk protokol companion app lewat BLE.
+BleNusTransport g_bleNusTransport;
+
+// Binding global transport pointer ke instance USB (default).
 //
 // g_transport = jalur PROTOKOL (jawaban perintah, event, [KEY], EVT:).
-//              Nanti (F5) bisa diarahkan ke BLE NUS lewat perintah PROTO:*.
+//              Diarahkan ke BLE NUS lewat perintah PROTO:NUS, kembali ke USB
+//              lewat PROTO:CDC. Pengalihan dilakukan oleh perintah PROTO:* di
+//              ble_diag.h melalui fungsi protoTransportSwitch().
 // g_logTransport = jalur LOG. SELALU USB CDC, tidak pernah berubah, supaya
 //              Serial Monitor tetap hidup di mode mana pun - itu satu-satunya
 //              jalan keluar kalau companion app tidak bisa disambung.
 Transport* g_transport    = &g_usbTransport;
 Transport* g_logTransport = &g_usbTransport;
+
+// Fungsi untuk mengganti transport protokol runtime.
+// Dipanggil dari ble_diag.h saat perintah PROTO:CDC/PROTO:NUS diterima.
+void protoTransportSwitch() {
+  if (g_protoLink == ProtoLink::NUS) {
+    g_transport = &g_bleNusTransport;
+  } else {
+    g_transport = &g_usbTransport;
+  }
+  LOGS->printf("[PROTO] Transport beralih ke %s\n", protoLinkName(g_protoLink));
+}
 
 // =================== PROFIL: PROTOTYPE ===================
 // Firmware ini adalah sumber kebenaran profil PROTOTYPE. Tidak ada lagi

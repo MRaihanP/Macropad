@@ -62,6 +62,9 @@ static void bleDiagSelfTest(const String& spec) {
   LOGS->printf("[OK] HID:SELF via %s\n", hidLinkName(g_hidLink));
 }
 
+extern ProtoLink g_protoLink;
+void protoTransportSwitch();
+
 static bool bleDiagCommand(const String& cmd) {
   if (cmd == "IFACE") {
 #if HID_BLE_SUPPORT
@@ -113,12 +116,14 @@ static bool bleDiagCommand(const String& cmd) {
 
   if (cmd == "PROTO:CDC") {
     g_protoLink = ProtoLink::CDC;
+    protoTransportSwitch();
     LOGS->println("[OK] Protokol companion app: USB CDC");
     return true;
   }
 
   if (cmd == "PROTO:NUS") {
     g_protoLink = ProtoLink::NUS;
+    protoTransportSwitch();
     LOGS->println("[OK] Protokol companion app: BLE NUS");
     return true;
   }
