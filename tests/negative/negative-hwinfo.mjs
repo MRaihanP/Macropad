@@ -27,7 +27,7 @@ const cases = [
   {
     name: 'iface diisi string hardcode (selalu "usb" walau mode BLE)',
     file: CORE,
-    from: 'HW_DATA_SIMULATED, hidLinkName(g_hidLink));',
+    from: 'HW_DATA_SIMULATED, hidLinkName(g_hidLink), protoLinkName(g_protoLink));',
     to: 'HW_DATA_SIMULATED, "usb");',
   },
   {
