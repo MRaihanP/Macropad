@@ -1,5 +1,5 @@
 /*
-  ESP32-S3 Macro Pad - Firmware v5 - SKETCH PROTOTYPE
+  ESP32-S3 Macro Pad - Firmware v6 - SKETCH PROTOTYPE
   ==================================================
   Profile: PROTOTYPE - 1 knob, LED status biasa di GPIO12.
   TIDAK punya: RGB (HAS_RGB=0), voltage divider / baterai (HAS_VDIV=0),

@@ -21,10 +21,10 @@ import {
 // benar-benar dipakai main.js - sisanya dipanggil transport lewat hook initTransport()
 // sehingga isi config/layer/preset tidak bocor ke dalam modul transport.
 import {
-  initTransportManager, sendLine, sendBatch, connect, disconnect,
-  autoDetect, pollPorts, isConnected, isAutoBusy, deviceWasLost,
-  updateConnectButton, switchTransport, getTransportType,
-} from "./transport-manager.js";
+  initTransport, sendLine, sendBatch, connect, disconnect,
+  autoDetect, pollPorts, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  updateConnectButton,
+} from "./serial-transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
@@ -183,19 +183,6 @@ initTransport({
   onAutoConnectFail: () => { },
 });
 el('btnRefreshPorts').onclick = autoDetect;
-// Transport selector (header & manual connect)
-const transportSelect = el('transportSelect');
-if (transportSelect) {
-  transportSelect.value = getTransportType();
-  transportSelect.onchange = async () => {
-    const type = transportSelect.value;
-    await switchTransport(type);
-    // Sync header selector if exists
-    const headerSelect = document.getElementById('transportSelect');
-    if (headerSelect && headerSelect !== transportSelect) headerSelect.value = type;
-  };
-}
-
 // Label tombol sambung/putus berasal dari JS (berubah sesuai status koneksi),
 // jadi applyI18n() akan menimpanya dengan teks statis setiap kali user ganti
 // bahasa. Daftarkan render ulang agar label ikut diterjemahkan DAN tetap

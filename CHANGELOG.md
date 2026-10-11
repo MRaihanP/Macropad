@@ -10,319 +10,6 @@ dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
 
 ### Added
-- **`firmware/common/transport_ble.h` - NUS (Nordic UART Service) sebagai jalur
-  protokol companion app lewat BLE.** Ditempelkan ke BLE HID lewat **server dan
-  koneksi yang sama**, jadi tidak ada pairing tambahan dan tidak ada link BLE
-  kedua yang harus dijaga.
-
-  UUID persis seperti yang dibaca companion app (`src-tauri/src/ble.rs`):
-  service `6e400001`, TX (write dari app) `6e400002`, RX (notify ke app)
-  `6e400003`.
-
-  Tiga syarat dari spike yang sudah terbukti di device:
-  - `notify()` **wajib** memakai connection handle eksplisit - tanpa handle,
-    output tidak sampai di Windows.
-  - Characteristic `6e400002` **tanpa** `_ENC`: write pertama dari app bisa
-    terjadi sebelum link terenkripsi saat pairing pertama, dan dengan `_ENC`
-    write itu ditolak sehingga app gagal connect.
-  - `write()` dipecah ke <= 244 byte (MTU 247 - 3). Baris `DUMP:` untuk config
-    penuh bisa > 200 byte, dan notify sebesar itu gagal diam-diam.
-
-  RX berupa ring buffer 2048 byte dengan `portMUX`, karena `onWrite()` berjalan
-  di task host NimBLE sedangkan `available()`/`read()` dipanggil dari loop
-  Arduino. Buffer dibersihkan tiap kali mode BLE dinyalakan supaya perintah
-  half-read dari sesi sebelumnya tidak terbaca sebagai baris utuh.
-
-- **`g_transport` sekarang ikut berganti saat `IFACE:USB` / `IFACE:BLE`.**
-  Mode HID dan jalur protokol **selalu sama**: kalau input keyboard lewat BLE,
-  maka `EVT:`/`[KEY]`/jawaban perintah juga lewat BLE.
-
-  Karena `SERIAL` adalah makro ke `g_transport`, seluruh core
-  (`broadcastLayerChanged`, `reportBatt`, `handleSerialCommand`,
-  `checkSerialInput`, `hidTrace`) **otomatis mengikuti tanpa diubah satu baris
-  pun** di `macropad_core.h`.
-
-  Log `[IFACE]` sengaja dicetak **sebelum** `g_transport` dialihkan, supaya bukti
-  bahwa perintah diterima tetap terlihat di Serial Monitor - tidak hilang tepat
-  di saat paling dibutuhkan.
-
-- **Perintah diagnostik `NUS:TEST`.** Mengirim `EVT:LAYER:0` lewat jalur protokol
-  yang sedang aktif, untuk membuktikan NUS bekerja tanpa companion app harus
-  terbuka. Field baru di `IFACE`: `nus_sub` (jumlah subscriber notifikasi NUS),
-  `proto` (jalur protokol aktif: `USB`/`BLE`), dan `rx_buf` (byte menunggu di
-  ring buffer).
-
-### Fixed
-- **Pemisahan USB HID <-> BLE HID dengan satu variabel yang bisa diubah lewat Serial.**
-  Menggantikan pendekatan fan-out sebelumnya (satu report terkirim ke USB HID
-  **dan** BLE HID sekaligus -> Windows mencatat dua karakter per penekanan).
-
-  `g_hidLink` (`hid_link.h`) menentukan backend HID yang sedang aktif, dan
-  **tepat satu** backend menerima report:
-
-  | Perintah | Efek |
-  |---|---|
-  | `IFACE` | status link + koneksi BLE |
-  | `IFACE:USB` | `bleHidStop()` - peer diputus, advertising dimatikan. Semua jalur BLE berhenti, tombol hanya menghasilkan input USB |
-  | `IFACE:BLE` | `bleHidStart()` - advertising dinyalakan, tombol hanya menghasilkan input BLE |
-
-  `hidLinkSet()` melepas semua tombol di **kedua** backend sebelum berganti, agar
-  tidak ada tombol nyangkut di host yang ditinggalkan.
-
-  USB HID tetap ter-`begin()` dan USB CDC tetap hidup di kedua mode - Serial
-  Monitor adalah satu-satunya cara mendiagnosis, jadi tidak boleh ikut mati.
-  Device USB selama mode BLE bersifat bisu: terdaftar di Windows sebagai keyboard
-  tapi tidak menerima report, jadi tidak menghasilkan input apa pun.
-
-- **Jejak input dibedakan per medium: `[IN:USB]` / `[IN:BLE]`.** Ditelusuri pada
-  setiap key, putaran knob, tombol knob, dan aksi consumer control.
-  Sengaja memakai prefix terpisah dari `[KEY]` - companion app mem-parsanya dengan
-  regex ketat `^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$` yang tidak boleh berubah;
-  baris `[IN:...]` jatuh ke pencatat log biasa di `protocol-parser.js`.
-
-- **`#pragma once` di `limits.h`.** Wajib sekarang karena `limits.h` masuk lewat
-  dua jalur berbeda (sketsh langsung, lalu `hid_link.h`), dan berkas itu
-  mendefinisikan variabel (`RGB_INDEX`) serta tipe (`ChargeState`, `RgbState`).
-
-### Added
-- **`firmware/common/hid_link.h`** - facade `HidKeyboard`/`HidConsumer`,
-  `g_hidLink`, `hidLinkSet()`, `hidTrace()`. API facade identik dengan yang
-  dipakai core dari `USBHIDKeyboard`, jadi `macropad_core.h` tidak berubah
-  untuk integrasi ini.
-- **`firmware/common/ble_diag.h`** - `IFACE`, `IFACE:USB`, `IFACE:BLE`,
-  `HID:SELF:<k>[+<k>]`, `BLE:ADV`, `BLE:BOND:CLEAR`, `BLE:RAM`. Dipasang lewat
-  makro `PROFILE_TRY_COMMAND(cmd)` yang dipanggil core sebagai baris terakhir
-  `handleSerialCommand()`.
-- **`bleHidStop()` / `bleHidStart()` / `bleHidAdvertising()` / `bleHidConnected()`**
-  di `ble_hid.h` - kontrol sisi BLE untuk syarat "IFACE:USB mematikan semua
-  fungsi BLE".
-
-### Removed
-- **`HidKeyboardFanout` / `HidConsumerFanout`.** Fan-out mengirim ke dua medium
-  sekaligus. Digantikan facade `hid_link.h` yang memilih satu backend.
-- **`BLE_HID_ENABLE`.** Digantikan `HID_BLE_SUPPORT` agar tidak ada dua saklar
-  tumpang tindih untuk hal yang sama.
-
-### Added
-- **`firmware/common/ble_hid.h` - BLE HID (HID over GATT) untuk profil PROTOTYPE,
-  hidup BERSAMAAN dengan USB CDC + USB HID.**
-  Port dari `BLE_Keypad_Test/BLE_Keypad_Test.ino` yang sudah terbukti connect dan
-  mengetik di Windows. Yang dipertahankan persis: report map (Report ID 1 keyboard
-  + Report ID 2 consumer), characteristic `2a4a`/`2a4b`/`2a4c`/`2a4d`/`2a4e`
-  dengan Report Reference descriptor `2908`, PnP ID `2a50` + Battery `180F`,
-  Just Works (bonding + SC, `BLE_HS_IO_NO_INPUT_OUTPUT`), MTU 247,
-  `advertiseOnDisconnect(true)`, dan `notify()` dengan connection handle
-  eksplisit (handle diambil dari `onConnect`/`onMTUChange`/
-  `onAuthenticationComplete`/`onSubscribe`, di-reset di `onDisconnect`).
-  Nama device tetap `"MacroPad3x3"` supaya bond yang sudah ada di host tidak
-  rusak.
-
-  Yang berbeda dari aslinya: modul ini bukan firmware mandiri. Ia tidak memakai
-  `Transport`/USB sama sekali, hanya mengirim report HID ke host BLE yang
-  terhubung. `HidKeyboardFanout` / `HidConsumerFanout` meneruskan setiap
-  pemanggilan ke USB HID **dan** BLE HID sekaligus, jadi objek `Keyboard` dan
-  `ConsumerControl` di sketsh berubah tipe saja — `macropad_core.h` tidak
-  diubah satu baris pun. USB HID tetap dikirim apa adanya, apa pun kondisi BLE.
-
-  Pemetaan tombol memakai pengkodean `USBHIDKeyboard.h` persis (`0x80..0x87`
-  modifier, `>= 0x88` non-printing key `k - 0x88`, di bawahnya ASCII), supaya
-  `KEY_LEFT_CTRL`, `KEY_RETURN`, dan `Keyboard.print()` punya arti yang sama di
-  kedua medium.
-
-  Hapus bond tanpa Serial: tahan tombol [0][0] saat boot (diambil dari
-  `BLE_Keypad_Test`).
-
-- **`PROFILE_HOOK_SETUP()` / `PROFILE_HOOK_LOOP()` di `limits.h` — titik ekstensi
-  per profil.** Default-nya `do {} while (0)`, jadi profil yang tidak memakai
-  hook tidak berubah sama sekali (nol biaya runtime). Dipanggil di akhir
-  `setup()`/`loop()` core. `PROFILE_HOOK_LOOP()` dipakai profil PROTOTYPE untuk
-  watchdog advertising (start ulang `advertise()` tiap 5 detik selama belum
-  ada koneksi) — pengaman ketiga kalau host memulai terminate tanpa gap event.
-
-- **`BLE_HID_ENABLE` di `HID_Keypad_Prototype.ino` (default 1).** Set `0` untuk
-  mengembalikan firmware ke USB-only tanpa menyentuh berkas lain.
-
-- **Perbaikan warning `"SERIAL" redefined`.** `transport.h` kini `#undef SERIAL`
-  lebih dulu sebelum `#define SERIAL g_transport`, karena core ESP32
-  mendefinisikan `SERIAL` sebagai `0x0` di `Arduino.h`. Definisi duplikat di
-  `macropad_core.h` dihapus (sudah disediakan `transport.h`).
-
-### Added
-- **Task 1 — `firmware/common/transport_ble.h` (BLE transport: NUS + HID over GATT).**
-  `BleTransport : TransportBase` — implementasi `Transport` untuk BLE dengan dua
-  peran sekaligus:
-  1. **NUS** (Nordic UART Service, UUID `6e400001/2/3-...`) — jalur protokol
-     companion app (PING, INFO, SET:*, dst). UUID identik dengan
-     `src-tauri/src/ble.rs`. RX pakai ring buffer 2048 byte dengan `portMUX`.
-  2. **HID over GATT** (service `1812`) — keyboard (Report ID 1) + consumer
-     control (Report ID 2). Report map & tata letak characteristic diambil
-     verbatim dari `BLE_Keypad_Test.ino` yang terbukti pairing + mencetak key
-     di Windows dan Android.
-
-  Temuan kritis yang dibawa dari spike (lihat `ble-hid-plan.md` §2):
-  - `notify()` **wajib** memakai connection handle eksplisit — tanpa handle,
-    notify diam-diam tidak menghasilkan output di Windows.
-  - `onConnect` tidak selalu terpanggil di Windows, jadi `bleConnHandle`
-    di-update dari 4 callback (`onConnect`, `onMTUChange`,
-    `onAuthenticationComplete`, `onSubscribe`) dan di-reset di `onDisconnect`.
-  - NUS UUID wajib masuk advertising — scanner Rust memakai AQS filter
-    `ProtocolId` pada service UUID, bukan nama device.
-  - NUS characteristic **tidak** memakai `_ENC` — write pertama dari app bisa
-    terjadi sebelum link terenkripsi saat pairing pertama.
-  - `write()` chunk ke 244 byte (MTU 247 − 3) supaya line panjang (`DUMP:`
-    config bisa > 200 byte) tidak gagal terkirim.
-  - Hapus bond tanpa Serial: tahan tombol "1" saat boot (aktif jika sketch
-    profil mendefinisikan `BLE_CLEAR_ROW_PIN`/`BLE_CLEAR_COL_PIN`).
-
-- **Transport switch compile-time di `HID_Keypad_Prototype.ino`.**
-  `TRANSPORT_TYPE` di `limits.h` memilih `UsbTransport` atau `BleTransport`.
-  Keduanya tidak aktif bersamaan. Default sementara `TRANSPORT_BLE` selama
-  Task 1.
-
-- **Guard USB HID di `macropad_core.h` setup().** `USB.productName/begin()`,
-  `Keyboard.begin()`, `ConsumerControl.begin()` hanya dipanggil saat
-  `TRANSPORT_TYPE == TRANSPORT_USB`. Di mode BLE, perangkat USB HID tidak
-  enumerasi (tidak mengganggu pengujian BLE).
-
-### Changed
-- `firmware/common/limits.h` — default `TRANSPORT_TYPE` sementara
-  `TRANSPORT_BLE` (selama Task 1). Kembalikan ke `TRANSPORT_USB` setelah
-  Task 1 selesai.
-
-### Fixed
-- **BLE HID: "sudah pair, beberapa detik kemudian disconnect sendiri, lalu
-  tidak bisa connect lagi."** Spike `spike_ble_hid` (v1) dicoba di device dan
-  gagal dengan gejala persis tersebut. Penyebabnya **bukan** di sisi Windows,
-  tapi di firmware spike - dibuktikan dari source core Arduino ESP32 3.3.11 yang
-  terpasang, bukan dari tebakan. Lima kesalahan terpisah, semuanya saling
-  memperburuk:
-
-  1. **Advertising mati permanen setelah disconnect (sebab utama).**
-     `BLEServer.cpp:93` — `m_advertiseOnDisconnect = false;` itu **default**.
-     `BLEServer.cpp:854-858` — advertising hanya di-restart kalau flag itu true.
-     v1 tidak pernah memanggil `advertiseOnDisconnect(true)` dan tidak punya
-     `BLEServerCallbacks` sama sekali, jadi begitu Windows memutus link,
-     perangkat **berhenti advertise permanen**: hilang dari daftar dan tidak akan
-     pernah ditemukan lagi. Gejala "tidak bisa connect lagi" adalah perangkatnya
-     yang hilang, bukan Windows yang menolak.
-  2. **Passkey yang tak pernah dipakai merusak bond.** v1 menyetel
-     `ESP_IO_CAP_NONE` (Just Works) **tetapi juga** `setPassKey(acak)` +
-     `regenPassKeyOnConnect(true)` + `setForceAuthentication(true)`.
-     Dengan `mitm=false` dan IO_CAP_NONE, pairing tidak pernah memakai passkey;
-     passkey acak yang berubah tiap koneksi hanya membuat Windows menyimpan LTK
-     dari sesi pertama sementara perangkat menagih nilai berbeda setiap connect.
-  3. **Service HID tidak lengkap.** Yang wajib ada: `2a4a` HID Information,
-     `2a4b` Report Map, `2a4c` HID Control Point, `2a4e` Protocol Mode
-     (`BLEHIDDevice.cpp:73-76`), plus Report Reference Descriptor `2908` per
-     report, plus PnP ID `2a50`. v1 hanya membuat `1812` + `2a4d`.
-  4. **Report ID ada di map tapi tidak ada di payload.** Map v1 declares
-     `0x85, 0x10` (Report ID 16) sementara `bleSendKey()` mengirim 8 byte tanpa
-     byte Report ID. Host menggeser semua field → state HID rusak → Windows drop
-     koneksi.
-  5. **Lookup characteristic per ketikan.** `bleSendKey()` mencari service &
-     characteristic lewat UUID setiap dipanggil.
-
-### Added
-- **`firmware/spike_ble_hid2/spike_ble_hid2.ino` — spike BLE HID versi sederhana
-  & awet (THROWAWAY, sekali pakai).** Pengganti spike v1. Delapan perubahan,
-  masing-masing menjawab satu kesalahan di atas:
-  1. `advertiseOnDisconnect(true)` — perbaikan wajib.
-  2. `BLEServerCallbacks` dengan log connect/disconnect, plus `startAdvertising()`
-     eksplisit di dalam `onDisconnect` sebagai jaring kedua, plus **watchdog**
-     yang me-restart advertising setiap 5 detik selama belum terhubung
-     (pengaman ketiga, untuk kasus yang tidak kita antisipasi — mis. host yang
-     menginisiasi terminate tanpa gap event).
-  3. Pakai `BLEHIDDevice` dari library core, persis seperti
-     `examples/Server_Gamepad` — semua characteristic wajib dibuat lengkap
-     tanpa harus ditulis manual.
-  4. Just Works yang jujur: tanpa passkey, tanpa regenerate, tanpa force
-     authentication.
-  5. Report ID 1 di map **dan** di payload; payload 9 byte (Report ID + 8).
-  6. Pointer characteristic disimpan sekali di `setup()`.
-  7. Nama device `MacroPad` — pendek, tanpa spasi, <= 29 karakter. Nama panjang
-     dipangkas Windows sehingga bond lama tidak cocok setelah flash ulang.
-  8. **Perintah Serial untuk diagnosa tanpa flash ulang:** `help`, `key a`,
-     `key ctrl+c`, `usbkey a` (pembanding A/B), `adv`, `status`, `scan`, `echo`,
-     `sub on|off`, `clear` (hapus bond), `ram`.
-
-  Notifikasi NUS **default off** dan harus diaktifkan lewat `sub on`, karena
-  notify tanpa subscriber bisa memicu error pada stack NimBLE.
-
-- **`spike2-test.js` (69 pemeriksaan)** — verifikasi statis spike v2, dibaca
-  langsung dari header core yang terpasang (`%LOCALAPPDATA%\Arduino15\...`), bukan
-  dari asumsi. Yang dijaga: kelima bug v1 di atas, kecocokan UUID dengan
-  `src-tauri/src/ble.rs` (termasuk arah TX/RX yang terbalik adalah kesalahan
-  yang sangat mudah terjadi), batas-batas bentuk kode, dan keterbacaan log.
-  Kalau header core tidak ada, test **SKIP dengan pesan jelas**, bukan hijau
-  palsu.
-
-- **`negative-spike2.mjs` — uji negatif 24 mutasi, 24/24 terdeteksi.** Tiap
-  bug v1 dikembalikan ke bentuk semula di sketch, lalu test harus gagal.
-
-### Notes
-- **Uji negatif menemukan kelemahan pada dirinya sendiri, dua kali.** Ini yang
-  membuat test ini bernama "uji negatif" dan bukan sekadar formalitas:
-  1. `advertiseOnDisconnect(false)` **tidak terdeteksi**. Penyebabnya pemeriksaan
-     pertama hanya mencari `advertiseOnDisconnect\s*\(\s*true\s*\)`, yang ikut
-     cocok dengan panggilan bernilai `false`. Diperbaiki: nilai `true` diverifikasi
-     eksplisit **dan** ditambahkan pemeriksaan bahwa tidak ada panggilan dengan
-     nilai lain. Uji negatif lain di proyek ini (seperti `no-lost-functions`)
-     sudah pernah jadi tidak bisa menangkap kelas regresi ini.
-  2. Satu mutasi "TX characteristic tanpa `PROPERTY_NOTIFY`" sempat tertangkap
-     oleh pemeriksaan yang salah: ia memecah source pada kemunculan pertama
-     `g_nusTx`, yang justru **deklarasi variabel global** tanpa properti
-     sama sekali - bukan blok `createCharacteristic`. Diperbaiki dengan pola
-     yang mencocokkan blok penugasan.
-- **Guard baru di harness mutasi: mutasi yang hanya menyentuh KOMENTAR
-  dianggap tidak valid.** Spike v2 menjelaskan kelima bug-nya di komentar
-  (memang harus, supaya alasannya hilang bersama berkasnya), sehingga pola
-  mutasi bisa mengenai kalimat penjelasan di komentar alih-alih baris kode.
-  Karena `spike2-test.js` membuang komentar sebelum memeriksa, mutasi semacam
-  itu tidak akan pernah terdeteksi dan akan dilaporkan sebagai "test lemah" -
-  padahal masalahnya di daftar mutasi. Guard ini memisahkan dua kasus itu.
-  Ditemukan justru oleh `advertiseOnDisconnect(false)` yang dilaporkan sebagai
-  "tidak terdeteksi".
-- **`spike2-test.js` semula selalu hijau dari sudut pandang runner.** Runner
-  suite menandainya `LEWAT (tidak ada exit code - selalu hijau?)` karena jalur
-  sukses memanggil `process.exit(0)` sementara jalur gagal memanggil
-  `process.exit(1)`: pola itu tidak ada di daftar guard runner, jadi file
-  dianggap tidak punya exit code sama sekali. Diganti jadi satu
-  `process.exitCode = fail > 0 ? 1 : 0` di akhir. Diverifikasi langsung:
-  mutasi → status 1, kode asli → status 0.
-- **Dua bug nyata pada spike v2 yang ditemukan sebelum sempat di-flash**, oleh
-  test dan pemeriksaan karakter:
-  1. `g_serLine` (buffer perintah Serial) di-*declare* **setelah** `loopImpl()`
-     memakainya → **compile error**. Deklarasi dipindahkan ke atas. Ini kelas
-     kesalahan yang sama yang pernah menimpa firmware produksi di Phase 8
-     (`resetEditorState` ikut terhapus saat ekstraksi transport).
-  2. Enam baris komentar tercemar karakter CJK/pik (mis. `器件`, `人的`).
-     Ditambah pemeriksaan di `spike2-test.js` yang menolak karakter CJK/pik
-     di source.
-- **USB HID tetap dipertahankan di spike v2** sebagai pembanding A/B. Kalau
-  `usbkey a` masuk ke Notepad tapi `key a` tidak, itu bukti langsung bahwa
-  masalahnya ada di jalur BLE, bukan di keyboard/report.
-- **Tidak ada yang bisa dibuktikan tanpa device.** Test ini membuktikan bentuk
-  kode dan kecocokan kontrak dengan Rust. Yang tetap harus diuji di device:
-  apakah Windows menerima input report, apakah reconnect setelah cabut-colok
-  berhasil, dan apakah RAM cukup setelah stack BLE. Uji negatif untuk test ini
-  **bukan** pengganti tiga hal tersebut.
-
-### Added
-- **`SUMMARY.md`** — ringkasan posisi proyek: arsitektur, cara kerja, fitur yang
-  sudah ada, riwayat fase, hasil verifikasi, dan pekerjaan yang belum selesai.
-
-### Notes
-- Ringkasan milestone dibuat sebagai catatan posisi sebelum melanjutkan
-  Phase 10 — termasuk catatan bahwa salinan repo di drive `D:` **tidak boleh
-  dipakai lagi** — working copy-nya berisi snapshot yang lebih tua dan merusak
-  (enumerator `TRANSPORT_USB` yang bentrok dengan makro `#define` lagi,
-  `Serial.dtr()` yang dikembalikan, stub BLE yang duplikat dengan `ble.rs`,
-  kunci i18n yang dobel). Repo di `E:` adalah sumber kebenaran.
-- **29 skrip uji masih berada di folder temp, bukan di dalam repo.** Kalau
-  `%TEMP%` dibersihkan, seluruh jaringan pengujian hilang tanpa jejak di git.
- Langkah berikutnya: pindahkan ke `tests/` + tambahkan `npm test`.
-
-### Added
 - **Phase 10 (BLE) - fondasi transport.** Abstraksi transport di firmware supaya
   ganti USB ke BLE cukup mengubah satu `#define`, bukan menyentuh seluruh core:
   - `firmware/common/transport.h` - interface `Transport` (metode yang dibutuhkan
@@ -556,6 +243,105 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   **Uji negatif: 14 mutasi, 14/14 terdeteksi.**
 
 ### Fixed
+- **Keyboard terkunci saat merekam binding (Phase 9.6).**
+  `captureKeyDuringRecording()` memanggil `preventDefault()` pada SETIAP
+  `keydown` selama mode rekam aktif. Akibatnya `F5`, `Ctrl+R`, `Ctrl+W`,
+  `Ctrl+T` semuanya tertahan, dan satu-satunya cara keluar adalah klik tombol
+  Cancel - yang mustahil dijangkau karena keyboard sedang direkam. User
+  terkunci sampai app ditutup paksa. (`Alt+Tab` tidak bisa di-`preventDefault()`
+  dari webview sama sekali; itu pintasan accelerator sistem, bukan event DOM.)
+  - Escape sekarang menjadi jalan keluar: menghentikan rekam, menyembunyikan
+    panel editor, dan membersihkan isi editor. Petunjuk di UI (ID & EN)
+    menyebutnya supaya tidak sekadar konvensi tersembunyi.
+  - Logika "batal" diekstrak jadi satu `cancelEditor()` di `home-page.js`,
+    dipakai oleh tombol Cancel **dan** Escape. Sebelumnya logikanya tertulis
+    inline di `onclick` tombol Cancel; menyalinnya berarti kedua jalur bisa
+    melenceng - dan jalur yang lupa melepas listener perekaman akan mengunci
+    keyboard untuk sisa sesi.
+  - Tabrakan dengan modal diperbaiki. `ui-modal.js` memasang listener di fase
+    *capture* pada `document`, sedangkan perekam keyboard di `window` fase
+    *bubble* - jadi modal selalu jalan lebih dulu. Tanpa koordinasi, satu
+    tekan Escape akan menutup modal **sekaligus** membatalkan editor. Sekarang
+    `ui-modal.js` memanggil `e.preventDefault()` saat menutup, dan perekam
+    memeriksa `e.defaultPrevented` lalu mundur. Escape juga tidak lagi jatuh ke
+    cabang Enter di `ui-modal.js` (sebelumnya `if (e.key === 'Escape') close(null);`
+    tanpa `return`, jadi branch berikutnya ikut dievaluasi).
+  - Fungsi `onKey` di `ui-modal.js` sekarang me-return eksplisit di tiap cabang.
+
+### Changed
+- **Test `home-page-diff.js` dan `shell-ui-diff.js` diperbarui untuk 9.6.**
+  Keduanya adalah diff test "verbatim proof" yang membandingkan hasil ekstraksi
+  modul dengan versi lama di commit yang dipin, jadi mereka **wajib** gagal
+  saat ada perubahan yang disengaja - itulah gunanya. Baris baru 9.6 di-strip
+  lewat daftar `ESCAPE_HATCH` supaya perbandingan tetap ketat terhadap semua
+  baris lain, dan keberadaan baris baru itu dibuktikan eksplisit di seksi 4b -
+  kalau tidak, strip itu bisa menelan perubahan apa pun tanpa terlihat.
+  `shell-ui-diff.js` tidak lagi memakai perbandingan posisional untuk `onKey`
+  (bentuknya memang berubah), tapi PERILAKU yang dijanjikan - Escape menutup
+  dengan `null` - tetap diuji, ditambah pemeriksaan bahwa Escape me-return
+  sebelum cabang Enter.
+
+### Added
+- **Test `record-escape-test.js`** (6 seksi) yang mengunci perilaku 9.6:
+  Escape ditangani sebelum branch tombol biasa (tidak ikut jadi token),
+  `cancelEditor()`EXPORTED dan lengkap, jumlah `addEventListener` ==
+  `removeEventListener` (mencegah listener menumpuk setiap kali editor dibuka),
+  Contracts `ui-modal` <-> perekam, dan petunjuk UI menyebut Escape di kedua
+  bahasa. Test ini diverifikasi **dengan uji negatif**: `preventDefault()` di
+  `ui-modal.js` sengaja dihapus sementara, test dipastikan GAGAL, lalu file
+  dipulihkan dan test dipastikan hijau lagi. Test yang tidak pernah gagal
+  tidak membuktikan apa pun.
+
+### Fixed
+- **Spike BLE HID tidak bisa dikompilasi - 4 API core ESP32 3.3.11 yang salah.**
+  Semua diperbaiki setelah membaca header asli di instalasi Arduino lokal
+  (`libraries/BLE/src/` dan `libraries/USB/src/`), bukan menebak dari
+  ingatan:
+
+  1. **`onWrite()` hanya satu argumen.** `BLECharacteristicCallbacks` di core
+     3.3.x punya `virtual void onWrite(BLECharacteristic*)` - tidak ada
+     varian tiga-argumen lagi. Bentuk `(ch, uint8_t*, size_t)` berasal dari
+     Bluedroid:
+     `error: marked 'override', but does not override`.
+     Data sekarang dibaca lewat `getValue()`.
+  2. **`BLEService::createCharacteristic()` hanya dua argumen.** Bentuk tiga
+     argumen `(uuid, properties, accessPermissions)` sudah dihapus di core
+     3.3.x: `error: no matching function for call`. Access permission
+     (bila perlu) diatur lewat `setAccessPermissions()`.
+  3. **`BLEService` tidak punya `createDescriptor()`.** Nilai
+     `BLEDescriptor::PROPERTY_NOTIFY` juga tidak ada. CCCD dihapus karena
+     sudah tidak diperlukan - lihat `BLE2902` di bawah.
+  4. **`BLE2902` deprecated.** Pesan resmi core 3.3.x:
+     *"NimBLE does not support manually adding 2902 descriptors as they are
+     automatically added when the characteristic has notifications or
+     indications enabled."* Jadi menambahkan manual justru menghasilkan
+     warning dan **akan dihapus di versi berikutnya**. `BLE2902.h` dihapus
+     dari `#include`; CCCD dibuat otomatis NimBLE begitu characteristic punya
+     `PROPERTY_NOTIFY`.
+  5. **`USBHIDKeyboard::sendReport()` butuh argumen.** Overload-nya hanya
+     `sendReport(KeyReport*)`; `print()` sudah mengirim report sendiri, jadi
+     panggilan tanpa argumen tidak perlu dan gagal:
+     `error: no matching function for call`.
+
+### Added
+- **Seksi `D2` di `spike-test.js`: deutlichkan bentuk API core 3.3.11**,
+  semuanya dibaca dari header asli. Termasuk `onWrite` satu argumen,
+  `createCharacteristic` dua argumen (dihitung dengan menghitung koma di
+  level teratas), larangan `createDescriptor`, larangan `BLE2902`, dan
+  larangan `sendReport()` tanpa argumen.
+- Pemeriksaan `PROPERTY_NOTIFY` diperketat dari `>= 1` menjadi `tepat 2`
+  (HID report **dan** NUS TX). Versi lama tetap hijau saat satu dari dua
+  dihapus - ditemukan oleh uji negatif.
+- **Uji negatif: 6 dari 19 mutasi adalah persis compile error yang terjadi
+  nyata**, semuanya dideteksi. Total **19/19**.
+
+### Notes
+- **Kabar baik dari error tersebut: NimBLE yang dipakai.** Pesan deprecated
+  `BLE2902` hanya muncul pada backend NimBLE. Kalau yang terpakai Bluedroid,
+  stack BLE-nya jauh lebih boros RAM dan spike ini tidak akan relevan. Jadi
+  pertanyaan "NimBLE atau bukan" sudah terjawab: **NimBLE**.
+
+### Fixed
 - **Spike BLE HID tidak bisa dikompilasi - 4 API core ESP32 3.3.11 yang salah.**
   Semua diperbaiki setelah membaca header asli di instalasi Arduino lokal
   (`libraries/BLE/src/` dan `libraries/USB/src/`), bukan menebak dari
@@ -653,6 +439,155 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   "diverifikasi secara statis" - itu benar secara harfiah, tapi menyiratkan
   tingkat kepastian yang tidak ada. Test baru ini menambah apa yang bisa
   diperiksa, tapi **tetap bukan pengganti kompilasi**.
+
+### Fixed
+- **Firmware PROTOTYPE dan FINAL tidak bisa dikompilasi sejak Phase 10.**
+  Dibuktikan user saat mencoba compile; ada **tiga** bug terpisah, semuanya
+  berasal dari Phase 10 (abstraksi transport), bukan dari spike BLE.
+
+  1. **`#define TRANSPORT_USB 0` bentrok dengan enumerator enum.** Makro
+     disubstitusikan ke SELURUH token berikutnya, termasuk di dalam daftar
+     enumerator, sehingga `enum class TransportType { TRANSPORT_USB = 0 }`
+     berubah jadi `{ 0 = 0 }` dan gagal:
+     `error: expected identifier before numeric constant`.
+     **Perbaikan:** enumerator di-rename jadi `TP_USB` / `TP_BLE`. Makro
+     `TRANSPORT_USB`/`TRANSPORT_BLE` tetap ada karena dipakai di `#if`.
+     Makro dan enumerator **wajib** punya nama berbeda - ini kesalahan
+     desain yang tidak akan terulang karena penjelasannya ada di kedua berkas.
+
+  2. **`#define SERIAL g_transport` menimpa `#define SERIAL 0x0` dari core
+     Arduino** tanpa `#undef`, menghasilkan
+     `warning: "SERIAL" redefined`. **Perbaikan:** `#ifdef SERIAL` /
+     `#undef SERIAL` / `#endif` ditambahkan sebelum `#define`. Yang ditimpa
+     hanya makRO uppercase; objek `Serial` (lowercase) milik core tetap utuh.
+
+  3. **`Serial.dtr()` tidak bisa dipanggil.** Pada core ESP32 3.3.11,
+     `USBCDC` mendefinisikan `bool dtr;` sebagai member **protected**, bukan
+     fungsi - hasilnya dua error sekaligus:
+     `error: 'bool USBCDC::dtr' is protected within this context` dan
+     `error: expression cannot be used as a function`.
+     **Perbaikan:** memakai `operator bool()` yang memang publik di
+     `USBCDC`/`HWCDC`, ditambah pengecekan buffer RX. Diverifikasi langsung
+     terhadap `cores/esp32/USBCDC.h` di instalasi Arduino lokal.
+
+### Added
+- **Test `firmware-compile-guard-test.js`** (5 seksi) yang menangkap ketiga
+  kelas bug di atas tanpa toolchain: nama makro vs enumerator tidak boleh
+  sama (disimulasikan dengan preprocessor), `#undef SERIAL` harus ada dan
+  berurutan sebelum `#define`, dan `Serial.dtr()` dilarang muncul.
+  **Uji negatif: 5 mutasi, 5/5 terdeteksi** - termasuk pengembalian masing-masing
+  bug ke bentuk semula.
+  Test ini consciousness yang membaca penjelasan bug di dalam komentar juga
+  mengandung pola yang sama persis ("#define SERIAL", "Serial.dtr()"), jadi
+  komentar dibuang dulu sebelum dicocokkan.
+
+### Notes
+- **Ini kesalahan saya.** Abstraksi transport di Phase 10 saya tulis tanpa
+  satu pun kompilasi, dan static check yang ada ("kurung kurawal seimbang",
+  "simbol domain terdefinisi") secara struktural tidak bisa menangkap
+  bentrok nama makro maupun perubahan API core. Saya sudah尴_ASSERT bahwa
+  firmware "diverifikasi secara statis" - itu benar secara harfiah, tapi
+  menyiratkan tingkat expediency yang tidak ada. Test baru ini menambah apa yang
+  bisa diperiksa, tapi **tetap bukan pengganti kompilasi**.
+
+### Fixed
+- **Roda HSV salah total - setiap warna bergeser.** Dua bentuk rumus `x`
+  yang sempat dipakai keduanya salah:
+  - `x = c * (1 - frac(hp))` -> `h=0` menghasilkan **kuning**, bukan merah
+    (`x` tidak nol di batas sektor).
+  - `x = c * (1 - |frac(hp) - 1|)` -> `h=60` menghasilkan **hijau**, bukan
+    kuning (salah di batas sektor).
+  Yang benar adalah `x = c * (1 - |fmodf(hp,2) - 1|)`, sudah diverifikasi
+  titik per titik: h=0/60/120/180/240/300 menghasilkan
+  merah/kuning/hijau/sian/biru/magenta, dan interpolasi di tengah sektor
+  benar (h=30 oranye, h=90 hijau-kuning). Bug ini **tidak akan terlihat di
+  device** - semua warna akan terlihat "cukup", hanya tidak persis yang
+  dimaksud.-Test yang menangkapnya memeriksa titik-titik batas sektor, bukan
+  cuma "warna berubah saat phase bergeser".
+  Catatan: ini ditemukan setelah `rgbHsv` sempat dianggap benar karena test
+  yang hanya memeriksa "frame berubah" tetap hijau meski warnanya salah.
+
+### Notes
+- Tiga test yang saya tulis sempat salah di awal dan hampir "memperbaiki" kode
+  yang sebenarnya sudah benar: (1) mengira `s=255` = putih, padahal di HSV
+  saturasi penuh = warna murni dan putih butuh `s=0`; (2) memakai luma
+  sederhana untuk menguji snake sehingga "paling terang" bukan kepala saat
+  warnanya bersaturasi rendah; (3) menganggap mode 7 (Randomize) harus berubah
+  tiap phase, padahal kodenya sengaja memakai seed - kalau berubah tiap frame
+  akan flickering, bukan "randomize". Test yang salah lebih berbahaya daripada
+  kode yang salah, karena ia mengarahkan perbaikan ke arah keliru.
+
+### Added
+- **`firmware/spike_ble_hid/spike_ble_hid.ino` - spike kelayakan BLE HID
+  (THROWAWAY, sekali pakai).** Seluruh Phase 10 bergantung pada tiga
+  pertanyaan yang jawabannya belum diketahui, dan ketiganya bisa membatalkan
+  rencana kalau salah:
+  1. Apakah TinyUSB/USB-CDC dan BLE bisa hidup berdampingan di ESP32-S3?
+  2. Apakah service HID benar-benar bisa mengirim key ke Windows, atau hanya
+     terlihat di Device Manager?
+  3. Apakah sisa RAM cukup setelah stack BLE?
+  Spike menjawab ketiganya di device nyata, sebelum handler app dan firmware
+  BLE ditulis. Foldernya terpisah dari `common/` dan folder profil supaya
+  tidak pernah ikut ter-build di firmware produksi.
+  - Satu GATT server dengan **dua service**: HID (1812) dan NUS
+    (6e400001-…). Ini sekaligus membuktikan keduanya bisa hidup berdampingan -
+    kalau tidak bisa, jalur perintah konfigurasi harus lewat cara lain.
+  - Melaporkan `ESP.getFreeHeap()` / `getMinFreeHeap()` / `getMaxAllocHeap()` /
+    `getHeapSize()` dan keberadaan PSRAM, supaya kebocoran memori terlihat dari
+    laporan periodik, bukan dari gejala "device mati setelah beberapa menit".
+  - Inti yang harus dipakai: **NimBLE** (`BLEDevice::init()` mencetak banner
+    "NimBLE"; kalau muncul "Bluedroid", core-nya bukan Arduino >= 3). NimBLE
+    jauh lebih hemat RAM dan ini yang membuat spike relevan.
+
+- **Test `spike-test.js` (7 seksi, 40+ pemeriksaan).** Satu-satunya verifikasi
+  yang mungkin tanpa toolchain Arduino: kurawal seimbang setelah komentar
+  dan string dibuang, `setup()`/`loop()` ada dan tidak redefined,
+  `loopImpl()` tidak rekursif, **UUID NUS identik dengan yang di
+  `src-tauri/src/ble.rs`**, dua service cohabit di satu server, CCCD ada di
+  kedua characteristic, laporan memori lengkap, dan tidak ada `delay()` besar
+  di loop.
+  Pemeriksaan UUID ke `ble.rs` itu yang paling berisiko: kalau UUID berbeda,
+  companion app tidak akan pernah menemukan device - dan itu baru ketahuan
+  setelah pairing di Windows, jauh setelah kode ditulis.
+  Uji negatif: **11 mutasi, 11/11 terdeteksi** (kurawal tidak seimbang,
+  `loop()` hilang, `loop()` dobel, `loopImpl()` rekursif, UUID service/TX
+  berubah, CCCD dihapus, service NUS pindah ke server sendiri, laporan memori
+  dihapus, `delay(5000)` di loop, penanda throwaway dihapus).
+
+### Added
+- **`firmware/common/rgb_effects.h` - mesin efek RGB sebagai fungsi MURNI.**
+  Dipisah dari `rgbApplyState()` (yang ada di tiap sketsh profil) supaya
+  algoritma warna bisa diuji di host tanpa hardware. Berkas ini sengaja
+  TIDAK meng-include `Arduino.h`, tidak memakai `millis()`/`delay()`, tidak
+  menyentuh `strip`, dan tidak punya variabel global yang berubah antar
+  panggilan. Semua input lewat parameter, semua output lewat array `out[]`.
+  Animasi (peng incremented phase) tetap urusan pemanggil - mode 2, 3, 4, 5,
+  6, 7 punya frame yang berbeda tiap phase; mode 0, 1, 8 diam.
+  `rgbRand()` memakai xorshift32 supaya hasilnya **deterministik terhadap
+  seed**: memakai `random()` Arduino akan membuat hasil berbeda antar
+  platform, sehingga tidak bisa diuji di Node maupun direproduksi di device.
+  Kecerahan sengaja TIDAK dikalikan di sini - itu urusan
+  `strip.setBrightness()` di sisi hardware, supaya tidak ada yang terpotong
+  dua kali.
+  Header ini baru dipakai di test pada commit ini; `rgbApplyState()` di kedua
+  sketsh belum memanggilnya (itu bagian step 6/15).
+
+- **Test `rgb-effects-test.js` (10 seksi) - menjalankan header asli, bukan
+  salinan.** Test membaca `rgb_effects.h`, menerjemahkannya dari C ke JS,
+  lalu MENJALANKAN hasil terjemahan itu.
+  Ini penting karena versi pertama menyalin algoritmanya secara manual ke
+  file test dan hanya membaca header sebagai teks. **Uji negatif membuktikan
+  7/7 regresi yang disisipkan ke header asli TIDAK TERDETEKSI sama sekali** -
+  test berjalan di salinan, bukan di kode yang diuji. Sekarang satu-satunya
+  salinan yang boleh ada adalah terjemahan mekanis, dan kodenya sendiri
+  hanya ada di satu tempat.
+  Yang diverifikasi: 9 mode mengisi 9 LED dengan warna valid; mode statis
+  diam; mode bergerak berubah seiring phase; breathing tidak pernah gelap/putih
+  total; rainbow 9 warna berbeda; snake tepat 3 LED menyala dan kepala
+  bergeser; randomize deterministik terhadap seed; tidak ada wrap di phase
+  0..65535; kecepatan memengaruhi perubahan; roda HSV menghasilkan warna
+  primer/sekunder yang benar di setiap batas 60 derajat; clamping s/v/h.
+  **Uji negatif: 14 mutasi, 14/14 terdeteksi.**
 
 ### Fixed
 - **Roda HSV salah total - setiap warna bergeser.** Dua bentuk rumus `x`
@@ -774,6 +709,61 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   perpindahan layer ditunda.
 
 ### Fixed
+- **Preset aktif menimpa pilihan layer user dalam ~120 ms.** `lastDeviceLayerEventAt`
+  sudah diisi setiap ada `EVT:LAYER:` sejak lama, tapi **tidak pernah dibaca siapa
+  pun** - sudah diverifikasi di seluruh riwayat repo. Akibatnya memutar knob ke
+  layer 3 akan langsung ditimpa balik ke layer 0 oleh preset Adaptive yang
+  sedang aktif, karena polling window foreground berjalan tiap ~1,2 detik dan
+  tidak tahu bahwa user baru saja memilih layer.
+  - Auto-switch sekarang ditunda **1,5 detik** setelah `EVT:LAYER:`. Yang
+    ditunda hanya perpindahan **otomatis**; klik tab di app tidak ikut ditunda
+    karena itu pernyataan langsung dari user.
+  - **Auto-switch juga diblokir selama ada dump yang berjalan.** Dump memuat
+    ulang seluruh layer dan memanggil `DUMP` untuk masing-masing; auto-switch
+    di tengah itu akan menyisipkan perintah ke stream dump yang sedang dibaca.
+  - `EVT:LAYER:` yang datang **di tengah dump** sekarang ditunda, bukan
+    langsung diterapkan atau diabaikan. Kalau langsung diterapkan,
+    `currentLayer` ikut berubah dan `DUMP_END` yang me-resolve waiter memakai
+    `currentLayer` sebagai fallback bisa me-resolve waiter yang salah - isi
+    preset yang tersimpan ke disk jadi keliru.
+  - Urutan di `DUMP_END` penting: `resolveDumpWaiters()` harus dipanggil
+    **sebelum** layer tertunda diterapkan. Kalau dibalik, fallback
+    `currentLayer` sudah menunjuk layer yang salah saat resolve. **Bug urutan
+    ini ditemukan oleh `layer-hold-behaviour-test.js`, bukan oleh test
+    berbasis teks** - test regex tidak bisa membedakan `if (x)` dari
+    `if (false && x)`, keduanya sama-sama lolos.
+
+### Changed
+- **Nilai `lastDeviceLayerEventAt` dipindahkan dari `protocol-parser.js` ke
+  `adaptive.js`, dikirim lewat panggilan `noteDeviceLayerEvent()`.**
+  Versi pertama meng-`import` `getLastDeviceLayerEventAt()` dari
+  `protocol-parser.js` ke `adaptive.js` - itu **membuat siklus import**,
+  karena `protocol-parser.js` sudah mengimpor `adaptive.js` (untuk logika
+  escape & preset). Kebijakan proyek sejak Phase 8 melarang siklus, jadi arah
+  panggilan dibalik ke arah yang memang sudah ada: parser → adaptive.
+  `dumpInProgress` tetap di-import langsung dari `serial-transport.js`
+  karena modul itu tidak mengimpor `adaptive.js`, jadi tidak membentuk siklus.
+
+### Added
+- **`import-cycle-check.mjs`** - membangun graf import seluruh `src/` dan
+  mencari siklus dengan DFS. Modularisasi Phase 8 pecah `main.js` jadi 15 modul
+  dengan aturan "tidak saling mengimpor balik", tapi aturan itu tidak pernah
+  diawasi alat - siklus baru bisa masuk diam-diam. Mengabaikan komentar dulu,
+  karena `device-state.js` menyebut `import { ROWS } from './device-state.js'`
+  di dalam penjelasan dan akan dilaporkan mengimpor dirinya sendiri.
+  Diverifikasi dengan uji negatif yang menyuntikkan `adaptive -> protocol-parser`
+  dan memastikan siklus terdeteksi.
+- **`layer-hold-test.js`** (6 seksi, 26 pemeriksaan) - bentuk kode: ambang jeda
+  terdefinisi, `0` tidak memblokir selamanya, helper benar-benar dipanggil,
+  `dumpInProgress` ikut memblokir, dan graf import tetap satu arah.
+- **`layer-hold-behaviour-test.js`** - menguji **perilaku**, bukan teks:
+  menjalankan ulang alur `DUMP_END` dengan state tiruan dan membuktikan bahwa
+  perilaku lama benar-benar merusak (waiter resolve dengan layer 2, bukan 0)
+  sementara perilaku baru benar. Inilah test yang menemukan bug urutan di atas.
+- Kunci i18n baru `parser.layerDuringDump` (ID + EN) untuk pesan log saat
+  perpindahan layer ditunda.
+
+### Fixed
 - **Status "belum disimpan" di halaman RGB tidak diumumkan ke screen reader
   (Phase 9.3).** `#rgbSaveState` menampilkan teks "belum disimpan" setiap kali
   RGB diubah. Tanpa live region, teks itu hanya terlihat - screen reader tidak
@@ -795,6 +785,111 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   diumumkan selalu berisi informasi bermakna.
   Diverifikasi dengan uji negatif yang mengembalikan `#rgbSaveState` ke span
   biasa - **kedua test mendeteksinya**.
+
+### Added
+- **Spesifikasi protokol di `README.md`.** Sebelumnya `README.md` masih
+  template Tauri bawaan 7 baris - tidak ada spesifikasi protokol di mana pun
+  selain implisit di dalam test. Sekarang ditulis sekali sebagai rujukan
+  manusia: seluruh perintah app ke device beserta formatnya, seluruh baris
+  device ke app, konstanta yang harus cocok dengan firmware, dan tiga batasan
+  yang mudah dilanggar (`[KEY]` maksimal 62 byte, `currentLayer` ikut
+  tersimpan ke flash, `DUMP:<n>` tidak memindahkan layer aktif).
+- **Test `version-test.js`.** Mengunci versi `package.json`, `Cargo.toml`, dan
+  `tauri.conf.json` tetap sama. Ketiganya dulu tidak sinkron (0.1.0 vs 0.2.0)
+  dan Tauri **tidak** memverifikasi angka ini, jadi penyimpangan bisa terjadi
+  diam-diam tanpa build gagal.
+- **Test `readme-protocol-test.js`.** Memastikan README tidak berbohong:
+  setiap perintah yang didokumentasikan harus ada di firmware, setiap prefix
+  yang didokumentasikan harus benar-benar dicetak firmware, dan angka di
+  README (`RGB_COUNT`, `APP_SLOTS`, batas 62 byte) dibandingkan langsung dengan
+  `limits.h`/`macropad_core.h` - bukan hanya dicek "firmware = 9", karena itu
+  tetap hijau kalau README menulis 16.
+  Diverifikasi dengan **uji negatif** yang membuat empat kebohongan (README
+  kembali jadi template Tauri, perintah fiktif `BLE:SCAN`, angka `[KEY]` salah,
+  jumlah RGB slots salah) - keempatnya terdeteksi.
+
+### Changed
+- `package.json` 0.1.0 → **0.2.0** agar sama dengan `Cargo.toml` dan
+  `tauri.conf.json`.
+- README mencatat jujur bahwa firmware hanya bisa diverifikasi secara statis di
+  lingkungan build ini (tidak ada toolchain Arduino), dan compile + uji di
+  device tetap wajib.
+
+### Notes
+- **Koreksi pada test, bukan pada README.** Versi pertama
+  `readme-protocol-test.js` salah menghitung panjang baris `[KEY]` sebagai 56
+  byte karena kelewatan menghitung prefix literal `"[KEY] "` (6 karakter).
+  Test menyimpulkan README salah, padahal README dan `key-event-test.js` yang
+  sudah ada sama-sama benar (61 + newline = 62). Test yang diperbaiki sekarang
+  menghitung ulang dari format lengkap, sehingga angkanya benar-benar berasal
+  dari firmware dan bukan dari tebakan.
+
+### Fixed
+- **Status "belum disimpan" di halaman RGB tidak diumumkan ke screen reader
+  (Phase 9.3).** `#rgbSaveState` menampilkan teks "belum disimpan" setiap kali
+  RGB diubah. Tanpa live region, teks itu hanya terlihat - screen reader tidak
+  mengumumkannya karena teks statis tidak masuk pengumuman otomatis. User
+  buta bisa menutup app tanpa pernah tahu perubahan RGB-nya belum tersimpan ke
+  device. Sekarang `#rgbSaveState` memakai `role="status"` +
+  `aria-live="polite"`, konsisten dengan `#statusText` dan `#log`.
+  `polite` (bukan `assertive`) dipilih supaya tidak memotong apa yang sedang
+  dibacakan screen reader.
+  Live region ini sudah ada di HTML dan hanya diubah lewat `textContent`, jadi
+  screen reader punya kesempatan membandingkan "sebelum" vs "sesudah" - kalau
+  elemennya baru dibuat saat teks muncul, tidak ada yang diumumkan.
+
+### Added
+- **Test `rgb-savestate-a11y-test.js`** (5 seksi, 13 pemeriksaan) plus seksi
+  5c di `a11y-test.js`. Yang dijaga bukan hanya atributnya, tapi juga bahwa
+  live region **sudah ada sebelum teks berubah** (tidak dibuat lewat
+  `createElement`), tidak ditulis lewat `innerHTML`, dan teks yang
+  diumumkan selalu berisi informasi bermakna.
+  Diverifikasi dengan uji negatif yang mengembalikan `#rgbSaveState` ke span
+  biasa - **kedua test mendeteksinya**.
+
+### Fixed
+- **Device yang port-nya muncul sebelum firmware siap tidak PERNAH tersambung.**
+  Dua hal bertemu dan saling menutup jalan:
+  1. `scheduleRetry()` maksimal **2x percobaan** lalu menyerah permanen.
+  2. `pollPorts()` hanya melakukan probe kalau ada port **BARU** muncul.
+
+  Device yang di-colok saat Windows sudah start sering punya port yang muncul
+  di enumerasi *sebelum* firmware selesai boot, jadi probe pertama gagal. Sesudah
+  itu port-nya sudah ada di `knownPorts` sehingga tidak lagi dianggap "baru",
+  dan `pollPorts()` early-return setiap 2 detik tanpa melakukan apa pun. Retry
+  juga sudah habis di percobaan kedua. Akibatnya app tidak pernah tersambung -
+  satu-satunya jalan keluar adalah restart app atau cabut-colok device.
+
+  Diverifikasi dengan simulasi sebelum-dan sesudah: device siap pada detik
+  ke-8 tetap `TIDAK TERHUBUNG` dengan kode lama, dan `TERHUBUNG` di poll ke-4
+  dengan kode baru.
+  - Retry dinaikkan ke **6x percobaan** dengan **backoff**
+    (2,5 dtk - 5 dtk - 7,5 dtk - 10 dtk - 12,5 dtk - 15 dtk, dibatasi 20 dtk).
+    Backoff naik supaya port yang memang bukan MacroPad tidak di-probe terlalu
+    sering, tapi cukup cepat untuk device yang sedang boot.
+  - `pollPorts()` sekarang treats port yang **sudah gagal di-probe** sama
+    seperti port baru. Inilah jaring pengaman yang membuat app menunggu tanpa
+    batas, bukan menyerah - retry 6x hanyalah lapisan pertama.
+  - `failedProbes` dibersihkan di tiga tempat supaya tidak basi: saat
+    `connect()` berhasil (sekalian membatalkan retry terjadwal), saat
+    `handleDeviceLost()` (tak ada probe ke port yang sudah dicabut), dan saat
+    `autoDetect()` (tombol ↻ me-reset, jadi probe benar-benar dari awal).
+    Tanpa pembersihan ini, port yang tidak bisa dibuka akan di-probe setiap 2
+    detik **selamanya**.
+  - Yang sengaja tidak berubah: retry tetap berhenti begitu user menekan
+    Disconnect (`autoReconnect = false`), dan interval `pollPorts` tetap 2
+    detik.
+
+### Added
+- **Test `retry-test.js`** (5 seksi, 21 pemeriksaan). Yang paling dijaga adalah
+  re-probe port gagal - itu inti perbaikannya - plus ketiga tempat pembersihan
+  `failedProbes`. Diverifikasi dengan **uji negatif** yang membuat enam
+  regresi: batas retry dikembalikan ke 2x, early-return tanpa `retryable`,
+  `targets` tidak memakai `retryable`, penandaan gagal dihapus, pembersihan
+  saat connect dihapus, dan backoff dikembalikan ke jeda tetap. **6/6
+  terdeteksi.** Kasus "port hantu di-probe selamanya" ikut diuji karena itu
+  risiko balik dari perubahan ini - menandai terlalu banyak sama buruknya dengan
+  tidak menandai sama sekali.
 
 ### Fixed
 - **Device yang port-nya muncul sebelum firmware siap tidak PERNAH tersambung.**
@@ -875,6 +970,40 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   bukan kegagalan total, jadi sulit dilaporkan user.
 
 ### Fixed
+- **Reconnect kembali ke layer 4, bukan layer 0.** Akar masalahnya di firmware:
+  `currentLayer` adalah bagian dari struct `cfg` yang sama persis dengan isi
+  flash, jadi `SAVE` di layer 4 menuliskan `currentLayer=4` ke NVS. Setelah
+  device dimatikan dan dinyalakan, `INFO:` melaporkan `currentLayer=4`, dan
+  `applyInfo()` menerimanya apa adanya - sehingga setiap reconnect user terjebak
+  di layer 4.
+  - `connect()` sekarang mengirim `LAYER:0` **sebelum** `INFO`. Device sudah
+    berada di layer 0 saat `INFO` diproses, jadi `currentLayer` yang dilaporkan
+    = 0 dan hanya satu layer yang dimuat.
+  - **Urutan itu penting.** Kalau `INFO` dikirim lebih dulu, app akan memuat
+    layer 4 ke grid lalu berganti ke layer 0 - grid berkedip menampilkan isi
+    yang salah sebelum benar. Ada test yang mengunci urutan ini.
+  - Layer 0 selalu valid karena firmware menjamin `layerCount >= 1`
+    (`macropad_core.h:293`), jadi perintah ini aman dikirim tanpa harus tahu
+    jumlah layer lebih dulu.
+  - **Firmware tidak diubah.** Pilihan sadar: tidak memaksa `currentLayer` ke 0
+    di sisi firmware, karena `LAYER:` yang diterima saat boot tidak selalu
+    berarti "mulai dari awal" - gestur knob (long-press) juga menyentuh
+    `currentLayer`, dan memaksa 0 di boot akan menimpaREFERENSI milik user.
+   App yang tahu konteks sedang dalam sesi baru, jadi app yang meminta.
+  - Fix "preset kembali ke layer terakhir" (commit sebelumnya) tetap utuh dan
+    tidak bertabrakan: `openPresetEditor()` mengirim `LAYER:<target>` sendiri
+    dan tidak dipaksa ke 0.
+
+### Added
+- **Test `reconnect-layer0-test.js`** (5 seksi, 18 pemeriksaan). Menangkap
+  urutan perintah di `connect()`, jaminan `layerCount >= 1` di firmware,
+  keputusan tidak mengubah firmware, jalur pemuatan `INFO:`, dan memastikan
+  fix layer-terakhir-per-preset tidak rusak. Diverifikasi dengan **uji negatif**:
+  `LAYER:0` dihapus total, lalu urutannya dibalik (`INFO` dulu) - keduanya
+  terdeteksi. Kasus kedua penting karena hanya menimbulkan kedipan singkat,
+  bukan kegagalan total, jadi sulit dilaporkan user.
+
+### Fixed
 - **Preset selalu terbuka di layer 0.** `openPresetEditor()` mengirim
   `LAYER:0` secara hardcoded, jadi membuka ulang preset yang sama selalu
   melompat kembali ke layer pertama - padahal user mungkin sedang mengedit
@@ -905,6 +1034,106 @@ Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.
   peta dihapus, pencatatan di `exitPresetEditor` dihapus - dan memastikan keempatnya
   **terdeteksi**. Keempatnya adalah bug senyap: tidak melempar error, hanya
   berperilaku salah.
+
+### Changed
+- **Phase 10.4 (sebagian) - kontrol koneksi manual disembunyikan, bukan dihapus.**
+  Auto-connect USB sudah bekerja sendiri (`tryAutoConnect()` / `pollPorts()` /
+  `autoDetect()` di `serial-transport.js`), jadi dropdown COM dan tombol
+  Sambung/Putuskan tidak lagi perlu terlihat di header. Header sekarang hanya
+  memuat status: titik indikator + teks status + badge profil + baterai.
+  - Panel baru **Koneksi manual (advanced)** memakai `<details>`/`<summary>`
+    bawaan HTML, bukan tombol + `display:none` buatan sendiri - sudah punya
+    semantik disclosure dan bisa dioperasikan keyboard. Tertutup secara
+    default.
+  - Kontrol **dipindahkan**, bukan dihapus. Satu-satunya cara pulih dari
+    auto-connect yang gagal (device boot lambat, port COM berubah, enumerasi
+    Windows salah) harus tetap ada.
+  - **Panelnya sengaja diletakkan DI LUAR `<div id="app">`.** Ini bukan
+    detail penempatan: `setConnected()` menyembunyikan `#app` saat koneksi
+    putus, dan semua halaman aplikasi ada di dalam `#app`. Kalau panel manual
+    diletakkan di halaman Setting, begitu device tercabut panelnya ikut
+    hilang - user kehilangan satu-satunya cara memaksa menyambungkan device
+    tepat di saat dia paling membutuhkannya. `manual-connect-test.js` betrayal
+    memverifikasi posisi ini secara eksplisit.
+  - Tombol `#btnConnect` **tidak memakai `data-i18n`**. Labelnya diubah JS
+    antara "Sambung" dan "Putuskan" mengikuti status koneksi; kalau diberi
+    `data-i18n`, `applyI18n()` akan menimpanya dengan teks statis setiap ganti
+    bahasa dan tombol akan selalu membaca "Sambung" padahal device sedang
+    tersambung. Label sekarang punya satu sumber: `updateConnectButton()` di
+    `serial-transport.js`, didaftarkan lewat `registerRerender()` supaya ikut
+    diterjemahkan tanpa kehilangan status. (`registerRerender` sendiri
+    sebelumnya sudah di-`import` di `main.js` tapi belum pernah dipakai.)
+  - Kunci i18n baru: `header.manualConnect`, `header.portLabel`,
+    `header.manualConnectHint` (ID + EN). `header.connect` sudah ada dan
+    dipakai ulang, tidak diduplikasi.
+
+### Added
+- **Test `manual-connect-test.js`** (7 seksi, 38 pemeriksaan) untuk Phase 10.4A.
+  Yang paling dijaga adalah posisi panel di luar `#app` - kalau panel ikut
+  tersembunyi saat disconnect, user terkunci tanpa jalan keluar. Seksi lain:
+  kontrol tidak lagi di header tapi masih ada di dokumen, auto-connect tetap
+  terpanggil, label tombol tidak bertabrakan dengan i18n, kunci locale lengkap
+  dan tidak dobel, serta `focus-visible` pada `<summary>`.
+  Diverifikasi dengan **uji negatif**: panel dipindahkan ke dalam `#app`, test
+  dipastikan gagal dengan pesan yang tepat, file dipulihkan, test hijau lagi.
+
+### Fixed
+- **Preset selalu terbuka di layer 0.** `openPresetEditor()` mengirim
+  `LAYER:0` secara hardcoded, jadi membuka ulang preset yang sama selalu
+  melompat kembali ke layer pertama - padahal user mungkin sedang mengedit
+  layer 3. Sekarang layer terakhir dicatat per preset dan dipakai lagi saat
+  preset yang sama dibuka kembali dalam satu sesi koneksi. Preset yang belum
+  pernah dibuka tetap mulai dari layer 0, sesuai permintaan.
+  - Peta `lastLayerByPreset` **di-reset tiap koneksi putus**
+    (`resetAdaptiveRuntimeState()`), bukan tiap aplikasi ditutup. Alasannya:
+    isi RAM device ikut hilang saat koneksi putus, jadi device sedang tidak
+    menampilkan preset mana pun. Layer yang tercatat dari sesi lalu sudah tidak
+    punya isi - membukanya hanya membuka layer kosong.
+  - **Dijepit ke `[0, jumlah layer preset - 1]`.** Tanpa jepit, preset yang
+    tadinya punya 5 layer lalu dikecilkan (mis. sebagian layer dihapus) akan
+    mengirim `LAYER:4` yang tidak ada - device diam dan grid tampil kosong
+    tanpa pesan error apa pun.
+  - Dicatat di **dua jalur keluar**: `openPresetEditor()` (sebelum
+    `editingPresetId` ditimpa, sehingga lompat langsung dari preset A ke preset B
+    juga tercatat) dan `exitPresetEditor()` (jalur Selesai/Batal). Kalau hanya
+    satu, layer terakhir hilang untuk jalur yang lain - dan gejalanya baru
+    muncul setelah disconnect.
+
+### Added
+- **Test `preset-layer-test.js`** (5 seksi, 18 pemeriksaan) untuk fix di atas.
+  Yang diuji: tidak adanya lagi `LAYER:0` hardcoded, Default-to-0 untuk preset
+  yang belum pernah dibuka, penjepit rentang layer, pencatatan di kedua jalur
+  keluar, dan reset per sesi koneksi. Diverifikasi dengan **uji negatif** yang
+  sengaja membuat empat regresi - `LAYER:0` hardcoded, penjepit dihapus, reset
+  peta dihapus, pencatatan di `exitPresetEditor` dihapus - dan memastikan keempatnya
+  **terdeteksi**. Keempatnya adalah bug senyap: tidak melempar error, hanya
+  berperilaku salah.
+
+### Fixed
+- **Kontrol RGB tanpa nama yang bisa dibaca (Phase 9.4).**
+  Dua slider (`#rgbBri`, `#rgbSpeed`) punya `<span>` teks di sebelahnya.
+  Terlihat, tapi `<span>` tidak memberi accessible name - screen reader hanya
+  membacakan "slider" tanpa nama. Dua color picker (`#rgbColorPicker`,
+  `#rgbModeColor`) bahkan tidak punya teks sama sekali di dekatnya, jadi
+  keduanya diumumkan sebagai "color picker" telanjang.
+  - `<span>` diganti `<label for>` - nama jadi benar dan tetap terlihat.
+  - `#rgbColorPicker` dihubungkan ke `#rgbKeyTitle` via `aria-labelledby`.
+    Judul itu diisi dinamis di `rgb-page.js` dengan
+    `t('rgb.keyColorTitle', { name })`, jadi nama yang terbaca selalu menyebut
+    key yang sedang dipilih - tidak ada kunci i18n baru yang bisa basi.
+  - `#rgbModeColor` dapat `aria-label` lewat kunci baru `rgb.modeColorLabel`
+    (ID + EN), lewat `data-i18n-attr` supaya ikut ganti bahasa.
+  - Nilai slider sekarang punya `aria-valuetext` berisi versi persen yang
+    sama persis dengan yang tertulis di layar (`78%`), bukan angka mentah
+    0-255 yang ada di atribut `value`. Span readout di layar diberi
+    `aria-hidden="true"` supaya tidak dibacakan dua kali.
+  - Penulisan nilai diringkas ke satu helper `setSliderReadout()` yang
+    menulis teks layar dan `aria-valuetext` bersamaan. Sebelumnya ada
+    4 titik penulisan terpisah; mengisi salah satu saja akan membuat angka yang
+    dibacakan berbeda dari yang terlihat, dan itu tidak akan ketahuan.
+  - `styles.css`: selector `.rgb-slider-row > span:first-child` diperluas
+    menyertakan `label:first-child`. Tanpa ini label kehilangan lebar tetap
+    78px dan slider melebar tidak seragam.
 
 ### Fixed
 - **Kontrol RGB tanpa nama yang bisa dibaca (Phase 9.4).**
@@ -1319,6 +1548,16 @@ gb-page-test, dan
   sebagai regresi cara kerja device ternyata bukan; format barisnya sudah
   diverifikasi masih persis sama.
 
+- **Dua skrip test usang setelah abstraksi transport Phase 10.**
+  `key-event-test.js` dan `protocol-contract-test.js` masih mencari literal
+  `Serial.printf(`, padahal firmware sekarang memakai macro `SERIAL->printf(`.
+  Akibatnya 5 pemeriksaan gagal palsu (`[KEY]`, `RGB_DUMP:`, `RGB_KEY:`,
+  `EVT:BATT:`, `HWINFO:` dilaporkan TIDAK ADA) padahal string-nya utuh di
+  `macropad_core.h` - hanya nama objeknya yang berubah. Regex-nya sekarang
+  menerima keduanya lewat `(?:Serial\.|SERIAL->)printf`. Yang sempat dicurigai
+  sebagai regresi cara kerja device ternyata bukan; format barisnya sudah
+  diverifikasi masih persis sama.
+
 
 #### Fase 7
 - **Notifikasi overlay menerima teks lewat `Window::eval()`** — Rust menyusun statement
@@ -1385,6 +1624,27 @@ gb-page-test, dan
   dynamic import di dalam `<script>` biasa dianggap path relatif oleh plugin HTML Vite.
 
 ## Belum dikerjakan
+
+### Phase 10 - BLE (lanjutan)
+
+Yang sudah ada: abstraksi transport di firmware (`TRANSPORT_USB` / `TRANSPORT_BLE`,
+default USB), modul WinRT GATT di `src-tauri/src/ble.rs`, dan enam perintah Tauri
+(`ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`, `ble_read`,
+`ble_is_connected`) yang sudah kompilasi bersih. Yang belum:
+
+- **Transport BLE di sisi JavaScript.** Frontend masih talking `tauri-plugin-serial`
+  secara langsung; belum ada cabang kode yang memilih USB atau BLE.
+- **Auto-connect / auto-reconnect.** Belum ada.
+- **Hapus dropdown COM + tombol Refresh/Connect**, sisakan status saja. Belum;
+  sengaja ditahan sampai auto-connect benar-benar bekerja.
+- **Fallback force-connect manual** yang disembunyikan (bukan dihapus) selama 1-2
+  rilis pertama setelah auto-connect. - belum.
+- **`BleTransport` di firmware.** Yang ada baru interface + `UsbTransport`;
+  `TRANSPORT_TYPE` masih `TRANSPORT_USB`.
+- Enam perintah BLE sengaja **tidak** disambungkan ke state Tauri yang sebenarnya
+  dulu, supaya bisa diuji terpisah dari UI. Menyambungkannya adalah langkah
+  berikutnya.
+
 
 ### Phase 10 - BLE (lanjutan)
 

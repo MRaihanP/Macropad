@@ -18,6 +18,7 @@
     "serialplugin:allow-available-ports",
     "serialplugin:allow-open",
     "serialplugin:allow-close",
+    "serialplugin:allow-cancel-read",
     "serialplugin:allow-read",
     "serialplugin:allow-write",
     "serialplugin:allow-start-listening",

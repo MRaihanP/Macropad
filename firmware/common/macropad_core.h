@@ -1102,10 +1102,7 @@ void setup() {
   Keyboard.begin();
   ConsumerControl.begin();
 
-  // cdc=1 berarti port USB sudah dibuka host saat baris ini dicetak, jadi
-  // log boot di bawahnya benar-benar terlihat di Serial Monitor. cdc=0 berarti
-  // enumerate belum selesai dalam USB_CDC_CONNECT_WAIT_MS.
-  SERIAL->printf("=== ESP32-S3 Macro Pad Firmware v5 === cdc=%d\n", (int)usbCdcReadyAtBoot);
+  SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
   SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
   loadConfigFromFlash();
   for (uint8_t i = 0; i < APP_SLOTS; i++) resetCfgStruct(slotCfg[i]);

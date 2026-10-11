@@ -53,15 +53,6 @@
              reader tanpa memutus apa yang sedang dibacakan. -->
         <span id="statusText" role="status">Not connected</span>
         <span class="hw-badge" id="hwProfileBadge" style="display:none;"></span>
-        <!-- Transport selector: USB / BLE -->
-        <label class="transport-select" id="transportSelectLabel">
-          <span data-i18n="header.transport">Transport</span>
-          <select id="transportSelect" aria-label="Transport">
-            <option value="usb">USB</option>
-            <option value="ble">BLE</option>
-          </select>
-        </label>
-        <span class="hw-badge" id="hwProfileBadge" style="display:none;"></span>
         <!-- Baterai: role="img" karena isinya SVG, yang tidak bisa dibaca screen reader.
              Labelnya diperbarui dari battery-ui.js. -->
         <span class="batt" id="battInd" role="img">
@@ -95,12 +86,6 @@
     <details class="manual-connect" id="manualConnect">
       <summary data-i18n="header.manualConnect">Koneksi manual</summary>
       <div class="manual-connect-body">
-        <label class="hint" for="transportSelect" data-i18n="header.transport">Transport</label>
-        <select id="transportSelect" aria-label="Transport">
-          <option value="usb">USB</option>
-          <option value="ble">BLE</option>
-        </select>
-
         <label class="hint" for="portSelect" data-i18n="header.portLabel">Port device</label>
         <div class="manual-connect-row">
           <select id="portSelect" data-i18n-attr="aria-label:header.portLabel"></select>
