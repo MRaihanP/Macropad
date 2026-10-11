@@ -43,10 +43,10 @@ const cases = [
     to: 'HidLink g_hidLink = (HidLink)HID_LINK_DEFAULT;\ninline const char* hidLinkName(HidLink l) { return "usb"; }',
   },
   {
-    name: 'proto= muncul di HWINFO (F2 mengerjakan langkah F3)',
+    name: 'proto= dihapus dari HWINFO (F2 mengerjakan langkah F3)',
     file: CORE,
     from: 'simulated=%d,iface=%s,proto=%s\\n",',
-    to: 'simulated=%d,iface=%s,proto=%s,foo=%s\n",',
+    to: 'simulated=%d,iface=%s\\n",',
   },
   {
     name: 'field lama rgbSlots dihapus (ganti nama tanpa alasan)',
