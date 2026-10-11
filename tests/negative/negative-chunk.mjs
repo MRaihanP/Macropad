@@ -21,8 +21,8 @@ const cases = [
   {
     name: 'BLE_NUS_MAX_CHUNK 244 kembali (hardcode)',
     file: SHARED,
-    from: 'extern uint16_t bleNusChunkLimit();',
-    to: '#define BLE_NUS_MAX_CHUNK 244\nextern uint16_t bleNusChunkLimit();',
+    from: 'uint16_t bleNusChunkLimit();',
+    to: '#define BLE_NUS_MAX_CHUNK 244\nuint16_t bleNusChunkLimit();',
   },
   {
     name: 'onMTUChange membuang nilai MTU lagi',
