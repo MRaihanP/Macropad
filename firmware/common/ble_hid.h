@@ -495,8 +495,13 @@ static void bleHidInit() {
 
 // Diputuskan saat mode USB. Peer diputus supaya Windows tidak menyimpan entri
 // keyboard yang tidak akan pernah mengirim apa-apa (hanya bisa hilang lewat
-// "Remove device" manual), dan advertising dimatikan supaya device hilang dari
-// daftar perangkat Bluetooth.
+// "Remove device" manual).
+//
+// Advertising SENGAJA tidak dimatikan. Kalau dimatikan, device hilang dari
+// daftar Bluetooth dan companion app tidak bisa menemukannya untuk mengirim
+// PROTO:NUS — padahal itulah jalur satu-satunya untuk membuat protokol
+// companion app hidup lewat BLE. Dengan advertising selalu on, device
+// tetap terlihat dan bisa dikonfigurasi lewat BLE pada mode HID apa pun.
 inline void bleHidStop() {
   if (!NimBLEDevice::isInitialized()) return;
 
@@ -510,8 +515,7 @@ inline void bleHidStop() {
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   if (adv != nullptr && adv->isAdvertising()) {
-    adv->stop();
-    bleLog("Advertising dimatikan (mode USB)");
+    bleLog("Advertising tetap ON (mode USB) - device tetap bisa ditemukan");
   }
 }
 

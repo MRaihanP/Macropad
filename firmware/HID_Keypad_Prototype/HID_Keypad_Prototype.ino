@@ -301,18 +301,17 @@ void profileSetupHook() {
 
   if (clearBonds) bleHidClearBonds();
 
-  // Hormati HID_LINK_DEFAULT: kalau firmware di-flash dengan mode BLE, jangan
-  // advertise kalau boot-nya memang bermaksud USB-only.
-  if (g_hidLink == HidLink::USB) {
-    NimBLEDevice::getAdvertising()->stop();
-  }
+  // Advertising TIDAK pernah dimatikan, apa pun mode HID. Kalau dimatikan,
+  // device hilang dari daftar Bluetooth dan companion app tidak bisa
+  // menemukannya untuk mengirim PROTO:NUS — padahal itulah jalur satu-satunya
+  // untuk membuat protokol companion app hidup lewat BLE.
   LOGS->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\n", hidLinkName(g_hidLink));
 }
 
 void profileLoopHook() {
-  // Watchdog advertising: HANYA jalan saat mode BLE yang aktif. Di mode USB
-  // semua fungsi BLE harus diam, termasuk advertising.
-  if (g_hidLink != HidLink::BLE) return;
+  // Watchdog advertising: jalankan di mode apa pun. Advertising tidak pernah
+  // dimatikan (lihat F4), jadi ini hanya safety net kalau advertising
+  // berhenti sendiri karena alasan tertentu (mis. Windows BT stack crash).
   if (bleHidConnected()) return;
   if (bleHidAdvertising()) return;
 
