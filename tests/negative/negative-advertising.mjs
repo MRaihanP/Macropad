@@ -39,8 +39,8 @@ const cases = [
   {
     name: 'bleHidStart() tidak bisa restart advertising',
     file: BLE,
-    from: 'adv->start(0);',
-    to: '// adv->start(0); // disabled',
+    from: '  if (adv != nullptr && !adv->isAdvertising()) {\n    adv->start(0);',
+    to: '  if (adv != nullptr && !adv->isAdvertising()) {\n    // adv->start(0); // disabled',
   },
 ];
 
