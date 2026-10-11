@@ -45,8 +45,8 @@ const cases = [
   {
     name: 'proto= muncul di HWINFO (F2 mengerjakan langkah F3)',
     file: CORE,
-    from: ',iface=%s\\n"',
-    to: ',iface=%s,proto=%s\\n"',
+    from: ',iface=%s,proto=%s\\n"',
+    to: ',iface=%s,proto=%s,foo=%s\\n"',
   },
   {
     name: 'field lama rgbSlots dihapus (ganti nama tanpa alasan)',
