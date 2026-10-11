@@ -5,10 +5,13 @@ import { REPO, SUITES_DIR, suite, mutate } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
 
 const TEST = suite('firmware-compile-guard-test.js');
+// Path absolut: relatif hanya bekerja kalau cwd = root repo, dan itu asumsi
+// rapuh. Selain itu isi asli harus disimpan SEBELUM dinormalkan supaya
+// restore() menulis byte yang persis sama (termasuk line ending CRLF).
 const targets = {
-  limits: 'firmware/common/limits.h',
-  transport: 'firmware/common/transport.h',
-  usb: 'firmware/common/transport_usb.h',
+  limits: `${REPO}/firmware/common/limits.h`,
+  transport: `${REPO}/firmware/common/transport.h`,
+  usb: `${REPO}/firmware/common/transport_usb.h`,
 };
 const orig = {};
 for (const [k, v] of Object.entries(targets)) orig[k] = fs.readFileSync(v, 'utf8');
@@ -35,10 +38,14 @@ const cases = [
     to: '#define SERIAL g_transport',
   },
   {
+    // Pola lama 'if (Serial) return true;' sudah tidak cocok: isConnected()
+    // sekarang memakai (bool)Serial || available() > 0. Kalau polanya tidak
+    // diupdate, kasus ini keluar dengan "pola tidak ditemukan" - artinya
+    // regresi Serial.dtr() yang merupakan bug nyata tidak lagi diuji.
     name: 'BUG 3a: Serial.dtr() dipanggil lagi (protected di core 3.3.11)',
     file: 'usb',
-    from: '    if (Serial) return true;',
-    to: '    return Serial.dtr() || Serial.available() > 0;',
+    from: 'return (bool)Serial || Serial.available() > 0;',
+    to: 'return Serial.dtr() || Serial.available() > 0;',
   },
   {
     name: 'BUG 3b: pemakai enum tidak ikut di-update (nama lama tertinggal)',
