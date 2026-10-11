@@ -9,6 +9,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <NimBLEDevice.h>
 #include "limits.h"
 
 // Sentinel "tidak ada koneksi"
