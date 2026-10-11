@@ -38,6 +38,44 @@ export const SUITES_DIR = path.join(REPO, 'tests', 'suites');
 export const NEGATIVE_DIR = path.join(REPO, 'tests', 'negative');
 
 /**
+ * Terapkan mutasi pada file sumber, tahan terhadap perbedaan line ending.
+ *
+ * Git mengonversi LF <-> CRLF saat checkout di Windows. Pola yang ditulis di
+ * skrip uji negatif pakai "\n" (LF), sedangkan file hasil checkout di disk
+ * berisi "\r\n" (CRLF) - sehingga pola tidak ketemu dan skrip keluar dengan
+ * "pola tidak ditemukan" padahal file-nya sebenarnya tidak berubah.
+ *
+ * Cara ini menormalkan isi ke LF saat membaca, menerapkan mutasi, lalu
+ * menulis kembali dengan line ending asli file tersebut.
+ *
+ * @param {string} file    path absolut ke file
+ * @param {string} from    pola yang dicari (pakai \n)
+ * @param {string} to      pengganti
+ * @returns {boolean}      true kalau pola ditemukan dan file ditulis
+ */
+export function mutate(file, from, to) {
+  const raw = fs.readFileSync(file, 'utf8');
+  const crlf = raw.includes('\r\n');
+  const lf = crlf ? raw.replace(/\r\n/g, '\n') : raw;
+
+  if (!lf.includes(from)) return false;
+
+  const changed = lf.replace(from, to);
+  fs.writeFileSync(file, crlf ? changed.replace(/\n/g, '\r\n') : changed, 'utf8');
+  return true;
+}
+
+/**
+ * Baca file sumber dengan line ending dinormalkan ke LF.
+ *
+ * Dipakai saat hanya perlu MEMBACA dan mencari pola, tanpa menulis - misalnya
+ * saat memeriksa "apakah mutasi benar-benar diterapkan".
+ */
+export function readLf(file) {
+  return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+}
+
+/**
  * Cari file suite berdasarkan nama, dengan atau tanpa ekstensi.
  *
  * Dipakai oleh tests/negative/, yang menunjuk suite berdasarkan nama logis

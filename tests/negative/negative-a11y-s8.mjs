@@ -13,7 +13,6 @@ import fs from 'node:fs';
 import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
 
-const REPO = `${REPO}`;
 const CSS = `${REPO}/src/styles.css`;
 const TEST = suite('a11y-test.js');
 

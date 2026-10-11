@@ -1,14 +1,21 @@
-// Uji negatif untuk konsistensi versi: kembalikan package.json ke 0.1.0,
-// pastikan test menangkapnya.
+// Uji negatif untuk konsistensi versi: ubah package.json ke versi yang
+// berbeda dari Cargo.toml, pastikan test menangkapnya.
 import fs from 'fs';
 import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
 
 const TEST = suite('version-test.js');
-const target = 'package.json';
+const target = `${REPO}/package.json`;
 const orig = fs.readFileSync(target, 'utf8');
 
-fs.writeFileSync(target, orig.replace('"version": "0.2.0"', '"version": "0.1.0"'), 'utf8');
+// JANGAN hardcode nomor versi di sini. Versi pernah 0.2.0 lalu 0.5.0; skrip
+// ini lama-lama diam-diam tidak mengubah apa pun karena pola yang dicari
+// sudah tidak ada - lalu tetap mencetak "OK" padahal tidak ada yang diuji.
+//
+// Yang diuji adalah sifatnya: buat package.json BERBEDA dari Cargo.toml.
+const pkg = JSON.parse(orig);
+pkg.version = '0.0.1-j deliberate';
+fs.writeFileSync(target, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
 let caught = false;
 try {
   execFileSync('node', [TEST], { stdio: 'pipe' });

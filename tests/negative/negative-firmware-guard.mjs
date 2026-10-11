@@ -1,7 +1,7 @@
 // Uji negatif: kembalikan tiga bug yang baru saja menggagalkan kompilasi,
 // pastikan guard menangkapnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite, mutate } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
 
 const TEST = suite('firmware-compile-guard-test.js');
@@ -51,8 +51,7 @@ const cases = [
 let caught = 0;
 for (const c of cases) {
   const p = targets[c.file];
-  if (!orig[c.file].includes(c.from)) { console.log(`GAGAL: pola tidak ditemukan -> ${c.name}`); restore(); process.exit(2); }
-  fs.writeFileSync(p, orig[c.file].replace(c.from, c.to), 'utf8');
+  if (!mutate(p, c.from, c.to)) { console.log(`GAGAL: pola tidak ditemukan -> ${c.name}`); restore(); process.exit(2); }
   let hit = false;
   try { execFileSync('node', [TEST], { stdio: 'pipe' }); }
   catch (e) {

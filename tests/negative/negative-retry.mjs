@@ -1,10 +1,10 @@
 // Uji negatif untuk fix retry/reconnect.
 import fs from 'fs';
-import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite, mutate } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
 
 const TEST = suite('retry-test.js');
-const target = 'src/serial-transport.js';
+const target = `${REPO}/src/serial-transport.js`;
 const orig = fs.readFileSync(target, 'utf8');
 
 const cases = [
@@ -42,8 +42,7 @@ const cases = [
 
 let caught = 0;
 for (const c of cases) {
-  if (!orig.includes(c.from)) { console.log(`GAGAL: pola tidak ditemukan -> ${c.name}`); process.exit(2); }
-  fs.writeFileSync(target, orig.replace(c.from, c.to), 'utf8');
+  if (!mutate(target, c.from, c.to)) { console.log(`GAGAL: pola tidak ditemukan -> ${c.name}`); process.exit(2); }
   let hit = false;
   try { execFileSync('node', [TEST], { stdio: 'pipe' }); }
   catch (e) {
