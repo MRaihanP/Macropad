@@ -53,8 +53,11 @@ ok(/bleHidStart\(\)/.test(hookBody),
   'watchdog memanggil bleHidStart() sebagai safety net');
 
 console.log('\n--- 4. bleHidStart() tetap ada sebagai safety net ---');
+// Strip komentar dulu: mutasi negative test menyisakan teks di dalam
+// komentar, jadi regex tanpa strip akan tetap match.
+const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const startFn = bleHid.slice(bleHid.indexOf('inline void bleHidStart()'));
-const startBody = startFn.slice(0, startFn.indexOf('\n}') + 2);
+const startBody = strip(startFn.slice(0, startFn.indexOf('\n}') + 2));
 ok(/adv->start\(0\)/.test(startBody),
   'bleHidStart() masih bisa restart advertising kalau berhenti sendiri');
 
