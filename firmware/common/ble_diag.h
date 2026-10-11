@@ -43,7 +43,7 @@ static void bleDiagSelfTest(const String& spec) {
     tok = strtok(NULL, "+");
   }
   if (count == 0) {
-    SERIAL->println("[ERROR] Format HID:SELF:<k>[+<k>]");
+    LOGS->println("[ERROR] Format HID:SELF:<k>[+<k>]");
     return;
   }
 
@@ -59,13 +59,13 @@ static void bleDiagSelfTest(const String& spec) {
   if (isBle) BleKeyboard.releaseAll();
   else       UsbKeyboard.releaseAll();
 
-  SERIAL->printf("[OK] HID:SELF via %s\n", hidLinkName(g_hidLink));
+  LOGS->printf("[OK] HID:SELF via %s\n", hidLinkName(g_hidLink));
 }
 
 static bool bleDiagCommand(const String& cmd) {
   if (cmd == "IFACE") {
 #if HID_BLE_SUPPORT
-    SERIAL->printf("IFACE:link=%s,conn=%d,adv=%u,scan=%u,nus_sub=%u,nus_wr=%u\n",
+    LOGS->printf("IFACE:link=%s,conn=%d,adv=%u,scan=%u,nus_sub=%u,nus_wr=%u\n",
                    hidLinkName(g_hidLink),
                    (int)bleHidConnected(),
                    (unsigned)bleAdvSize,
@@ -73,23 +73,23 @@ static bool bleDiagCommand(const String& cmd) {
                    (unsigned)bleNusSubCount,
                    (unsigned)bleNusWriteCount);
 #else
-    SERIAL->printf("IFACE:link=%s,ble_support=0\n", hidLinkName(g_hidLink));
+    LOGS->printf("IFACE:link=%s,ble_support=0\n", hidLinkName(g_hidLink));
 #endif
     return true;
   }
 
   if (cmd == "IFACE:USB") {
     hidLinkSet(HidLink::USB);
-    SERIAL->println("[OK] Input USB HID");
+    LOGS->println("[OK] Input USB HID");
     return true;
   }
 
   if (cmd == "IFACE:BLE") {
 #if HID_BLE_SUPPORT
     hidLinkSet(HidLink::BLE);
-    SERIAL->println("[OK] Input BLE HID");
+    LOGS->println("[OK] Input BLE HID");
 #else
-    SERIAL->println("[ERROR] BLE HID tidak dikompilasi (HID_BLE_SUPPORT=0)");
+    LOGS->println("[ERROR] BLE HID tidak dikompilasi (HID_BLE_SUPPORT=0)");
 #endif
     return true;
   }
@@ -101,18 +101,18 @@ static bool bleDiagCommand(const String& cmd) {
     const char* msg = "EVT:LAYER:0";
     uint16_t h = bleHidConnHandle;
     if (bleNusRx == nullptr) {
-      SERIAL->println("[ERROR] NUS RX characteristic belum ada");
+      LOGS->println("[ERROR] NUS RX characteristic belum ada");
     } else if (h == BLE_HID_NO_HANDLE) {
-      SERIAL->println("[ERROR] belum ada koneksi BLE");
+      LOGS->println("[ERROR] belum ada koneksi BLE");
     } else if (bleNusSubCount == 0) {
-      SERIAL->printf("[WARN] NUS: belum ada subscriber; notify akan diabaikan\n");
+      LOGS->printf("[WARN] NUS: belum ada subscriber; notify akan diabaikan\n");
       bleNusRx->notify((const uint8_t*)msg, strlen(msg), h);
     } else {
       bool ok = bleNusRx->notify((const uint8_t*)msg, strlen(msg), h);
-      SERIAL->printf("[%s] NUS notify \"%s\"\n", ok ? "OK" : "GAGAL", msg);
+      LOGS->printf("[%s] NUS notify \"%s\"\n", ok ? "OK" : "GAGAL", msg);
     }
 #else
-    SERIAL->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+    LOGS->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
 #endif
     return true;
   }
@@ -121,29 +121,29 @@ static bool bleDiagCommand(const String& cmd) {
   if (cmd == "BLE:ADV") {
 #if HID_BLE_SUPPORT
     if (!NimBLEDevice::isInitialized()) {
-      SERIAL->println("[ERROR] BLE belum diinisialisasi");
+      LOGS->println("[ERROR] BLE belum diinisialisasi");
     } else {
       NimBLEDevice::getAdvertising()->start(0);
-      SERIAL->println("[OK] Advertising di-restart");
+      LOGS->println("[OK] Advertising di-restart");
     }
 #else
-    SERIAL->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+    LOGS->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
 #endif
     return true;
   }
 
   if (cmd == "BLE:BOND:CLEAR") {
 #if HID_BLE_SUPPORT
-    if (NimBLEDevice::deleteAllBonds()) SERIAL->println("[OK] Semua bond dihapus; hapus juga device di host, lalu pair ulang");
-    else                              SERIAL->println("[ERROR] Gagal menghapus bond");
+    if (NimBLEDevice::deleteAllBonds()) LOGS->println("[OK] Semua bond dihapus; hapus juga device di host, lalu pair ulang");
+    else                              LOGS->println("[ERROR] Gagal menghapus bond");
 #else
-    SERIAL->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+    LOGS->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
 #endif
     return true;
   }
 
   if (cmd == "BLE:RAM") {
-    SERIAL->printf("RAM:free=%lu,min=%lu\n",
+    LOGS->printf("RAM:free=%lu,min=%lu\n",
                    (unsigned long)ESP.getFreeHeap(),
                    (unsigned long)ESP.getMinFreeHeap());
     return true;

@@ -81,6 +81,20 @@ public:
 // Global transport instance - dipakai di seluruh core (handleSerialCommand, events, dll).
 extern Transport* g_transport;
 
+// Transport untuk LOG DIAGNOSTIK. SELALU USB CDC, apa pun mode protokol.
+//
+// Kenapa harus dipisah dari SERIAL:
+//
+// Begitu NUS menjadi jalur protokol (g_transport = BleNus), setiap baris log
+// yang ditulis SERIAL-> akan ikut terkirim ke companion app di stream protokol.
+// Parser app punya aturan ketat (mis. ^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$),
+// dan `[BLE] Connect (handle=1)` di tengah jawaban DUMP akan menggabungkan
+// diri dengan baris protokol - jawaban jadi tidak terbaca dan state app
+// menyimpang tanpa error yang jelas.
+//
+// Sebaliknya, log harus tetap bisa dibaca lewat Serial Monitor pada mode mana
+// pun - itulah satu-satunya cara melihat apa yang terjadi tanpa companion app.
+//
 // Helper makro: ganti semua Serial.xxx jadi g_transport->xxx
 // Contoh: Serial.printf(...)  ->  g_transport->printf(...)
 //         Serial.write(...)   ->  g_transport->write(...)
@@ -93,3 +107,9 @@ extern Transport* g_transport;
 #undef SERIAL
 #endif
 #define SERIAL g_transport
+
+// Hanya untuk pesan diagnostik - JANGAN dipakai di macropad_core.h.
+// Aturannya: kalau baris itu boleh dibaca companion app, pakai SERIAL.
+// Kalau hanya untuk manusia lewat Serial Monitor, pakai LOGS.
+extern Transport* g_logTransport;
+#define LOGS g_logTransport

@@ -122,7 +122,7 @@ public:
 // dipakai companion app, karena app mem-parsanya dengan regex ketat
 // (^\[KEY\] (\d+),(\d+),(\d+),(\d+),(.*)$) dan tidak boleh berubah.
 inline void hidTrace(const char* what, const char* detail) {
-  SERIAL->printf("[IN:%s] %s %s\n", hidLinkName(g_hidLink), what, detail);
+  LOGS->printf("[IN:%s] %s %s\n", hidLinkName(g_hidLink), what, detail);
 }
 
 // Ganti backend aktif.
@@ -155,7 +155,7 @@ inline void hidLinkSet(HidLink next) {
   }
 #endif
 
-  SERIAL->printf("[IFACE] link %s -> %s\n", hidLinkName(prev), hidLinkName(next));
-  SERIAL->printf("[IFACE] input %s dipakai, %s DINONAKTIFKAN\n",
+  LOGS->printf("[IFACE] link %s -> %s\n", hidLinkName(prev), hidLinkName(next));
+  LOGS->printf("[IFACE] input %s dipakai, %s DINONAKTIFKAN\n",
                  hidLinkName(next), hidLinkName(prev));
 }

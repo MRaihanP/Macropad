@@ -40,7 +40,9 @@
 UsbTransport g_usbTransport;
 
 // Binding global transport pointer ke instance USB.
-Transport* g_transport = &g_usbTransport;
+// g_logTransport selalu USB CDC - lihat penjelasan di common/transport.h.
+Transport* g_transport    = &g_usbTransport;
+Transport* g_logTransport = &g_usbTransport;
 
 // =================== PROFIL: FINAL ===================
 #define HW_PROFILE_NAME "FINAL"

@@ -70,7 +70,14 @@ bool profileTryCommand(const String& cmd);
 UsbTransport g_usbTransport;
 
 // Binding global transport pointer ke instance USB.
-Transport* g_transport = &g_usbTransport;
+//
+// g_transport = jalur PROTOKOL (jawaban perintah, event, [KEY], EVT:).
+//              Nanti (F5) bisa diarahkan ke BLE NUS lewat perintah PROTO:*.
+// g_logTransport = jalur LOG. SELALU USB CDC, tidak pernah berubah, supaya
+//              Serial Monitor tetap hidup di mode mana pun - itu satu-satunya
+//              jalan keluar kalau companion app tidak bisa disambung.
+Transport* g_transport    = &g_usbTransport;
+Transport* g_logTransport = &g_usbTransport;
 
 // =================== PROFIL: PROTOTYPE ===================
 // Firmware ini adalah sumber kebenaran profil PROTOTYPE. Tidak ada lagi
@@ -299,7 +306,7 @@ void profileSetupHook() {
   if (g_hidLink == HidLink::USB) {
     NimBLEDevice::getAdvertising()->stop();
   }
-  SERIAL->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\n", hidLinkName(g_hidLink));
+  LOGS->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\n", hidLinkName(g_hidLink));
 }
 
 void profileLoopHook() {

@@ -138,7 +138,7 @@ static uint16_t bleScanSize = 0;
 
 // Suffix log, biar jelas baris log itu datang dari BLE atau USB.
 static void bleLog(const char* msg) {
-  SERIAL->printf("[BLE] %s\n", msg);
+  LOGS->printf("[BLE] %s\n", msg);
 }
 
 // 6e400002: app menulis perintah ke sini.
@@ -156,7 +156,7 @@ public:
     memcpy(bleNusLastWrite, v.data(), n);
     bleNusLastWrite[n] = '\0';
     bleNusPush(v.data(), len);   // masukkan ke ring buffer transport
-    SERIAL->printf("[BLE] NUS RX: %u byte, isi=\"%s\"\n", (unsigned)len, bleNusLastWrite);
+    LOGS->printf("[BLE] NUS RX: %u byte, isi=\"%s\"\n", (unsigned)len, bleNusLastWrite);
   }
 };
 
@@ -166,7 +166,7 @@ class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {
 public:
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) override {
     do { uint16_t tmp = bleNusSubCount + 1; bleNusSubCount = tmp; } while (0);
-    SERIAL->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
+    LOGS->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
   }
 };
 
@@ -179,7 +179,7 @@ static BleNusRxCallbacks bleNusRxCb;
 static void bleAdvCheck(bool ok, const char* what) {
   if (ok) return;
   bleAdvOk = false;
-  SERIAL->printf("[BLE] ADV GAGAL: %s\n", what);
+  LOGS->printf("[BLE] ADV GAGAL: %s\n", what);
 }
 
 static void bleAdvReport() {
@@ -192,7 +192,7 @@ static void bleAdvReport() {
   // 1 byte type + isi nama. Fungsionalitasnya tidak terpengaruh.
   bleScanSize = (uint16_t)(2 + strlen(BLE_HID_DEVICE_NAME));
   int sisa = (int)BLE_HS_ADV_MAX_SZ - (int)bleAdvSize;
-  SERIAL->printf("[BLE] adv ok: adv=%u/%d (sisa %d) scan=%u/%d%s\n",
+  LOGS->printf("[BLE] adv ok: adv=%u/%d (sisa %d) scan=%u/%d%s\n",
                  (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ, sisa,
                  (unsigned)bleScanSize, (int)BLE_HS_ADV_MAX_SZ,
                  bleAdvOk ? "" : " ADA YANG GAGAL");
@@ -201,7 +201,7 @@ static void bleAdvReport() {
 class BleHidServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
-    SERIAL->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
+    LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
   }
   void onMTUChange(uint16_t, NimBLEConnInfo& ci) override {
     // Windows tidak selalu memanggil onConnect; event ini sering yang pertama.
@@ -209,12 +209,12 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
   }
   void onAuthenticationComplete(NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
-    SERIAL->printf("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
+    LOGS->printf("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
                    ci.getConnHandle(), ci.isBonded());
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
     bleHidConnHandle = BLE_HID_NO_HANDLE;
-    SERIAL->printf("[BLE] Putus (reason=0x%X)\n", reason);
+    LOGS->printf("[BLE] Putus (reason=0x%X)\n", reason);
   }
 };
 
