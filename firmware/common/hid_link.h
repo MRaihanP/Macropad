@@ -29,9 +29,13 @@
 // ---- Variabel switch ----
 HidLink g_hidLink = (HidLink)HID_LINK_DEFAULT;
 
-inline const char* hidLinkName(HidLink l) {
-  return (l == HidLink::BLE) ? "BLE" : "USB";
-}
+// hidLinkName() TIDAK didefinisikan di sini tapi di limits.h, karena
+// macropad_core.h juga memakainya untuk baris HWINFO (iface=usb|ble) dan
+// core tidak boleh meng-include header ini.
+//
+// Perhatikan nilainya sekarang lowercase ("usb"/"ble"), sebelumnya "USB"/"BLE".
+// Huruf besar hanya untuk tampilan log; yang masuk ke protokol harus lowercase
+// supaya companion app bisa membandingkannya dengan string apa adanya.
 
 // ---- Objek backend ----
 // USB HID didefinisikan di sini. Instance BLE HID milik ble_hid.h.

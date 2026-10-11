@@ -931,9 +931,13 @@ void handleSerialCommand(const String& cmd) {
     // rgbSlots tetap RGB_COUNT di kedua profil: di FINAL itu jumlah LED fisik,
     // di PROTOTYPE itu jumlah key yang disimulasikan. App memakai angka yang sama
     // untuk menandai "RGB 1".."RGB 9" di kedua board.
-    SERIAL->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\n",
+    //
+    // iface=usb|ble memberi tahu app ke mana report HID dikirim saat ini, tanpa
+    // harus menebak dari status pairing Bluetooth. Nilai ini BUKAN jalur protokol -
+    // jalur protokol baru ditambahkan di langkah F3 sebagai proto=.
+    SERIAL->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d,iface=%s\n",
                   HW_PROFILE_NAME, NUM_ENCODERS, HAS_STATUS_LED, HAS_RGB, RGB_COUNT,
-                  HAS_VDIV, HAS_CHG_STAT, HW_DATA_SIMULATED);
+                  HAS_VDIV, HAS_CHG_STAT, HW_DATA_SIMULATED, hidLinkName(g_hidLink));
     return;
   }
 

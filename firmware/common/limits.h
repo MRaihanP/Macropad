@@ -33,6 +33,15 @@
 // State runtime: backend HID yang SEDANG aktif. Didefinisikan di hid_link.h.
 enum class HidLink : uint8_t { USB = 0, BLE = 1 };
 
+// Nama backend HID untuk dilaporkan di HWINFO (iface=usb|ble).
+//
+// Didefinisikan di sini, bukan di hid_link.h, karena macropad_core.h juga
+// membutuhkannya untuk baris HWINFO - dan core tidak boleh meng-include
+// hid_link.h (limits.h adalah header paling dasar, di-include semua).
+inline const char* hidLinkName(HidLink l) {
+  return (l == HidLink::BLE) ? "ble" : "usb";
+}
+
 // =================== TRANSPORT SELECTION ===================
 // Pilih media komunikasi: USB CDC (Serial) atau BLE.
 //
