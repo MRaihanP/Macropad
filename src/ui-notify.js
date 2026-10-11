@@ -37,8 +37,11 @@ export function describeAction(type, value) {
 }
 
 export function notifyBoundAction(type, value) {
-  const t = describeAction(type, value);
-  if (t) notify(t, 'key');                                             // tombol kosong: tidak ada notifikasi
+  // Jangan namai variabel ini `t`: `t` adalah fungsi terjemahan yang diimpor di
+  // file ini. Menimpanya di sini legal (describeAction tidak memanggil t()),
+  // tapi setiap penambahan t() berikutnya diam-diam jadi bug yang salah string.
+  const label = describeAction(type, value);
+  if (label) notify(label, 'key');                                 // tombol kosong: tidak ada notifikasi
 }
 
 // Hanya error pertama yang dicatat ke panel log. Setelah itu, overlay yang gagal

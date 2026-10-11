@@ -124,9 +124,13 @@ export function handleIncomingChunk(data) {
   // parser, lalu lanjut dari newline terakhir agar koneksi berikutnya tetap sinkron.
   if (lineBuffer.length > LINE_BUFFER_MAX) {
     log(t('transport.lineTooLong', { max: LINE_BUFFER_MAX }), 'err');
-    resetParserState();
+    // Simpan dulu sisa setelah newline TERAKHIR, baru reset. Urutannya penting:
+    // resetParserState() mengosongkan lineBuffer, jadi kalau dipanggil lebih
+    // dulu, lastIndexOf selalu -1 dan baris utuh terakhir ikut terbuang.
     const nl = lineBuffer.lastIndexOf('\n');
-    lineBuffer = nl >= 0 ? lineBuffer.slice(nl + 1) : '';
+    const tail = nl >= 0 ? lineBuffer.slice(nl + 1) : '';
+    resetParserState();
+    lineBuffer = tail;
   }
   let idx;
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {

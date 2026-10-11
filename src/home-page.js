@@ -142,12 +142,23 @@ function startTabDrag(e, tabEl, index) {
     });
   }
 
-  function onUp(ev) {
-    tabEl.releasePointerCapture(e.pointerId);
+  function cleanup() {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
+    // Tanpa pointercancel, gesture yang dibatalkan sistem (scroll, gestur OS,
+    //Pointer ke bawahnya) tidak pernah memicu onUp: listener(documen) +
+    // pointer capture + kelas no-select semuanya menggantung.
+    document.removeEventListener('pointercancel', onCancel);
     tabEl.classList.remove('dragging');
     document.body.classList.remove('no-select');
+  }
+
+  function onUp(ev) {
+    // releasePointerCapture melempar NotFoundError kalau pointer sudah tidak
+    // aktif, jadi bungkus: kegagalan melepas capture tidak boleh membatalkan
+    // sisa cleanup.
+    try { tabEl.releasePointerCapture(ev.pointerId); } catch (err) { }
+    cleanup();
 
     const targetRealIndex = computeTargetRealIndex(ev.clientX);
 
@@ -178,8 +189,18 @@ function startTabDrag(e, tabEl, index) {
     setTimeout(() => { tabDragMoved = false; }, 0);
   }
 
+  // Gesture dibatalkan: lepas semua tanpa menerapkan reorder.
+  function onCancel() {
+    try { tabEl.releasePointerCapture(e.pointerId); } catch (err) { }
+    cleanup();
+    tabEl.style.transform = '';
+    others.forEach(c => { c.style.transform = ''; });
+    setTimeout(() => { tabDragMoved = false; }, 0);
+  }
+
   document.addEventListener('pointermove', onMove);
   document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onCancel);
 }
 
 // Geser layer dari srcIndex ke targetIndex dengan mengirim MOVELAYER berturut-turut

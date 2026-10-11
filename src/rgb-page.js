@@ -19,7 +19,11 @@ const RGB_FW_BRI_CAP = Math.round(255 * 0.6);
 const briToPct = v => Math.max(0, Math.min(100, Math.round(v / RGB_FW_BRI_CAP * 100)));
 const pctToBri = p => Math.round(Math.max(0, Math.min(100, p)) / 100 * RGB_FW_BRI_CAP);
 
-export const rgb = { enabled: true, mode: 0, random: false, color: [16, 96, 90], bri: 200, speed: 128, keys: [], sel: null, dirty: false };
+// Default HARUS di dalam cap: kalau di atas, render pertama kali menulis
+// nilai slider yang ter-clamp ke 100% sementara rgb.bri yang dikirim ke device
+// masih nilai mentahnya - slider dan device tidak sinkron sampai user menyentuh
+// slider.
+export const rgb = { enabled: true, mode: 0, random: false, color: [16, 96, 90], bri: pctToBri(78), speed: 128, keys: [], sel: null, dirty: false };
 
 export const RGB_MODES = [
   { id: 0, name: 'Static Light', desc: 'rgb.modeDesc.0', color: true, random: false, speed: false },
@@ -231,18 +235,21 @@ export function initRgbPage() {
   el('rgbEnabledToggle').checked = rgb.enabled;
   el('rgbEnabledToggle').onchange = (e) => { rgb.enabled = e.target.checked; transportSendLine('RGB:EN:' + (rgb.enabled ? 1 : 0)); renderRgbAll(); };
 
+  // Hanya brightness: nilai slider SUDAH benar di state, jadi jangan renderRgbAll().
+  // Membangun ulang grid mengulang semua animasi WAAPI dan menulis ulang
+  // el('rgbBri').value dari nilai yang dibulatkan - selama drag, slider itu
+  // melompat balik ke posisi lama setiap event input.
   el('rgbBri').oninput = (e) => {
     const pct = parseInt(e.target.value);
     rgb.bri = pctToBri(pct); rgb.dirty = true;
     setSliderReadout('rgbBri', 'rgbBriVal', pct + '%');
     transportSendLine(`RGB:BRI:${rgb.bri}`);
-    renderRgbAll();
   };
   el('rgbSpeed').oninput = (e) => {
     rgb.speed = parseInt(e.target.value); rgb.dirty = true;
     setSliderReadout('rgbSpeed', 'rgbSpeedVal', Math.round(rgb.speed / 255 * 100) + '%');
     transportSendLine(`RGB:MODE:${rgb.mode}:${rgb.random ? 1 : 0}:${rgb.color.join(':')}:${rgb.speed}`);
-    renderRgbAll();
+    syncRgbDotColors();
   };
   // Warna global: ganti warna titik saja, tanpa membangun ulang grid (dan tanpa
   // mengirim ulang state), supaya fase animasi tidak reset.

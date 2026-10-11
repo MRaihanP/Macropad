@@ -857,7 +857,9 @@ async fn notify(app: tauri::AppHandle, text: String, kind: String, hold: Option<
         // Belum ada listener: antrekan, dan batasi supaya tidak tumbuh tanpa batas
         // kalau overlay gagal dimuat.
         let mut q = PENDING_NOTIFY.lock().unwrap_or_else(|e| e.into_inner());
-        if q.len() > 16 { q.remove(0); }
+        // >= bukan >: pemeriksaan dilakukan SEBELUM push, jadi dengan "> 16"
+        // antrean tumbuh jadi 17 entri - satu lebih dari yang dijanjikan.
+        if q.len() >= 16 { q.remove(0); }
         q.push(payload);
     }
 
@@ -1225,7 +1227,7 @@ pub fn run() {
 #[cfg(test)]
 
 mod tests {
-    use super::{AppEntry, AppData, find_app, clip_utf8, language_of, system_locale, autostart_status, autostart_set, get_foreground_exe, scan_bindable_apps, presets_get, presets_save, notify, overlay_ready};
+    use super::{AppData, AppEntry, find_app, language_of, system_locale};
 
     fn e(name: &str) -> AppEntry {
         AppEntry { name: name.to_string(), id: format!("C:\\{}.lnk", name), custom: false }

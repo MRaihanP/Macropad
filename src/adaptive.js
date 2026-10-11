@@ -304,7 +304,11 @@ async function getBindableApps(force) {
 }
 
 function pickBindableApp() {
-  return new Promise(async (resolve) => {
+  // Executor Promise TIDAK boleh async: kalau pemanggilnya menolak (scan
+  // gagal), rejection-nya jadi unhandled DAN promise ini tidak pernah selesai,
+  // sehingga modal menggantung selamanya tanpa jalan keluar. Lazy-load async-nya
+  // di dalam .then, dengan try/catch yang selalu menutup modal.
+  return new Promise((resolve) => {
     const overlay = el('modalOverlay');
     el('modalTitle').textContent = t('adaptive.pickApp');
     el('modalBody').innerHTML = `
@@ -318,12 +322,20 @@ function pickBindableApp() {
     el('modalActions').appendChild(cancelBtn);
 
     function close(value) { overlay.classList.remove('show'); document.removeEventListener('keydown', onKey); resolve(value); }
-    function onKey(e) { if (e.key === 'Escape') close(null); }
+    // preventDefault wajib, bukan hanya demi Enter: home-page.js memakai
+    // e.defaultPrevented sebagai sinyal "sudah ada yang menangani Escape".
+    // Tanpa ini satu tekan Escape menutup modal ini DAN membatalkan editor
+    // rekaman yang sedang berjalan - dua perubahan dari satu penekanan.
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(null); } }
     document.addEventListener('keydown', onKey);
 
     el('bindAppList').innerHTML = '<div class="hint">' + t('adaptive.scanning') + '</div>';
     overlay.classList.add('show');
-    const apps = await getBindableApps();
+
+    getBindableApps().then(apps => {
+      // Sambil menunggu, user bisa saja menutup modal (Cancel/Escape).
+      // Kalau begitu jangan pasang handler ke DOM yang sudah tidak terlihat.
+      if (!overlay.classList.contains('show')) { document.removeEventListener('keydown', onKey); return; }
 
     function renderList(filter) {
       const q = (filter || '').toLowerCase();
@@ -347,6 +359,14 @@ function pickBindableApp() {
         if (picked) close({ name: picked.name, exeName: picked.path.split(/[\\/]/).pop() });
       } catch (e) { }
     };
+    }).catch(e => {
+      // Scan gagal: tutup modal, jangan andalkan user menekan Cancel.
+      // Promise yang dibiarkan menggantung akan membekukan alur preset.
+      log(t('adaptive.pickApp') + ': ' + (e && e.message ? e.message : e), 'err');
+      document.getElementById('modalOverlay')?.classList.remove('show');
+      document.removeEventListener('keydown', onKey);
+      resolve(null);
+    });
   });
 }
 

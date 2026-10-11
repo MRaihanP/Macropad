@@ -82,7 +82,12 @@ export function initSidebar() {
     try { localStorage.setItem('sidebarCollapsed', String(collapsed)); } catch (e) { }
   };
   // Default-nya collapsed: sidebar sempit lebih sering dipakai daripada ruang lega.
-  const startCollapsed = localStorage.getItem('sidebarCollapsed') !== 'false';
+// localStorage di-wrap try/catch seperti di semua modul lain: kalau storage
+// diblokir (webview belum siap, storage penuh), satu lemparan di sini membatalkan
+// seluruh initSidebar() dan item navigasi tidak pernah terpasang sama sekali.
+  let stored = null;
+  try { stored = localStorage.getItem('sidebarCollapsed'); } catch (e) { }
+  const startCollapsed = stored !== 'false';
   if (startCollapsed) sidebar.classList.add('collapsed');
   toggle.setAttribute('aria-expanded', String(!startCollapsed));
 }
