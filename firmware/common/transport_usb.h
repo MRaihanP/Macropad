@@ -21,6 +21,15 @@ public:
     // USB CDC: (bool)Serial returns connection state on both HWCDC and USBCDC.
     // On ESP32 core 3.x, Serial maps to USBSerial (USBCDC) when
     // ARDUINO_USB_CDC_ON_BOOT is set. operator bool() checks DTR line.
+    //
+    // JANGAN "memperbaiki" ini jadi Serial.dtr(): pada core ESP32 3.3.11 dtr()
+    // adalah member PROTECTED di USBCDC/HWCDC, jadi memanggilnya = compile error.
+    // Yang publik dan setara adalah operator bool() di atas - inilah alasannya
+    // checked oleh firmware-compile-guard-test.
+    //
+    // OR available() > 0: port yang sudah dilepas host masih bisa menyisakan byte
+    // terakhir di buffer RX. Tanpa ini, byte itu dibaca lalu device dilaporkan
+    // putus walau app masih menunggu jawaban.
     return (bool)Serial || Serial.available() > 0;
   }
 
