@@ -27,13 +27,13 @@ use std::thread;
 use std::time::Duration;
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue,
-    GattCommunicationStatus, GattWriteOption,
+    GattCommunicationStatus, GattDeviceService, GattWriteOption,
 };
 use windows::Devices::Bluetooth::BluetoothLEDevice;
 use windows::Devices::Enumeration::{DeviceInformation, DeviceWatcher};
 use windows::Storage::Streams::{DataReader, DataWriter};
 use windows::Foundation::TypedEventHandler;
-use windows::core::{GUID, HSTRING, IInspectable};
+use windows::core::{GUID, IInspectable};
 
 // Logging helper
 macro_rules! ble_log {
@@ -75,6 +75,7 @@ fn block_on_winrt<T: windows::core::RuntimeType>(
 
 pub struct BleTransport {
     device: Option<BluetoothLEDevice>,
+    service: Option<GattDeviceService>,
     tx_char: Option<GattCharacteristic>,
     rx_char: Option<GattCharacteristic>,
     rx_buffer: Arc<Mutex<VecDeque<u8>>>,
@@ -87,6 +88,7 @@ impl BleTransport {
     pub fn new() -> Self {
         Self {
             device: None,
+            service: None,
             tx_char: None,
             rx_char: None,
             rx_buffer: Arc::new(Mutex::new(VecDeque::new())),
@@ -99,10 +101,17 @@ impl BleTransport {
     // Sinkron: tidur 5 detik sambil DeviceWatcher mengumpulkan device,
     // lalu berhenti dan mengembalikan hasilnya.
     pub fn scan() -> Result<Vec<DeviceInformation>, String> {
-        // Gunakan AQS filter untuk service UUID.
-        // {:?} pada GUID memformat "6E400001-B5A3-..." (AQS case-insensitive).
-        let selector = format!("System.Devices.Aep.ProtocolId:{{{:?}}}", MACROPAD_SERVICE_UUID);
-        let watcher = DeviceInformation::CreateWatcherAqsFilter(&HSTRING::from(selector))
+        // PENTING: AQS "System.Devices.Aep.ProtocolId" berisi GUID PROTOKOL,
+        // bukan UUID service. Untuk BLE nilainya 00000e0c-0000-1000-8000-00805f9b34fb.
+        // Memasang UUID service NUS ke sana tidak akan pernah cocok, sehingga
+        // watcher tidak pernah memberi hasil apa pun.
+        //
+        // API yang benar adalah GattDeviceService::GetDeviceSelectorFromUuid(),
+        // yang mengubah UUID service jadi string AQS yang memang bisa dipakai
+        // DeviceInformation::CreateWatcherAqsFilter().
+        let selector = GattDeviceService::GetDeviceSelectorFromUuid(MACROPAD_SERVICE_UUID)
+            .map_err(|e| format!("Gagal menyusun AQS dari UUID service: {}", e))?;
+        let watcher = DeviceInformation::CreateWatcherAqsFilter(&selector)
             .map_err(|e| format!("Gagal create watcher: {}", e))?;
 
         // Channel std biasa: watcher berhenti -> kirim hasil.
@@ -221,6 +230,17 @@ impl BleTransport {
                                 let mut bytes = vec![0u8; len as usize];
                                 if reader.ReadBytes(&mut bytes).is_ok() {
                                     if let Ok(mut buf) = buffer.lock() {
+                                        // Batas keras. Tanpa ini, kalau frontend
+                                        // berhenti mengaji (jendela ditutup,
+                                        // laptop tidur) buffer tumbuh tanpa
+                                        // akhir dan seluruh app ikut kehabisan
+                                        // memori. Saat penuh, byte LAMA dibuang.
+                                        const RX_BUFFER_MAX: usize = 256 * 1024;
+                                        while buf.len() + bytes.len() > RX_BUFFER_MAX
+                                            && !buf.is_empty()
+                                        {
+                                            buf.pop_front();
+                                        }
                                         for b in bytes {
                                             buf.push_back(b);
                                         }
@@ -246,6 +266,7 @@ impl BleTransport {
         .map_err(|e| format!("Gagal enable notify: {}", e))?;
 
         self.device = Some(device);
+        self.service = Some(service);
         self.tx_char = Some(tx_char);
         self.rx_char = Some(rx_char);
         self.value_changed_token = Some(token);
@@ -259,27 +280,65 @@ impl BleTransport {
         if let (Some(rx_char), Some(token)) = (self.rx_char.take(), self.value_changed_token.take()) {
             // Hapus langganan event ValueChanged (bukan memanggil ValueChanged lagi).
             let _ = rx_char.RemoveValueChanged(token);
+
+            // Matikan notifikasi di sisi device juga (CCCD = None). Kalau tidak,
+            // device masih mengira ada yang mendengarkan dan Windows tetap
+            // mengirim notifikasi ke characteristic yang sudah dilepas handler-nya.
+            let _ = block_on_winrt(
+                rx_char.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue::None,
+                ),
+            );
         }
+
+        // Tutup handle service GATT. Tanpa ini Windows bisa menahan handle
+        // dan connect berikutnya bisa gagal dengan sharing violation.
+        if let Some(service) = self.service.take() {
+            let _ = service.Close();
+        }
+
         self.device = None;
         self.tx_char = None;
         self.rx_char = None;
         self.connected = false;
+        self.rx_buffer.lock().map(|mut b| b.clear()).ok();
         ble_log!("Disconnected");
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connected
+        // WAJIB baca status link sungguhan dari Windows, bukan hanya flag
+        // lokal. Flag lokal diset true saat connect() dan tidak pernah
+        // disentuh lagi, sehingga kalau Windows memutus koneksi (device sleep,
+        // BT dimatikan, jarak terlalu jauh) app masih mengira device tersambung
+        // - semua write berikutnya diam-diam gagal dan tidak ada yang melapor.
+        if !self.connected {
+            return false;
+        }
+        match self.device.as_ref() {
+            None => false,
+            Some(d) => matches!(
+                d.ConnectionStatus(),
+                Ok(windows::Devices::Bluetooth::BluetoothConnectionStatus::Connected)
+            ),
+        }
     }
 
-    pub fn available(&self) -> i32 {
-        self.rx_buffer.lock().map(|buf| buf.len() as i32).unwrap_or(0)
-    }
-
-    pub fn read(&mut self) -> i32 {
+    /// Ambil sekaligus sebanyak mungkin, paling banyak `max_len` byte.
+    ///
+    /// Dipakai oleh command `ble_read`. Versi lama mengambil per-byte lewat
+    /// read(), yang butuh satu round-trip WinRT untuk SETIAP byte - untuk
+    /// jawaban DUMP yang ratusan byte, itu ratusan IPC call hanya untuk
+    /// membaca satu baris protokol.
+    ///
+    /// Batas buffer RX sudah dipasang di sisi producer (handler notifikasi).
+    pub fn read_bulk(&mut self, max_len: usize) -> Vec<u8> {
         self.rx_buffer
             .lock()
-            .map(|mut buf| buf.pop_front().map(|b| b as i32).unwrap_or(-1))
-            .unwrap_or(-1)
+            .map(|mut buf| {
+                let take = buf.len().min(max_len);
+                buf.drain(..take).collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<usize, String> {
@@ -292,9 +351,18 @@ impl BleTransport {
                 .DetachBuffer()
                 .map_err(|e| format!("Gagal detach buffer: {}", e))?;
 
+            // WAJIB WriteWithResponse, bukan WriteWithoutResponse.
+            //
+            // WriteWithoutResponse tidak punya flow control: ATT packet bisa
+            // hilang tanpa error sama sekali. Untuk data stream (event HID)
+            // itu tidak masalah, tapi untuk PERINTAH protokol seperti
+            // "SET:0:0:0:KEY:a" kehilangan packet berarti config tidak
+            // tersimpan dan app tidak pernah tahu - desync senyap.
+            //
+            // Firmware mendeklarasikan NUS TX dengan WRITE | WRITE_NR
+            // (ble_hid.h), jadi write-with-response pasti didukung.
             let result = block_on_winrt(
-                tx_char
-                    .WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse),
+                tx_char.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithResponse),
             )
             .map_err(|e| format!("BLE write failed: {}", e))?;
 

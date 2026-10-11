@@ -33,6 +33,10 @@ use windows::core::{PWSTR, PCWSTR, Interface};
 // =================== BLE TRANSPORT ===================
 mod ble;
 use ble::BleTransport;
+// DeviceInformation dipakai di ble_worker untuk menyimpan hasil scan, sehingga
+// connect() tidak perlu scan ulang. Objek WinRT ini tidak Send, jadi hanya
+// boleh hidup di thread worker itu.
+use windows::Devices::Enumeration::DeviceInformation;
 
 // Trait transport untuk medium yang bisa dipakai dari thread mana
 // pun (mis. USB serial). BLE TIDAK mengimplementasikan trait ini:
@@ -939,14 +943,21 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
     };
 
     let mut transport: Option<BleTransport> = None;
+    // DeviceInformation tidak Send, jadi tidak bisa disimpan di static atau
+    // dikirim lewat channel ke thread lain. Tapi ia HARUS disimpan di thread
+    // ini: connect() butuh DeviceInformation, dan tanpa cache satu-satunya
+    // cara mendapatkannya adalah scan ulang 5 detik - yang gagal kalau
+    // device sedang tidak advertising.
+    let mut discovered: Vec<DeviceInformation> = Vec::new();
     while let Ok(req) = rx.recv() {
         match req {
             BleRequest::Scan(resp) => {
                 // Ekstrak data yang bisa dikirim antar thread
                 // (DeviceInformation sendiri tidak Send).
                 let r = BleTransport::scan().map(|devices| {
-                    devices
-                        .into_iter()
+                    discovered = devices;
+                    discovered
+                        .iter()
                         .map(|d| BleDeviceInfo {
                             id: d.Id().map(|s| s.to_string()).unwrap_or_default(),
                             name: d.Name().map(|s| s.to_string()).unwrap_or_default(),
@@ -961,20 +972,41 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                 let _ = resp.send(r);
             }
             BleRequest::Connect { id, resp } => {
-                let r = BleTransport::scan()
-                    .and_then(|devices| {
-                        devices
-                            .into_iter()
-                            .find(|d| d.Id().map(|s| s.to_string()).unwrap_or_default() == id)
-                            .ok_or_else(|| "Device not found".to_string())
-                    })
-                    .and_then(|device_info| {
+                // Pakai cache dari scan terakhir. Kalau belum pernah scan,
+                // scan sekali di sini - lebih baik lambat daripada gagal.
+                if discovered.is_empty() {
+                    match BleTransport::scan() {
+                        Ok(d) => discovered = d,
+                        Err(e) => {
+                            let _ = resp.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+
+                let found = discovered
+                    .iter()
+                    .find(|d| d.Id().map(|s| s.to_string()).unwrap_or_default() == id)
+                    .cloned();
+
+                let r = match found {
+                    None => Err(format!(
+                        "Device {} tidak ada di hasil scan terakhir. \
+                         Scan ulang lalu connect ulang.",
+                        id
+                    )),
+                    Some(device_info) => {
                         let mut t = BleTransport::new();
-                        t.connect(&device_info)?;
-                        transport = Some(t);
-                        log("[BLE] Connected via command");
-                        Ok(())
-                    });
+                        match t.connect(&device_info) {
+                            Ok(()) => {
+                                transport = Some(t);
+                                log("[BLE] Connected via command");
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                };
                 let _ = resp.send(r);
             }
             BleRequest::Disconnect(resp) => {
@@ -995,17 +1027,10 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                 let _ = resp.send(r);
             }
             BleRequest::Read { max_len, resp } => {
-                let mut out = Vec::with_capacity(max_len);
-                if let Some(t) = transport.as_mut() {
-                    let n = (t.available().max(0) as usize).min(max_len);
-                    for _ in 0..n {
-                        let b = t.read();
-                        if b < 0 {
-                            break;
-                        }
-                        out.push(b as u8);
-                    }
-                }
+                let out = match transport.as_mut() {
+                    Some(t) => t.read_bulk(max_len),
+                    None => Vec::new(),
+                };
                 let _ = resp.send(out);
             }
             BleRequest::IsConnected(resp) => {
