@@ -50,7 +50,11 @@ public:
 
 // Dikirim lewat notify ke 6e400003 (RX characteristic). WAJIB chunking:
 // satu baris protokol yang panjang - misalnya jawaban DUMP: untuk 9 tombol
-// atau RGB:DUMP - bisa melebihi batas satu notifikasi ATT (244 byte).
+// atau RGB:DUMP - bisa melebihi batas satu notifikasi ATT.
+//
+// Batas chunk diambil dari bleNusChunkLimit() (MTU hasil negosiasi - 3),
+// BUKAN konstanta 244. Kalau Windows menawar MTU < 247, notify dengan
+// 244 byte akan gagal diam-diam dan jawaban terpotong.
   size_t write(const uint8_t* data, size_t len) override {
     if (!isConnected()) return 0;
     if (bleNusSubCount == 0) return 0;   // tanpa subscriber notify diabaikan
@@ -58,10 +62,12 @@ public:
     uint16_t h = bleHidConnHandle;
     if (h == BLE_HID_NO_HANDLE) return 0;
 
+    const uint16_t chunkMax = bleNusChunkLimit();
+
     size_t sent = 0;
     while (sent < len) {
       size_t n = len - sent;
-      if (n > BLE_NUS_MAX_CHUNK) n = BLE_NUS_MAX_CHUNK;
+      if (n > chunkMax) n = chunkMax;
 
       if (!bleNusRx->notify(data + sent, n, h)) {
         delay(6);

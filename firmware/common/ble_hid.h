@@ -125,6 +125,19 @@ static bool     bleAdvOk   = true;
 static uint16_t bleAdvSize  = 0;
 static uint16_t bleScanSize = 0;
 
+// MTU hasil negosiasi ATT. Default 23 = minimum yang dijamin BLE, jadi
+// chunk limit awal adalah 20 byte - kecil tapi pasti aman. Setelah
+// onMTUChange dipanggil, nilai ini berubah ke MTU yang benar dan chunk
+// limit naik ke (mtu - 3).
+static uint16_t bleAttMtu = 23;
+
+// Implementasi bleNusChunkLimit() - didefinisikan di sini, bukan di
+// ble_shared.h, karena butuh akses ke bleAttMtu yang private.
+inline uint16_t bleNusChunkLimit() {
+  // ATT header = 3 byte (opcode 1 + handle 2). Payload maksimum = MTU - 3.
+  return (bleAttMtu > 3) ? (uint16_t)(bleAttMtu - 3) : 20;
+}
+
 // UUID Nordic UART Service - jalur PROTOCOL companion app. Harus sama persis
 // dengan companion app (src-tauri/src/ble.rs).
 //
@@ -203,9 +216,13 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
     bleHidConnHandle = ci.getConnHandle();
     LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
   }
-  void onMTUChange(uint16_t, NimBLEConnInfo& ci) override {
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo& ci) override {
     // Windows tidak selalu memanggil onConnect; event ini sering yang pertama.
     bleHidConnHandle = ci.getConnHandle();
+    // MTU hasil negosiasi DISIMPAN, bukan dibuang. Dipakai transport_ble.h
+    // sebagai batas atas chunk notify - kalau Windows menawar MTU < 247,
+    // notify dengan 244 byte akan gagal diam-diam dan jawaban DUMP terpotong.
+    bleAttMtu = mtu;
   }
   void onAuthenticationComplete(NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();

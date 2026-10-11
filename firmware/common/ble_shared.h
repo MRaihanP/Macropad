@@ -25,8 +25,9 @@ extern volatile uint16_t bleHidConnHandle;
 
 // Ring buffer NUS (app -> firmware)
 #define BLE_NUS_RING_SIZE  2048
-#define BLE_NUS_MAX_CHUNK  244
-
+// BLE_NUS_MAX_CHUNK dihapus. Batas chunk sekarang dihitung dari MTU hasil
+// negosiasi (lihat ble_shared.h: bleNusChunkLimit()). Hardcode 244 akan
+// gagal diam-diam kalau Windows menawar MTU < 247.
 extern uint8_t      bleNusRing[];
 extern volatile uint16_t bleNusHead;
 extern volatile uint16_t bleNusTail;
@@ -40,6 +41,16 @@ inline void bleNusClear();
 extern volatile uint16_t bleNusSubCount;
 extern volatile uint32_t bleNusWriteCount;
 extern char bleNusLastWrite[];
+
+// Batas atas chunk notify, dihitung dari MTU hasil negosiasi ATT.
+//
+// MTU minimum yang dijamin BLE adalah 23 (payload 20 byte). Setelah
+// onMTUChange dipanggil, nilainya naik ke MTU yang dinegosiasikan (biasanya
+// 247 di Windows, tapi tidak dijamin - bisa lebih kecil).
+//
+// Dipanggil dari transport_ble.h setiap write(), bukan disimpan sebagai
+// konstanta, supaya perubahan MTU langsung berlaku tanpa re-init.
+uint16_t bleNusChunkLimit();
 extern NimBLECharacteristic* bleNusTx;
 extern NimBLECharacteristic* bleNusRx;
 
