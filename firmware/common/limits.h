@@ -33,6 +33,48 @@
 // State runtime: backend HID yang SEDANG aktif. Didefinisikan di hid_link.h.
 enum class HidLink : uint8_t { USB = 0, BLE = 1 };
 
+// =================== PROTO LINK SELECTION ===================
+//
+// Ke mana PROTOKOL companion app dikirim: USB CDC (Serial) atau BLE NUS.
+//
+// Sumbu ini SENGADA terpisah dari HID_LINK di atas. Dua keputusan yang berbeda:
+//   HID_LINK  -> ke mana report tombol dikirim (USB HID atau BLE HID)
+//   PROTO_LINK -> ke mana jawaban perintah / event dikirim (CDC atau NUS)
+//
+// Pisahannya dini perlu karena kalau digabung, IFACE:BLE akan mengunci
+// protokol ke BLE juga - padahal sah saja device mengirim tombol ke USB HID
+// sementara companion app berbicara lewat BLE NUS (mis. cable tersambung
+// tapi keyboard ingin tetap di USB).
+//
+// #ifndef di bawah memungkinkan sketsh memilih default yang berbeda.
+#ifndef PROTO_CDC
+#define PROTO_CDC 0
+#endif
+
+#ifndef PROTO_NUS
+#define PROTO_NUS 1
+#endif
+
+#ifndef PROTO_DEFAULT
+#define PROTO_DEFAULT PROTO_CDC
+#endif
+
+// State runtime: jalur protokol companion app yang SEDANG aktif.
+enum class ProtoLink : uint8_t { CDC = 0, NUS = 1 };
+
+extern ProtoLink g_protoLink;
+
+// Nama protokol untuk HWINFO (proto=cdc|nus). Lowercase supaya companion
+// app bisa membandingkan tanpa normalisasi.
+inline const char* protoLinkName(ProtoLink l) {
+  return (l == ProtoLink::NUS) ? "nus" : "cdc";
+}
+
+// Definisi variabel - di sini, bukan di header lain, supaya visible untuk
+// semua yang memakai limits.h (termasuk macropad_core.h yang hanya include
+// transport.h).
+ProtoLink g_protoLink = (ProtoLink)PROTO_DEFAULT;
+
 // Nama backend HID untuk dilaporkan di HWINFO (iface=usb|ble).
 //
 // Didefinisikan di sini, bukan di hid_link.h, karena macropad_core.h juga

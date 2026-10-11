@@ -71,14 +71,44 @@ for (const [nama, isi] of [
 
 console.log('\n--- 4. Field yang sudah ada tidak berubah ---');
 // Menambahkan field baru tidak boleh mengubah field lama - kalau berubah,
-// companion app yang sudah_pairs dengan firmware lama akan salah baca.
-for (const k of ['profile', 'encoders', 'statusLed', 'rgb', 'rgbSlots', 'vdiv', 'chg', 'simulated']) {
+// companion app yang sudah dipasangkan dengan firmware lama akan salah baca.
+for (const k of ['profile', 'encoders', 'statusLed', 'rgb', 'rgbSlots', 'vdiv', 'chg', 'simulated', 'iface']) {
   ok(new RegExp(`${k}=%`).test(barisKode), `HWINFO masih punya field ${k}=`);
 }
-// proto= sengaja belum ada: itu langkah F3. Kalau muncul sekarang, berarti
-// F2 diam-diam mengerjakan langkah yang belum gilirannya.
-ok(!/proto=/.test(barisKode),
-  'proto= belum ada di HWINFO (itu langkah F3, bukan F2)');
+ok(/proto=%s/.test(barisKode), 'HWINFO punya field proto=%s');
+ok(/protoLinkName\s*\(\s*g_protoLink\s*\)/.test(barisKode),
+  'proto diisi dari protoLinkName(g_protoLink) - bukan string hardcode');
+
+console.log('\n--- 4b. ProtoLink: enum, definisi tunggal, perintah PROTO:* ---');
+const diag = read('firmware/common/ble_diag.h');
+ok(/enum class ProtoLink : uint8_t \{ CDC = 0, NUS = 1 \}/.test(limits),
+  'limits.h: enum ProtoLink { CDC=0, NUS=1 }');
+ok(/ProtoLink g_protoLink\s*=\s*\(ProtoLink\)PROTO_DEFAULT/.test(limits),
+  'limits.h: g_protoLink didefinisikan dengan default PROTO_DEFAULT');
+ok((limits.match(/extern ProtoLink g_protoLink/g) || []).length === 1,
+  'extern ProtoLink g_protoLink dideklarasikan tepat sekali');
+// protoLinkName hanya boleh ada di satu tempat.
+const protoDefs = (limits.match(/const char\*\s*protoLinkName/g) || []).length;
+ok(protoDefs === 1, `protoLinkName() didefinisikan tepat sekali (ditemukan ${protoDefs})`);
+for (const [nama, isi] of [
+  ['hid_link.h', hidLink],
+  ['ble_diag.h', diag],
+  ['ble_hid.h', read('firmware/common/ble_hid.h')],
+  ['macropad_core.h', core],
+]) {
+  ok(!/const char\*\s*protoLinkName\s*\(/.test(isi),
+    `${nama}: tidak mendefinisikan ulang protoLinkName()`);
+}
+// Perintah PROTO:* harus ada dan terpisah dari IFACE:*.
+for (const cmd of ['PROTO', 'PROTO:CDC', 'PROTO:NUS']) {
+  ok(diag.includes(`cmd == "${cmd}"`), `ble_diag.h: ada perintah ${cmd}`);
+}
+// g_protoLink harus ditulis oleh PROTO:* (bukan hanya dideklarasikan).
+ok(/g_protoLink\s*=\s*ProtoLink::CDC/.test(diag), 'PROTO:CDC mengatur g_protoLink ke CDC');
+ok(/g_protoLink\s*=\s*ProtoLink::NUS/.test(diag), 'PROTO:NUS mengatur g_protoLink ke NUS');
+// Nilai proto= lowercase.
+ok(/return \(l == ProtoLink::NUS\)\s*\?\s*"nus"\s*:\s*"cdc"/.test(limits),
+  'protoLinkName() mengembalikan "cdc"/"nus" (huruf kecil)');
 
 console.log('\n--- 5. Parser app menangani field baru ---');
 // Parser HWINFO generic key=value, jadi iface= otomatis ikut terbaca.

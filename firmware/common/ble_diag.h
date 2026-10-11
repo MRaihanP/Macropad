@@ -94,6 +94,35 @@ static bool bleDiagCommand(const String& cmd) {
     return true;
   }
 
+  // ---- PROTO: sumbu kedua, terpisah dari IFACE ----
+  //
+  // IFACE:* mengatur ke mana REPORT TOMBOL dikirim (USB HID / BLE HID).
+  // PROTO:*  mengatur ke mana PROTOKOL companion app dikirim (CDC / NUS).
+  //
+  // Dua sumbu terpisah supaya sah saja: tombol ke USB HID sementara
+  // companion app berbicara lewat BLE NUS (cable tersambung, keyboard
+  // tetap di USB).
+  //
+  // CATATAN: di langkah F3 ini PROTO:* hanya mengubah flag g_protoLink.
+  // Pengarahan baca/tulis transport baru dilakukan di F5. Perintahnya tetap
+  // harus ada sekarang supaya F5 bisa diuji tanpa flash ulang.
+  if (cmd == "PROTO") {
+    LOGS->printf("PROTO:link=%s\n", protoLinkName(g_protoLink));
+    return true;
+  }
+
+  if (cmd == "PROTO:CDC") {
+    g_protoLink = ProtoLink::CDC;
+    LOGS->println("[OK] Protokol companion app: USB CDC");
+    return true;
+  }
+
+  if (cmd == "PROTO:NUS") {
+    g_protoLink = ProtoLink::NUS;
+    LOGS->println("[OK] Protokol companion app: BLE NUS");
+    return true;
+  }
+
   // Membuktikan jalur firmware -> app (notify) tanpa companion app harus
   // terbuka: menulis payload nyata ke characteristic 6e400003.
   if (cmd == "BLE:ECHO") {
