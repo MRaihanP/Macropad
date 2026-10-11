@@ -9,19 +9,27 @@ const TEST = suite('layer-hold-behaviour-test.js');
 const target = 'src/protocol-parser.js';
 const orig = fs.readFileSync(target, 'utf8');
 
-const resolveLine = '    resolveDumpWaiters(done);\n';
-const applyBlock = `
-    if (hasPendingLayerAfterDump()) {
-      const pending = takePendingLayerAfterDump();
-      if (pending !== currentLayer && applyLayerEvent(pending)) {
-        hooks.renderTabs();
-        hooks.loadLayer(pending);
-      }
-    }
-`;
+// EOL harus mengikuti file yang dimutasi, bukan asumsi. Kalau polanya hardcode
+// LF sementara target di disk memakai CRLF, replace() diam-diam tidak
+// mengubah apa pun dan test keluar dengan "pola tidak ditemukan" tanpa pernah
+// menguji apa pun. Persis itu terjadi setelah `git reset` melakukan checkout
+// dengan CRLF. Ambil dari isi file, bukan dari konvensi repo yang bisa berubah.
+const nl = orig.includes('\r\n') ? '\r\n' : '\n';
+
+const resolveLine = '    resolveDumpWaiters(done);' + nl;
+const applyBlock = [
+  '    if (hasPendingLayerAfterDump()) {',
+  '      const pending = takePendingLayerAfterDump();',
+  '      if (pending !== currentLayer && applyLayerEvent(pending)) {',
+  '        hooks.renderTabs();',
+  '        hooks.loadLayer(pending);',
+  '      }',
+  '    }',
+  '',
+].join(nl);
 
 // Versi salah: apply duluan, baru resolve.
-const broken = orig.replace(resolveLine, applyBlock + resolveLine + '    return;\n');
+const broken = orig.replace(resolveLine, applyBlock + resolveLine + '    return;' + nl);
 if (broken === orig) { console.log('GAGAL: pola tidak ditemukan'); process.exit(2); }
 
 fs.writeFileSync(target, broken, 'utf8');
