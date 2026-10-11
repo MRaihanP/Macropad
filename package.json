@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node tests/runner/run-all.mjs",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

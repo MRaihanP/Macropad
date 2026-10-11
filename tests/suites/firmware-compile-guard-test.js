@@ -1,0 +1,122 @@
+// Menangkap KELAS bug yang baru saja menggagalkan kompilasi.
+//
+// Tiga bug nyata ditemukan saat user mencoba compile firmware PROTOTYPE:
+//
+//  1. #define TRANSPORT_USB 0 bentrok dengan enumerator
+//     `enum class TransportType { TRANSPORT_USB = 0 }`. Preprocessor
+//     substitute makro di SELURUH token berikutnya, jadi enumerator-nya
+//     jadi `0 = 0` -> "expected identifier before numeric constant".
+//
+//  2. #define SERIAL g_transport menimpa `#define SERIAL 0x0` dari core
+//     Arduino tanpa #undef -> warning "SERIAL redefined".
+//
+//  3. Serial.dtr() tidak bisa dipanggil: pada core ESP32 3.3.11, USBCDC
+//     punya `bool dtr;` sebagai member PROTECTED, bukan fungsi ->
+//     "is protected within this context" + "cannot be used as a function".
+//
+// Test ini mensimulasikan preprocessor untuk (1) dan (2), dan memeriksa
+// bentuk kode untuk (3). Ini BUKAN pengganti kompilasi - hanya yang bisa
+// dilakukan tanpa toolchain.
+import fs from 'fs';
+import path from 'path';
+
+const root = process.cwd();
+const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+
+let fail = 0;
+const ok = (c, m) => { console.log(`  ${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) fail++; };
+
+const limits = read('firmware/common/limits.h');
+const transport = read('firmware/common/transport.h');
+const usb = read('firmware/common/transport_usb.h');
+const core = read('src-tauri/src/lib.rs');   // hanya untuk memastikan tidak salah file
+
+console.log('--- A. Makro dan enumerator TIDAK boleh sama nama ---');
+// Kumpulkan nama makro transport.
+const macroNames = [...limits.matchAll(/^#define\s+(TRANSPORT_\w+)\s/gm)].map(m => m[1]);
+ok(macroNames.includes('TRANSPORT_USB') && macroNames.includes('TRANSPORT_BLE'),
+  `limits.h tetap mendefinisikan makro (${macroNames.filter(n => /^TRANSPORT_/.test(n)).join(', ')})`);
+
+// Kumpulkan nama enumerator dari enum class TransportType.
+const enumBlock = transport.match(/enum class TransportType[^{]*\{([\s\S]*?)\};/);
+ok(!!enumBlock, 'enum class TransportType ditemukan');
+const enumNames = enumBlock
+  ? [...enumBlock[1].matchAll(/^\s*(\w+)\s*=/gm)].map(m => m[1])
+  : [];
+ok(enumNames.length > 0, `enumerator ditemukan (${enumNames.join(', ')})`);
+
+// INI intinya: tidak boleh ada nama yang sama.
+const collisions = enumNames.filter(n => macroNames.includes(n));
+ok(collisions.length === 0,
+  `tidak ada bentrok nama makro vs enumerator${collisions.length ? ' (bentrok: ' + collisions.join(', ') + ')' : ''}`);
+
+// Simulasi langsung: kalau nama sama, preprocessor mengubahnya.
+for (const name of enumNames) {
+  const simulated = `#define ${name} 0\nenum class T { ${name} = 0 };`;
+  const broken = new RegExp(`\\{\\s*0\\s*=\\s*0`).test(simulated.replace(/#define.*\n/, '#define X 0\n'));
+  if (macroNames.includes(name)) {
+    ok(broken, `simulasi: "${name}" yang sama dengan makro akan jadi "0 = 0" (memang rusak)`);
+  }
+}
+
+// Buang komentar dulu. Penjelasan bug di dalam komentar juga mengandung
+// "#define SERIAL" dan "Serial.dtr()" - kalau tidak dibuang, test akan
+// mencocokkan penjelasannya sendiri dan selalu gagal.
+const stripComments = (s) => s
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+const transportCode = stripComments(transport);
+const usbCode = stripComments(usb);
+
+console.log('\n--- B. SERIAL harus di-#undef sebelum di-#define ---');
+ok(/#ifdef SERIAL\s*\n#undef SERIAL\s*\n#endif\s*\n#define SERIAL g_transport/.test(transportCode),
+  'pola #ifdef SERIAL / #undef SERIAL / #endif ada sebelum #define SERIAL');
+const defineCount = (transportCode.match(/#define SERIAL/g) || []).length;
+ok(defineCount === 1, `hanya ada satu #define SERIAL (ditemukan ${defineCount})`);
+// Urutan penting: #undef HARUS sebelum #define.
+const undefAt = transport.indexOf('#undef SERIAL');
+const defineAt = transport.indexOf('#define SERIAL');
+ok(undefAt >= 0 && defineAt > undefAt, '#undef muncul SEBELUM #define (urutan benar)');
+
+console.log('\n--- C. Serial.dtr() tidak boleh dipanggil ---');
+ok(!/\bSerial\s*\.\s*dtr\s*\(/.test(usbCode),
+  'tidak ada Serial.dtr() - dtr adalah member protected di core 3.3.11');
+// Dulu test ini menuntut literal `if (Serial) return true;`. Implementasi
+// sekarang lebih baik: operator bool() DAN buffer RX digabung dalam satu
+// ekspresi, jadi device yang sudah melepas port tapi masih punya byte terakhir
+// tetap dilaporkan tersambung. Yang dijaga di sini adalah SEMAKINNYA -
+// operator bool() yang publik, bukan bentuk kode yang pernah dipakai.
+ok(/\(bool\)\s*Serial|if\s*\(\s*(bool\)\s*)?Serial\s*\)/.test(usbCode),
+  'isConnected() memakai operator bool() yang memang publik di USBCDC/HWCDC');
+ok(/Serial\.available\(\)\s*>\s*0/.test(usbCode), 'isConnected() tetap mengecek buffer RX');
+
+console.log('\n--- D. Komentar menjelaskan kenapa ---');
+// Penjelasan "kenapa jangan panggil dtr()" TIDAK HARUS di transport_usb.h.
+// Yang dijaga hanya: penjelasan itu ada di salah satu dari file yang
+// relevan, supaya tidak ada yang "memperbaiki" Serial.dtr() kembali tanpa
+// tahu alasannya. Memindahkan penjelasan antar file bukan regresi.
+const penjelasanDtr = [usb, read('firmware/common/limits.h')].join('\n');
+ok(/protected/i.test(penjelasanDtr), 'ada penjelasan kenapa dtr() tidak dipakai (biar tidak ada yang "memperbaiki" balik)');
+
+// Sama seperti di atas: awalan TP_ dijelaskan di limits.h ( blok TRANSPORT
+// SELECTION ), bukan di transport.h. Yang dijaga: penjelasannya masih ada.
+const penjelasanTp = [transport, read('firmware/common/limits.h')].join('\n');
+ok(/TP_USB|TRANSPORT_USB/.test(penjelasanTp) && /nama/i.test(penjelasanTp),
+  'ada penjelasan kenapa enumerator memakai awalan TP_');
+
+console.log('\n--- E. Semua pemakai enum memakai nama baru ---');
+const files = ['firmware/common/transport.h', 'firmware/common/transport_usb.h',
+  'firmware/HID_Keypad_Prototype/HID_Keypad_Prototype.ino',
+  'firmware/HID_Keypad_Final/HID_Keypad_Final.ino'];
+for (const f of files) {
+  const src = read(f);
+  ok(!/TransportType::TRANSPORT_/.test(src), `${f}: tidak ada TransportType::TRANSPORT_* yang lama`);
+}
+ok(/TransportType::TP_USB/.test(usb), 'transport_usb.h memakai TransportType::TP_USB');
+// BLE belum diimplementasikan, tapi nilainya harus tetap ada agar
+// transport_ble.h nanti bisa langsung memakainya.
+ok(/TP_BLE/.test(transport), 'TP_BLE ada (dipakai transport_ble.h nanti)');
+
+console.log(`\nHASIL: ${fail} gagal`);
+process.exit(fail ? 1 : 0);

@@ -1,0 +1,21 @@
+File di folder ini TIDAK lagi dijalankan oleh `npm test` (yang hanya menjalankan
+tests/suites/).
+
+Alasannya per file:
+
+  spike-test.js
+      Menguji firmware/spike_ble_hid/spike_ble_hid.ino. Folder itu tidak ada
+      lagi di repo - spike BLE HID bersifat throwaway dan sudah dibuang setelah
+      logikanya dipindahkan ke firmware/common/ble_hid.h. Test-nya keluar dengan
+      "spike_ble_hid.ino tidak ada" (exit 2).
+
+  spike2-test.cjs
+      Menguji firmware/spike_ble_hid2/spike_ble_hid2.ino - juga sudah dibuang,
+      alasannya sama: 8 perbaikan yang berhasil sudah masuk ke ble_hid.h.
+
+Kedua test ini masih berguna sebagai REFERENSI: apa saja yang harus diperiksa
+di GATT/HID BLE. Kalau nanti menulis ulang modul BLE baru, bacalah kedua file ini
+untuk daftar pemeriksaan, lalu tulis ulang test-nya di tests/suites/.
+
+Kalau suatu saat firmware/spike_ble_hid/ dikembalikan ke repo, pindahkan file
+ini kembali ke tests/suites/ dan perbaiki path-nya lewat runner/paths.mjs.
