@@ -1,8 +1,8 @@
 // Uji negatif untuk contract-logpath-test (F1 / C10).
 //
-// Membalik pemisahan log-vs-protokol dengan cara yang paling mungkin terjadi
-// nanti: ada yang "memperbaiki" satu baris log dan menulisnya pakai SERIAL-
-// lagi. Kalau itu tidak ketahuan, NUS akan mencemari stream protokol.
+// Yang diuji: pemisahan log-vs-protokol. Kalau ada yang "memperbaiki" satu
+// baris log dan menulisnya pakai SERIAL-> lagi, NUS akan mencemari stream
+// protokol.
 //
 // Jalankan: node tests/negative/negative-logpath.mjs
 import fs from 'node:fs';
@@ -45,8 +45,8 @@ const cases = [
     // jawaban HWINFO tidak akan pernah sampai ke companion app.
     name: 'core menjawab HWINFO lewat LOGS (jawaban tidak sampai ke app)',
     file: CORE,
-    from: 'SERIAL->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\\n",',
-    to: 'LOGS->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d\\n",',
+    from: 'SERIAL->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d,iface=%s,proto=%s\\n",',
+    to: 'LOGS->printf("HWINFO:profile=%s,encoders=%d,statusLed=%d,rgb=%d,rgbSlots=%d,vdiv=%d,chg=%d,simulated=%d,iface=%s,proto=%s\\n",',
   },
   {
     name: 'g_logTransport ikut dialihkan ke NUS (Serial Monitor mati)',
