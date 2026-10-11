@@ -21,8 +21,8 @@ const cases = [
   {
     name: 'iface= dihapus dari HWINFO (app jadi tidak tahu mode HID)',
     file: CORE,
-    from: ',simulated=%d,iface=%s\\n"',
-    to: ',simulated=%d\\n"',
+    from: ',simulated=%d,iface=%s,proto=%s\\n"',
+    to: ',simulated=%d,proto=%s\\n"',
   },
   {
     name: 'iface diisi string hardcode (selalu "usb" walau mode BLE)',
