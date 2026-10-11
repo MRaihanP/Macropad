@@ -90,6 +90,9 @@ ok((limits.match(/extern ProtoLink g_protoLink/g) || []).length === 1,
 // protoLinkName hanya boleh ada di satu tempat.
 const protoDefs = (limits.match(/const char\*\s*protoLinkName/g) || []).length;
 ok(protoDefs === 1, `protoLinkName() didefinisikan tepat sekali (ditemukan ${protoDefs})`);
+// enum ProtoLink juga hanya boleh ada di satu tempat.
+const enumDefs = (limits.match(/enum class ProtoLink/g) || []).length;
+ok(enumDefs === 1, `enum ProtoLink didefinisikan tepat sekali (ditemukan ${enumDefs})`);
 for (const [nama, isi] of [
   ['hid_link.h', hidLink],
   ['ble_diag.h', diag],
@@ -98,6 +101,8 @@ for (const [nama, isi] of [
 ]) {
   ok(!/const char\*\s*protoLinkName\s*\(/.test(isi),
     `${nama}: tidak mendefinisikan ulang protoLinkName()`);
+  ok(!/enum class ProtoLink/.test(isi),
+    `${nama}: tidak mendefinisikan ulang enum ProtoLink`);
 }
 // Perintah PROTO:* harus ada dan terpisah dari IFACE:*.
 for (const cmd of ['PROTO', 'PROTO:CDC', 'PROTO:NUS']) {

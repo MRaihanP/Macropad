@@ -13,8 +13,9 @@ const TEST = suite('contract-hwinfo-test.js');
 const CORE = `${REPO}/firmware/common/macropad_core.h`;
 const LIMITS = `${REPO}/firmware/common/limits.h`;
 const DIAG = `${REPO}/firmware/common/ble_diag.h`;
+const LINK = `${REPO}/firmware/common/hid_link.h`;
 
-const files = [CORE, LIMITS, DIAG].map((f) => [f, fs.readFileSync(f, 'utf8')]);
+const files = [CORE, LIMITS, DIAG, LINK].map((f) => [f, fs.readFileSync(f, 'utf8')]);
 const restore = () => { for (const [f, c] of files) fs.writeFileSync(f, c, 'utf8'); };
 
 const cases = [
@@ -56,7 +57,7 @@ const cases = [
   },
   {
     name: 'enum ProtoLink didefinisikan ulang di hid_link.h',
-    file: `${REPO}/firmware/common/hid_link.h`,
+    file: LINK,
     from: 'HidLink g_hidLink = (HidLink)HID_LINK_DEFAULT;',
     to: 'HidLink g_hidLink = (HidLink)HID_LINK_DEFAULT;\nenum class ProtoLink : uint8_t { CDC = 0, NUS = 1 };',
   },
