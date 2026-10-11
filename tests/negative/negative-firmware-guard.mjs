@@ -1,11 +1,10 @@
 // Uji negatif: kembalikan tiga bug yang baru saja menggagalkan kompilasi,
 // pastikan guard menangkapnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/firmware-compile-guard-test.js`;
+const TEST = suite('firmware-compile-guard-test.js');
 const targets = {
   limits: 'firmware/common/limits.h',
   transport: 'firmware/common/transport.h',

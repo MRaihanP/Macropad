@@ -1,10 +1,9 @@
 // Uji negatif untuk 9.4: kembalikan slider ke <span> tanpa nama, pastikan test gagal.
 import fs from 'node:fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/a11y-test.js`;
+const TEST = suite('a11y-test.js');
 const target = 'src/index.html';
 const orig = fs.readFileSync(target, 'utf8');
 

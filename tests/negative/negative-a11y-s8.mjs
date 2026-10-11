@@ -10,13 +10,12 @@
 //             di .nav-item:hover) harus tetap hijau. Tanpa kontrol, test bisa
 //             hijau karena alasan yang salah.
 import fs from 'node:fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
 const REPO = `${REPO}`;
 const CSS = `${REPO}/src/styles.css`;
-const TEST = `${SUITES_DIR}/a11y-test.js`;
+const TEST = suite('a11y-test.js');
 
 const asli = fs.readFileSync(CSS, 'utf8');
 const jalankan = () => {

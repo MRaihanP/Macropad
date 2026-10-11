@@ -1,11 +1,10 @@
 // Uji negatif: balik sementara perbaikan 9.6, pastikan test benar-benar gagal.
 // Test yang selalu hijau tidak membuktikan apa pun.
 import fs from 'node:fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/record-escape-test.js`;
+const TEST = suite('record-escape-test.js');
 const target = 'src/ui-modal.js';
 const orig = fs.readFileSync(target, 'utf8');
 

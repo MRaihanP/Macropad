@@ -1,11 +1,10 @@
 // Uji negatif: kembalikan #rgbSaveState ke span biasa tanpa live region.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const T1 = `${SUITES_DIR}/rgb-savestate-a11y-test.js`;
-const T2 = `${SUITES_DIR}/a11y-test.js`;
+const T1 = suite('rgb-savestate-a11y-test.js');
+const T2 = suite('a11y-test.js');
 const target = 'src/index.html';
 const orig = fs.readFileSync(target, 'utf8');
 

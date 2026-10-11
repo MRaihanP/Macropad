@@ -1,11 +1,10 @@
 // Uji negatif untuk spike-test.js: sisipkan kesalahan kompilasi nyata,
 // pastikan test menangkapnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/spike-test.js`;
+const TEST = suite('spike-test.js');
 const target = 'firmware/spike_ble_hid/spike_ble_hid.ino';
 const orig = fs.readFileSync(target, 'utf8');
 

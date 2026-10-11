@@ -1,10 +1,9 @@
 // Uji negatif untuk fix retry/reconnect.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/retry-test.js`;
+const TEST = suite('retry-test.js');
 const target = 'src/serial-transport.js';
 const orig = fs.readFileSync(target, 'utf8');
 

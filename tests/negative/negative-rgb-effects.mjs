@@ -1,11 +1,10 @@
 // Uji negatif untuk rgb_effects.h: sengaja rusak algoritmanya, pastikan test
 // MENJALANKAN header yang rusak itu (bukan salinan) dan menangkap hasilnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/rgb-effects-test.js`;
+const TEST = suite('rgb-effects-test.js');
 const target = 'firmware/common/rgb_effects.h';
 const orig = fs.readFileSync(target, 'utf8');
 

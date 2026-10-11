@@ -1,11 +1,10 @@
 // Uji negatif: buat README lipstick (pakai satu perintah yang tidak ada di
 // firmware), pastikan test menangkapnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/readme-protocol-test.js`;
+const TEST = suite('readme-protocol-test.js');
 const target = 'README.md';
 const orig = fs.readFileSync(target, 'utf8');
 

@@ -1,10 +1,9 @@
 // Uji negatif untuk jeda auto-switch / tundaan dump (step 4).
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/layer-hold-test.js`;
+const TEST = suite('layer-hold-test.js');
 const adaptive = 'src/adaptive.js';
 const parser = 'src/protocol-parser.js';
 const origA = fs.readFileSync(adaptive, 'utf8');

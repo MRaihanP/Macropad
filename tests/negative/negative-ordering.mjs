@@ -2,11 +2,10 @@
 // resolve waiter) - ini bug yang ditemukan test perilaku, dan harus tetap
 // terdeteksi.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/layer-hold-behaviour-test.js`;
+const TEST = suite('layer-hold-behaviour-test.js');
 const target = 'src/protocol-parser.js';
 const orig = fs.readFileSync(target, 'utf8');
 

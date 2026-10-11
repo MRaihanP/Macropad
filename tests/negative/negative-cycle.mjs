@@ -3,9 +3,9 @@
 // checker menangkapnya.
 import fs from 'fs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 
-const CHECK = `${SUITES_DIR}/import-cycle-check.mjs`;
+const CHECK = suite('import-cycle-check.mjs');
 const target = `${REPO}/src/adaptive.js`;
 const orig = fs.readFileSync(target, 'utf8');
 

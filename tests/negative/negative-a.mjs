@@ -2,11 +2,10 @@
 // dan pastikan test mendeteksinya. Kalau test ini tetap hijau, ia tidak
 // berguna sebagai jaring pengaman.
 import fs from 'node:fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/manual-connect-test.js`;
+const TEST = suite('manual-connect-test.js');
 const target = 'src/index.html';
 const orig = fs.readFileSync(target, 'utf8');
 

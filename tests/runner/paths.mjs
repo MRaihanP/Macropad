@@ -12,6 +12,7 @@
 //
 // Uso en los tests:
 //   import { SRC, SRC_URL, FILE } from '../runner/paths.mjs';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -35,6 +36,27 @@ export const SUITES_DIR = path.join(REPO, 'tests', 'suites');
 
 /** Folder tests/negative/ - uji negatif, dijalankan TERPISAH (mengacak repo). */
 export const NEGATIVE_DIR = path.join(REPO, 'tests', 'negative');
+
+/**
+ * Cari file suite berdasarkan nama, dengan atau tanpa ekstensi.
+ *
+ * Dipakai oleh tests/negative/, yang menunjuk suite berdasarkan nama logis
+ * (mis. 'a11y-test') sementara file aslinya bisa .js, .cjs, atau .mjs.
+ * .cjs wajib untuk CommonJS karena package.json punya "type": "module".
+ *
+ * Tanpa ini, setiap kali ada suite yang di-rename, semua skrip negative
+ * ikut rusak diam-diam dan tidak ada yang memberi tahu.
+ */
+export function suite(name) {
+  const stem = name.replace(/\.(js|cjs|mjs)$/, '');
+  for (const ext of ['.js', '.cjs', '.mjs']) {
+    const p = path.join(SUITES_DIR, stem + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    `suite tidak ditemukan: ${name} (dicari ${stem}.js/.cjs/.mjs di ${SUITES_DIR})`
+  );
+}
 
 /** Path absolut ke file lain di dalam repo, dari root. */
 export function FILE(...parts) {

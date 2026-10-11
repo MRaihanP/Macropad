@@ -1,10 +1,9 @@
 // Uji negatif untuk fix "reconnect selalu mulai dari layer 0".
 import fs from 'node:fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'node:child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/reconnect-layer0-test.js`;
+const TEST = suite('reconnect-layer0-test.js');
 const target = 'src/serial-transport.js';
 const orig = fs.readFileSync(target, 'utf8');
 

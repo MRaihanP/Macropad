@@ -1,11 +1,10 @@
 // Uji negatif untuk konsistensi versi: kembalikan package.json ke 0.1.0,
 // pastikan test menangkapnya.
 import fs from 'fs';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
+import { REPO, SUITES_DIR, suite } from '../runner/paths.mjs';
 import { execFileSync } from 'child_process';
-import { REPO, SUITES_DIR } from '../runner/paths.mjs';
 
-const TEST = `${SUITES_DIR}/version-test.js`;
+const TEST = suite('version-test.js');
 const target = 'package.json';
 const orig = fs.readFileSync(target, 'utf8');
 
