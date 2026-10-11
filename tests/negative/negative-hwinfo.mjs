@@ -27,8 +27,8 @@ const cases = [
   {
     name: 'iface diisi string hardcode (selalu "usb" walau mode BLE)',
     file: CORE,
-    from: 'HW_DATA_SIMULATED, hidLinkName(g_hidLink), protoLinkName(g_protoLink));',
-    to: 'HW_DATA_SIMULATED, "usb");',
+    from: 'HW_DATA_SIMULATED,\n                  hidLinkName(g_hidLink), protoLinkName(g_protoLink));\n    return',
+    to: 'HW_DATA_SIMULATED,\n                  "usb");\n    return',
   },
   {
     name: 'iface kembali huruf besar (app harus normalisasi)',
