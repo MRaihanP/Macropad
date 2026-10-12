@@ -84,26 +84,6 @@ export function transportId() { return backendId; }
 // Inisialisasi backend aktif dengan hook yang sudah didaftarkan main.js.
 export function initActiveBackend() { backend.initTransport(pendingHooks); }
 
-// ==================== KUNCI MODE ====================
-//
-// Kalau dikunci, app tidak akan pindah mode sendiri walau USB tersedia.
-// Tanpa kunci, USB selalu menang karena kabel lebih bisa diandalkan; BLE
-// mengambil alih hanya kalau USB tidak ada.
-//
-// Bedanya penting untuk user yang sengaja memaksa BLE (mis. menguji
-// baterai, atau kabelnya sering drop): tanpa kunci, colok kabel
-// sedikit saja langsung menarik app kembali ke USB.
-let modeLocked = false;
-let onModeChange = null;
-export function isModeLocked() { return modeLocked; }
-export function setModeLocked(v) { modeLocked = !!v; }
-export function registerOnModeChange(fn) { onModeChange = fn; }
-
-function announceMode() { if (onModeChange) onModeChange(backendId); }
-
-// Backend yang SEDANG dipakai, tanpa mengubah apa pun.
-export async function activeBackend() { return backend; }
-
 // Ganti backend runtime. Dipanggil dari UI pemilih transport; setelah hook
 // diinstal ulang, modul lain yang mengimpor dari facade ini otomatis ikut
 // memakai backend baru tanpa perlu diimpor ulang.
@@ -122,7 +102,6 @@ export async function setTransportBackend(id) {
   }
   backendId = id;
   backend.initTransport(pendingHooks);
-  announceMode();
   return backendId;
 }
 
@@ -135,21 +114,4 @@ export async function setTransportBackend(id) {
 // menulis ke instance yang bukan yang sedang dipakai.
 export function bleBackend() {
   return backendId === 'ble' ? backend : null;
-}
-
-// Apakah USB sedang memegang device MacroPad.
-//
-// Dipakai supervisor untuk memutuskan takeover: kalau sedang di BLE dan
-// USB tiba-tiba punya MacroPad, pindah ke USB - kecuali mode dikunci.
-export async function usbHasDevice() {
-  try {
-    const paths = await serialBackend.listPortPaths();
-    if (!paths.length) return false;
-    // Cek cepat dulu tanpa WHOAMI (yang mahal):
-    // kalau port yang known sudah muncul kembali, itu hampir pasti device
-    // yang sama.
-    return paths.length > 0;
-  } catch (e) {
-    return false;
-  }
 }

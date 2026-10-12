@@ -17,7 +17,7 @@
 // Naikkan nomornya setiap kali firmware mengubah perilaku, bukan setiap
 // commit. Perubahan kecil tidak perlu menaikkan.
 #ifndef FW_VERSION
-#define FW_VERSION 9
+#define FW_VERSION 8
 #endif
 #pragma once
 

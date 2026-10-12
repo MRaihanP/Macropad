@@ -666,57 +666,6 @@ if (connectBody) {
 ok(/await sleep\(1500\)/.test(bleSrc2),
   'jeda retry dinaikkan ke 1500 ms (400 ms tidak cukup untuk Windows)');
 
-console.log('\n--- 9k. Supervisor BLE memulihkan diri saat TIDAK tersambung ---');
-// Celah yang paling parah: poll() lama bermula dengan `if (!connected) return;`.
-// Jadi begitu satu percobaan connect gagal, tidak ada SATU PUN yang akan
-// mencoba lagi - dan ini membuat skenario berikut mustahil:
-//   4. bond BLE putus karena driver Bluetooth Windows tidak stabil
-//   5. device di-pair SEBELUM app diaktifkan
-//   6. device di-pair SETELAH app diaktifkan
-// Semuanya butuh SCAN ULANG, dan tidak ada yang menyediakannya.
-const pollSrc = bleSrc2.match(/export async function poll\(\) \{[\s\S]*?\n\}/);
-ok(!!pollSrc, 'badan poll() terambil');
-if (pollSrc) {
-  const body = pollSrc[0];
-  // WAJIB: tidak boleh return awal saat tidak tersambung.
-  ok(!/if \(!connected\) return;/.test(body),
-    'poll() tidak return awal saat tidak tersambung (itu yang membuat BLE mustahih pulih)');
-  ok(/if \(!autoReconnect\) return;/.test(body),
-    'poll() menghormati disconnect manual user (autoReconnect=false)');
-  ok(/tryAutoConnect/.test(body),
-    'poll() mencoba connect ulang saat tidak tersambung');
-}
-// Scan BLE memakan ~5 detik, jadi supervisor tidak boleh memicunya terlalu sering.
-ok(/RESCAN_MIN_MS = 8000/.test(bleSrc2),
-  'RESCAN_MIN_MS 8000 (satu scan ~5 detik, scan berlebih hanya membakar baterai)');
-ok(/if \(now - lastScanAt < RESCAN_MIN_MS\) return;/.test(bleSrc2),
-  'frekuensi scan dibatasi');
-// Backoff tidak boleh berhenti permanen.
-const retrySrc = bleSrc2.match(/export function scheduleRetry[\s\S]*?\n\}/);
-ok(retrySrc, 'scheduleRetry() terambil');
-if (retrySrc) {
-  ok(!/if \(attempt > RETRY_MAX_ATTEMPTS\) return;/.test(retrySrc[0]),
-    'backoff TIDAK berhenti permanen di N percobaan');
-}
-// Supervisor tidak boleh membiarkan satu iterasi melempar dan mematikan sisanya.
-const mainSrc2 = fs.readFileSync(`${SRC}/main.js`, 'utf8');
-ok(/connectionSupervisor/.test(mainSrc2), 'ada supervisor koneksi di main.js');
-ok(/finally \{ supervisorBusy = false; \}/.test(mainSrc2),
-  'supervisor selalu melepas busy-nya walau iterasi melempar (tidak pernah mati diam-diam)');
-
-console.log('\n--- 9l. Kunci mode & prioritas USB ---');
-ok(/isModeLocked\(\)/.test(mainSrc2), 'app mengecek kunci mode di supervisor');
-ok(/setModeLocked\(true\)/.test(mainSrc2) && /lockBox\.checked = true/.test(mainSrc2),
-  'memilih mode dari dropdown langsung mengunci (supervisor tidak menarik balik)');
-ok(/transportId\(\) === 'ble' && await usbHasDevice\(\)/.test(mainSrc2),
-  'USB mengambil alih dari BLE kalau port tersedia');
-ok(/export async function usbHasDevice/.test(
-    fs.readFileSync(`${SRC}/transport.js`, 'utf8')),
-  'facade menyediakan usbHasDevice()');
-// Mode terkunci harus benar-benar menghentikan takeover USB.
-ok(/if \(isModeLocked\(\)\) \{ await poll\(\); return; \}/.test(mainSrc2),
-  'mode terkunci: tidak ada pindah mode otomatis');
-
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

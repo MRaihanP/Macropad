@@ -444,38 +444,20 @@ export async function handleDeviceLost() {
 }
 
 // ---- Auto-connect / retry ----
-// Jeda minimal antar scan pemulihan.
-//
-// Satu scan di Rust berjalan ~5 detik (DeviceWatcher sengaja menunggu
-// selama 5 detik). Jadi supervisor tidak boleh memicu scan lebih cepat dari
-// ini - tidak akan menambah chance connect, hanya membakar baterai dan
-// memperlambat loop baca.
-const RESCAN_MIN_MS = 8000;
-
-// Backoff TIDAK pernah menyerah. Versi lama berhenti total di 6 percobaan
-// ("if (attempt > RETRY_MAX_ATTEMPTS) return;"), jadi setelah device unplug
-// atau bond putus cukup lama, tidak ada satu pun yang mencoba lagi sampai
-// user menekan tombol Refresh.
-//
-// Sekarang backoff hanya melambat sampai batas atas lalu MULAI LAGI dari
-// situ. Supervisor poll() adalah jaring kedua, tapi backoff yang terus
-// mencoba membuat pemulihan terasa cepat untuk kasus umum (device cuma
-// Sebentar terputus).
+const RETRY_MAX_ATTEMPTS = 6;
 const RETRY_BASE_MS = 2500;
 const RETRY_MAX_MS = 20000;
 const retryDelay = (n) => Math.min(RETRY_BASE_MS * n, RETRY_MAX_MS);
 
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
-  // attempt naik tanpa batas; dibatasi supaya retryDelay tidak overflow
-  // dan jeda tetap di RETRY_MAX_MS.
-  const n = Math.min(attempt, RETRY_MAX_MS / RETRY_BASE_MS);
+  if (attempt > RETRY_MAX_ATTEMPTS) return;
   retryTimer = setTimeout(async () => {
     if (connected || !autoReconnect) return;
     const targets = only && only.length ? only : (lastGoodDeviceId ? [lastGoodDeviceId] : null);
     const ok = await tryAutoConnect(false, targets);
     if (!ok) scheduleRetry(only, attempt + 1);
-  }, retryDelay(n));
+  }, retryDelay(attempt));
 }
 
 export async function tryAutoConnect(verbose, only) {
@@ -556,70 +538,18 @@ export async function readIncoming() {
   return got;
 }
 
-// Supervisor koneksi BLE. Dipanggil tiap POLL_MS dari main.js.
-//
-// Dua tugas, dan KEDUA-DUAYA harus ada:
-//
-//  1. Saat tersambung: cek link masih hidup, lalu tarik data.
-//  2. Saat TIDAK tersambung: scan ulang dan coba sambung lagi.
-//
-// Versi lama hanya mengerjakan (1) - `if (!connected) return;` di baris
-// pertama. Akibatnya begitu satu percobaan connect gagal, tidak ada SELAIN
-// itu yang akan pernah mencoba lagi. Padahal pem teaming yang paling sering
-// di dunia adalah:
-//   - device di-pair SETELAH app diaktifkan
-//   - bond BLE putus karena driver Bluetooth Windows tidak stabil
-//   - PC tidur lalu bangun (link BLE hilang diam-diam)
-//   - user menekan tombol pairing di device
-// Semua itu butuh SCAN ULANG, dan tidak ada yang PROVIDING-nya.
-//
-// Catatan: satu scan di sisi Rust berjalan ~5 detik (DeviceWatcher menunggu 5 detik).
-// Jadi supervisor tidak boleh memicu scan bertumpuk - pollBusy yang
-// menjaganya, dan RESCAN_MIN_MS yang membatasi frekuensinya.
-let pollBusy = false;
-let lastScanAt = 0;
-
+// Pantau status koneksi dari sisi Rust. Device bisa hilang tanpa memberi tahu
+// (jarak, device mati), jadi harus dicek berkala seperti port serial.
 export async function poll() {
-  // Jaga supervisor tetap berjalan tanpa tumpang tindih. Scan BLE memakan
-  // waktu dan terjadi di worker thread yang sama dengan read, jadi dua scan
-  // bersamaan akan saling menunda.
-  if (pollBusy) return;
-  pollBusy = true;
+  if (!connected) return;
   try {
-    if (connected) {
-      try {
-        const stillUp = await invoke('ble_is_connected');
-        if (!stillUp) { await handleDeviceLost(); return; }
-        await readIncoming();
-      } catch (e) {
-        log(t('ble.pollError', { err: e }), 'err');
-        await handleDeviceLost();
-      }
-      return;
-    }
-
-    // ---- Belum tersambung: pulihkan diri ----
-    //
-    // autoReconnect = false HANYA kalau user sendiri yang menekan Putuskan.
-    // Cabut-colok USB, reset hardware, atau bond BLE yang putus TIDAK
-    // menyentuh flag itu - dan memang tidak boleh, karena itu bukan
-    // keputusan user.
-    if (!autoReconnect) return;
-
-    // Jangan scan terlalu sering: satu scan sudah ~5 detik, dan pair/unpair
-    // yang sama butuh waktu anyway.
-    const now = Date.now();
-    if (now - lastScanAt < RESCAN_MIN_MS) return;
-    lastScanAt = now;
-
-    // Targetkan device terakhir yang berhasil kalau masih di sekitar -
-    // tried connecting by id jauh lebih murah daripada scan seluruh
-    // perangkat di vicinity. Kalau tidak ketemu, fall through ke scan penuh.
-    const known = lastGoodDeviceId ? [lastGoodDeviceId] : null;
-    const ok = known ? await tryAutoConnect(false, known) : false;
-    if (!ok && !known) return;              // tanpa id, scan penuh jalan di poll berikutnya
-    if (!ok) await tryAutoConnect(true, null); // scan penuh sebagai cadangan
-  } finally { pollBusy = false; }
+    const stillUp = await invoke('ble_is_connected');
+    if (!stillUp) { await handleDeviceLost(); return; }
+    await readIncoming();
+  } catch (e) {
+    log(t('ble.pollError', { err: e }), 'err');
+    await handleDeviceLost();
+  }
 }
 
 // ---- Ping ----

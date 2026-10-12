@@ -24,7 +24,6 @@ import {
   autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
   setTransportBackend, transportId, bleBackend,
-  isModeLocked, setModeLocked, registerOnModeChange, usbHasDevice,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -232,18 +231,9 @@ if (transportSel) {
   // scan berjalan dua kali: sekali dari inisialisasi, sekali dari klik user.
   transportSel.value = transportId();
 
-  // Kunci mode. Dipakai juga saat user memilih mode secara manual: memilih
-  // mode selalu berarti "saya mau mode ini", jadi mengunciinya mencegah
-  // supervisor langsung menarik kembali ke USB.
-  const lockBox = el('transportLock');
-  if (lockBox) {
-    lockBox.checked = isModeLocked();
-    lockBox.onchange = () => { setModeLocked(lockBox.checked); };
-  }
-
   // Baris device BLE hanya relevan di mode BLE. Port USB disembunyikan
   // sebaliknya supaya user tidak memilih endpoint yang tidak akan dipakai.
-  let syncTransportRows = () => {
+  const syncTransportRows = () => {
     const isBle = transportSel.value === 'ble';
     const bleRow = el('bleRow');
     if (bleRow) bleRow.style.display = isBle ? '' : 'none';
@@ -259,15 +249,9 @@ if (transportSel) {
       updateConnectButton(isConnected());
       // Baru scan setelah backend benar-benar terpasang. Tanpa ini, user
       // memilih BLE lalu dropdown device tetap kosong dan tidak ada yang
-      // memberi tahu - device yang harus dipilih tidak pernah muncul.
+      // memberi tahu -_DEVICE_ yang harus dipilih tidak pernah muncul.
       const ble = bleBackend();
       if (transportSel.value === 'ble') {
-        // Memilih mode dari dropdown berarti "saya mau mode ini", jadi mode
-        // langsung dikunci. Tanpa ini supervisor akan melihat USB tersedia dan
-        // menarik app balik ke USB satu tick kemudian - persis membatalkan
-        // pilihan user. User bisa melepas kuncinya lewat checkbox.
-        setModeLocked(true);
-        if (lockBox) lockBox.checked = true;
         if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
         log(t('ble.traceSwitched'));
         await ble.scanAndUpdateSelect();
@@ -355,54 +339,9 @@ el('globalAdaptiveToggle').onchange = (e) => {
   syncGlobalToggles();
 };
 el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
-// ==================== SUPERVISOR KONEKSI ====================
-//
-// Setiap 2 detik supervisor memutuskan satu hal: apakah perlu pindah backend.
-
-let supervisorBusy = false;
-async function connectionSupervisor() {
-  if (supervisorBusy) return;
-  supervisorBusy = true;
-  try {
-    // 1. Sudah tersambung? Biarkan backend yang mengurus diri sendiri
-    //    (menarik data, mendeteksi device hilang).
-    if (isConnected()) { await poll(); return; }
-
-    // 2. Mode terkunci? Kalau iya, jangan pindah mode - user yang memutuskan.
-    if (isModeLocked()) { await poll(); return; }
-
-    // 3. USB selalu menang kalau port-nya ada. Cable lebih bisa diandalkan
-    //    daripada BLE, jadi kalau user mencolok perangkat, hambalah BLE.
-    if (transportId() === 'ble' && await usbHasDevice()) {
-      log(t('main.transportUsbTookOver'), null);
-      await setTransportBackend('usb');
-      updateConnectButton(false);
-      await autoDetect();
-      return;
-    }
-
-    // 4. entrusted ke backend: USB mem-pompa port, BLE melakukan rescan
-    //    + reconnect. Keduanya sudah punya mekanisme pemulihan masing-masing.
-    await poll();
-  } catch (e) {
-    // Supervisor harus TIDAK PERNAH mati. Kalau satu iterasi melempar, iterasi
-    // berikutnya harus tetap jalan - itu satu-satunya hal yang dijaganya.
-  } finally { supervisorBusy = false; }
-}
-
-setInterval(() => { connectionSupervisor(); }, 2000);
-
-// Supervisor tidak tahu soal perubahan mode dari luar (mis. dipanggil dari
-// kode lain), jadi dropdown disinkronkan lewat callback.
-// `?.` WAJIB di sini, bukan sekadar gaya: callback ini bisa terpanggil SEBELUM
-// Sama: syncTransportRows bisa tidak terdefinisi bila dropdown-nya tidak ada di
-// DOM. Tanpa guard ini, perubahan mode dari code lain melempar dan merusak
-// inisialisasi halaman.
-registerOnModeChange((id) => {
-  if (transportSel && transportSel.value !== id) transportSel.value = id;
-  if (typeof syncTransportRows === 'function') syncTransportRows();
-  updateConnectButton(isConnected());
-});
+// Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
+// dipantau (port COM untuk USB, status GATT untuk BLE).
+setInterval(() => { poll(); }, 2000);
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
 // tidak ada import bolak-balik antara main.js dan rgb-page.js.

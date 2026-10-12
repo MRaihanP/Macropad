@@ -436,7 +436,6 @@ export const id = {
 'header.transportLabel': 'Transport',
 'header.transportUsb': 'USB (CDC)',
 'header.transportBle': 'BLE (NUS)',
-'header.transportLock': 'Kunci mode ini',
 'header.bleDeviceLabel': 'Device BLE',
 'header.bleRefresh': 'Pindai ulang BLE',
 'header.bleRefreshTitle': 'Pindai ulang device BLE',
@@ -467,6 +466,5 @@ export const id = {
 'ble.traceSilent': '[BLE] Perintah terkirim tapi device tidak menjawab dalam 6 detik - masalah di sisi device/subscribe, bukan di pengiriman',
 'ble.pollError': '[BLE] Gagal mem-poll koneksi: {err}',
 'main.transportSwitchError': 'Ganti transport gagal: {err}',
-'main.transportUsbTookOver': '[APP] USB tersedia, pindah dari BLE ke USB',
 
 };
