@@ -11,6 +11,13 @@ const TEST = suite('preset-layer-test.js');
 const target = 'src/adaptive.js';
 const orig = fs.readFileSync(target, 'utf8');
 
+// EOL harus mengikuti file yang dimutasi, bukan diasumsikan LF. Kalau polanya
+// hardcode '\n' sementara target di disk memakai CRLF, replace() diam-diam tidak
+// mengubah apa pun dan skrip keluar dengan "pola tidak ditemukan" tanpa pernah
+// menguji apa pun - persis yang terjadi setelah `git rebase` melakukan checkout
+// dengan CRLF. Ambil dari isi file, bukan dari konvensi repo yang bisa berubah.
+const nl = orig.includes('\r\n') ? '\r\n' : '\n';
+
 const cases = [
   {
     name: 'LAYER:0 hardcoded dikembalikan',
@@ -26,13 +33,13 @@ const cases = [
   },
   {
     name: 'reset peta dihapus',
-    from: '  lastLayerByPreset = new Map();\n  slotTable = Array(APP_SLOTS).fill(null);',
+    from: '  lastLayerByPreset = new Map();' + nl + '  slotTable = Array(APP_SLOTS).fill(null);',
     to: '  slotTable = Array(APP_SLOTS).fill(null);',
     expect: 'mengosongkan peta',
   },
   {
     name: 'pencatatan di exitPresetEditor dihapus',
-    from: '  noteCurrentLayerForEditingPreset();\n  editingPresetId = null;',
+    from: '  noteCurrentLayerForEditingPreset();' + nl + '  editingPresetId = null;',
     to: '  editingPresetId = null;',
     expect: 'exitPresetEditor',
   },
