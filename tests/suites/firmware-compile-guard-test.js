@@ -151,5 +151,50 @@ if (printlnBody) {
   }
 }
 
+console.log('\n--- G. Notify BLE tidak boleh membuang payload diam-diam ---');
+// Akar semua gejala "DUMP never closed (terminator lost)":
+//
+//   if (!bleNusRx->notify(...)) {
+//     delay(6);
+//     if (!bleNusRx->notify(...)) break;    <- menyerah setelah 2x, BUANG SISANYA
+//   }
+//
+// notify BLE gagal secara NORMAL (buffer peer penuh, connection interval
+// sibuk) - itu kondisi sehari-hari yang hilang sendiri dalam hitungan
+// milidetik. Menyerah setelah dua percobaan berarti sisa payload, termasuk
+// PENUTUP frame, hilang tanpa satu baris log pun.
+//
+// Karena penutup frame selalu baris TERAKHIR, inilah kenapa yang hilang
+// selalu DUMP_END/ENC_END/NAMES_END, bukan data acak di tengah.
+const bleT = read('firmware/common/transport_ble.h');
+const bleCode = bleT.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+ok(bleCode.length > 0, 'transport_ble.h terbaca');
+ok(/BLE_NOTIFY_MAX_ATTEMPTS/.test(bleCode), 'ada konstanta percobaan ulang notify');
+// Retry harus berupa LOOP dengan beberapa percobaan, bukan dua notify beruntun
+// lalu break.
+ok(/for \(uint8_t attempt = 0; attempt < BLE_NOTIFY_MAX_ATTEMPTS; attempt\+\+\)/.test(bleCode),
+  'notify dicoba ulang dalam loop (bukan 2x lalu menyerah)');
+// Pola lama: notify gagal -> delay pendek -> notify sekali lagi -> menyerah.
+// Dikenal dari "jeda tetap" yang muncul DI LUAR loop retry. Kalau jeda tetap
+// ini masih ada di jalur gagal, bandwidth notify masih bisa这名(payload) utuh
+// dengan penutupnya.
+const bailouts = [...bleCode.matchAll(/if \(!bleNusRx->notify\([^)]*\)\)\s*\{[\s\S]{0,200}?break;/g)];
+ok(bailouts.length === 0,
+  `tidak ada jalan keluar "notify gagal 2x lalu break" (ditemukan ${bailouts.length})`);
+// Handle harus dibaca ulang tiap percobaan: peer bisa putus di tengah retry.
+ok(/bleHidConnHandle\s*;/.test(bleCode) && /uint16_t h = bleHidConnHandle;/.test(bleCode),
+  'handle dibaca ulang tiap percobaan (peer bisa putus di tengah retry)');
+ok(/if \(h == BLE_HID_NO_HANDLE\) break;/.test(bleCode),
+  'retry langsung berhenti kalau peer sudah putus');
+// Kehilangan data harus TERLIHAT. Tanpa ini bug yang sama bisa kembali tanpa
+// ada yang mengetahuinya.
+ok(/NOTIFY gagal/.test(bleCode) || /NOTIFY.*gagal/.test(bleCode),
+  'ada log ketika notify akhirnya gagal (data hilang jadi terlihat)');
+ok(/dibuang/.test(bleCode), 'log menyebut jumlah byte yang dibuang');
+ok(/notify selesai/.test(bleCode), 'ada ringkasan retry per transfer');
+// Delay harus naik, bukan konstan: buffer peer butuh waktu dikuras.
+ok(/delay\(5 \+ \(uint16_t\)attempt \* 15\)/.test(bleCode),
+  'jeda retry naik bertahap (hammer tidak menolong buffer yang penuh)');
+
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail ? 1 : 0);
