@@ -627,6 +627,40 @@ ok(/Date\.now\(\) - lastSwitchAt < SWITCH_COOLDOWN_MS/.test(adaptiveSrc),
 ok(/lastSwitchAt = Date\.now\(\)/.test(adaptiveSrc),
   'lastSwitchAt diperbarui saat switch terjadi');
 
+console.log('\n--- 9j. Connect gagal tidak boleh meracuni percobaan berikutnya ---');
+// Dari log user (firmware terbaru, flash berhasil):
+//   BLE write failed: The operation was canceled by the user. (0x800704C7)
+//   BLE connect failed: Gagal ambil TX characteristic: ... (0x8000000B)  x20
+//
+// 0x800704C7 = operasi dibatalkan karena link sebelumnya belum bersih.
+// 0x8000000B = E_BOUNDS: GetAt(0) pada koleksi characteristic yang KOSONG.
+//
+// Urutannya: connect pertama berhasil sebagian (BluetoothLEDevice dibuat),
+// lalu gagal di langkah berikutnya. Handle-nya tertinggal di sisi Rust ->
+// Windows membatalkan operasi pada link tertinggal itu -> percobaan
+// berikutnya membaca cache GATT yang belum lengkap -> koleksi kosong ->
+// E_BOUNDS. Dan karena setiap kegagalan meninggalkan handle baru, satu
+// kegagalan awal jadi cause SEMUA kegagalan berikutnya.
+const bleRs = fs.readFileSync(`${SRC}/../src-tauri/src/ble.rs`, 'utf8');
+ok(/if tx_list\.Size\(\)/.test(bleRs),
+  'TX characteristic dicek koleksi kosongnya secara eksplisit');
+ok(/if rx_list\.Size\(\)/.test(bleRs),
+  'RX characteristic juga dicek (kalau hanya TX, RX akan jadi error berikutnya)');
+ok(/belum terdaftar/.test(bleRs),
+  'pesan error menjelaskan penyebabnya, bukan sekadar "index di luar jangkauan"');
+// Sisi app: connect yang gagal WAJIB melepas link.
+const connectBody = bleSrc2.match(/export async function connect[\s\S]*?\n\}/);
+ok(connectBody, 'badan connect() terambil');
+if (connectBody) {
+  const body = connectBody[0];
+  const catchBlock = body.slice(body.indexOf('} catch'));
+  ok(/invoke\('ble_disconnect'\)/.test(catchBlock),
+    'connect() yang gagal memanggil ble_disconnect (handle tidak tertinggal)');
+}
+// Jeda retry harus cukup untuk Windows melepas link GATT.
+ok(/await sleep\(1500\)/.test(bleSrc2),
+  'jeda retry dinaikkan ke 1500 ms (400 ms tidak cukup untuk Windows)');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

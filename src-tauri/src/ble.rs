@@ -233,18 +233,44 @@ impl BleTransport {
         // Dapatkan TX characteristic (write)
         let tx_chars = block_on_winrt(service.GetCharacteristicsForUuidAsync(MACROPAD_TX_UUID))
             .map_err(|e| format!("Gagal get TX char: {}", e))?;
-        let tx_char = tx_chars
+        let tx_list = tx_chars
             .Characteristics()
-            .map_err(|e| format!("Gagal get TX characteristics: {}", e))?
+            .map_err(|e| format!("Gagal get TX characteristics: {}", e))?;
+        // Koleksi kosong berarti service NUS ada tapi characteristic-nya belum
+        // terdaftar dari sisi host. Ini terjadi kalau connect dijalankan saat
+        // link lama belum benar-benar terlepas - Windows mengembalikan cache
+        // GATT yang belum lengkap, dan GetAt(0) gagal dengan E_BOUNDS
+        // (0x8000000B).
+        //
+        // Dicek eksplisit supaya pesannya menyebut penyebabnya, bukan sekadar
+        // "index di luar jangkauan" yang tidak membantu sama sekali.
+        if tx_list.Size().unwrap_or(0) == 0 {
+            return Err(
+                "Service NUS ditemukan tapi characteristic TX belum terdaftar \
+                 (link BLE mungkin belum stabil dari percobaan sebelumnya). \
+                 Tunggu sebentar lalu coba lagi."
+                    .to_string(),
+            );
+        }
+        let tx_char = tx_list
             .GetAt(0)
             .map_err(|e| format!("Gagal ambil TX characteristic: {}", e))?;
 
         // Dapatkan RX characteristic (notify)
         let rx_chars = block_on_winrt(service.GetCharacteristicsForUuidAsync(MACROPAD_RX_UUID))
             .map_err(|e| format!("Gagal get RX char: {}", e))?;
-        let rx_char = rx_chars
+        let rx_list = rx_chars
             .Characteristics()
-            .map_err(|e| format!("Gagal get RX characteristics: {}", e))?
+            .map_err(|e| format!("Gagal get RX characteristics: {}", e))?;
+        if rx_list.Size().unwrap_or(0) == 0 {
+            return Err(
+                "Service NUS ditemukan tapi characteristic RX belum terdaftar \
+                 (link BLE mungkin belum stabil dari percobaan sebelumnya). \
+                 Tunggu sebentar lalu coba lagi."
+                    .to_string(),
+            );
+        }
+        let rx_char = rx_list
             .GetAt(0)
             .map_err(|e| format!("Gagal ambil RX characteristic: {}", e))?;
         eprintln!("[ble-trace] characteristic NUS TX + RX ditemukan");

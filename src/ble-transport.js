@@ -326,6 +326,19 @@ export async function connect(deviceIdArg) {
     await invoke('ble_connect', { id });
   } catch (e) {
     log(t('ble.connectError', { err: e }), 'err');
+    // WAJIB lepaskan link yang mungkin sudah setengah naik di sisi Rust.
+    //
+    // Kalau connect gagal setelah BluetoothLEDevice berhasil dibuat tapi
+    // sebelum characteristic ditemukan, handle-nya tertinggal. Windows
+    // kemudian membatalkan operasi pada link yang tertinggal itu
+    // (0x800704C7 "canceled by the user") dan mengembalikan cache GATT yang
+    // belum lengkap - yang membuat percobaan BERIKUTNYA gagal dengan
+    // "TX characteristic not registered" (0x8000000B), dan seterusnya.
+    // Satu connect gagal jadiracun semua percobaan setelahnya.
+    //
+    // Best-effort: error asli sudah dilog, jadi kegagalan di sini tidak
+    // boleh menutupi pesan yang lebih berguna.
+    try { await invoke('ble_disconnect'); } catch (e2) { /* sudah gagal */ }
     return false;
   }
   log(t('ble.traceConnected', { id }));
@@ -441,8 +454,14 @@ export async function tryAutoConnect(verbose, only) {
         hooks.onAutoConnectOk(d.id);
         return true;
       }
-      // Jeda: Windows perlu melepas handle GATT sebelum connect ulang ke id yang sama.
-      await sleep(400);
+      // Jeda sebelum mencoba ulang.
+      //
+      // 400 ms (nilai lama) tidak cukup untuk Windows melepas link GATT.
+      // Percobaan kedua berjalan saat link pertama belum bersih, dan
+      // Windows membatalkan operasi dengan 0x800704C7 - yang membuat
+      // percobaan berikutnya sees cache GATT tidak lengkap dan gagal dengan
+      // "TX characteristic not registered".
+      await sleep(1500);
       if (await connect(d.id)) {
         log(t('transport.autoConnectOk2', { path: d.name }), 'ok');
         hooks.onAutoConnectOk(d.id);
