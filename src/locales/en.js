@@ -461,7 +461,7 @@ export const en = {
 'ble.readError': '[BLE] Failed to pull data: {err}',
 'ble.pickTransportFirst': 'Pick BLE transport first in the Transport dropdown',
 'ble.traceSwitched': '[BLE] Transport switched to BLE, scanning for devices...',
-'ble.dumpStuck': '[BLE] DUMP never closed (DUMP_END lost) - parser briefly swallowed every following line. State reset, try the layer refresh button.',
+'ble.dumpStuck': '[BLE] {kind} never closed (terminator lost) - parser briefly swallowed every following line. State reset, try the layer refresh button.',
 'ble.traceNone': '[BLE] Scan done: NO devices found',
 'ble.traceFound': '[BLE] Scan done: {count} device(s) ({names})',
 'ble.traceConnected': '[BLE] Connected to {id}, waiting for device data',

@@ -270,7 +270,21 @@ export function handleLine(line) {
     applyInfo(kv, { log });
     el('deviceEncLabel').textContent = String(NUM_ENCODERS);
     el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
-    hooks.renderTabs(); hooks.loadLayer(currentLayer); sendLine('DUMPNAMES');
+    hooks.renderTabs(); hooks.loadLayer(currentLayer);
+    // DUMPNAMES hanya kalau tidak ada dump yang sedang dibaca.
+    //
+    // INFO sering datang BERUNTUN di sesi yang sama: handshake mengirimnya,
+    // lalu setiap activatePresetRuntime() mengirim INFO lagi. Tiap INFO memicu
+    // DUMPNAMES tambahan - dan kalau satu sedang berjalan, DeviceDump yang
+    // baru menumpuk di ylab yang sama. Parser proses satu-satu, jadi NAMES_END
+    // dari dump pertama akan menutupi dump kedua (atau sebaliknya), menyisakan
+    // namesInProgress = true selamanya. Gejalanya: setelahnya SETIAP baris
+    // (INFO, [KEY], EVT:*) ditolak sebagai "Invalid NAMES line".
+    //
+    // Menunggu dump yang sedang berjalan lebih aman daripada menumpuk: dump
+    // yang jalan pasti selesai sendiri, dan loadLayer() di atas sudah meminta
+    // isi layer terbaru.
+    if (!namesInProgress() && !dumpInProgress()) sendLine('DUMPNAMES');
     return;
   }
   if (line.startsWith('WHOAMI:')) {

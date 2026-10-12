@@ -374,6 +374,33 @@ ok(/DUMP_STUCK_MS\s*=\s*2000/.test(bleSrc2), 'batas tunggu 2 detik (cukup panjan
 ok(/onDumpStuck/.test(bleSrc2), 'backend memberi tahu app lewat hook onDumpStuck');
 ok(/onDumpStuck/.test(mainSrc), 'main.js memasang hook onDumpStuck');
 
+console.log('\n--- 9e. Frame NAMES juga terlindungi (bug lanjutan dari log user) ---');
+// Setelah DUMP_END diperbaiki, frame berikutnya rusak: NAMES_BEGIN sampai tapi
+// NAMES_END hilang -> namesInProgress tidak pernah turun -> SETIAP baris
+// berikutnya (INFO, [KEY], EVT:*) ditolak "Invalid NAMES line".
+//
+// Akar yang sebenernya: handler INFO mengirim DUMPNAMES tanpa syarat. INFO
+// datang BERUNTUN dalam satu sesi - handshake mengirimnya, lalu tiap
+// activatePresetRuntime() mengirim lagi. Tiap INFO memicu DUMPNAMES tambahan
+// yang menumpuk di ylab yang sama, dan NAMES_END dari dump pertama menutupi
+// dump kedua.
+const parserSrc = fs.readFileSync(`${SRC}/protocol-parser.js`, 'utf8');
+const infoBlock = parserSrc.match(/if \(line\.startsWith\('INFO:'\)\) \{([\s\S]*?)\n  \}/);
+ok(!!infoBlock, 'blok handler INFO ditemukan');
+if (infoBlock) {
+  ok(/if \(!namesInProgress\(\) && !dumpInProgress\(\)\) sendLine\('DUMPNAMES'\)/.test(infoBlock[1]),
+    'DUMPNAMES hanya dikirim kalau tidak ada dump/nama yang sedang berjalan');
+}
+// Watchdog di backend BLE harus menutup frame NAMES juga, bukan hanya DUMP.
+ok(/namesInProgress && lineBuffer\.length > 0/.test(bleSrc2),
+  'watchdog juga armed saat DUMPNAMES menggantung (bukan cuma DUMP)');
+ok(/kind: namesInProgress \? 'DUMPNAMES' : 'DUMP'/.test(bleSrc2),
+  'pesan watchdog menyebut frame mana yang menggantung');
+// Baris DUMPNAMES ("<idx>,<name>") tidak cocok pola \d,\d,\d, jadi jalur NAMES
+// tidak bisa pakai predicate yang sama dengan DUMP.
+ok(/else if \(namesInProgress/.test(bleSrc2),
+  'NAMES punya predicate sendiri (baris "<idx>,<name>" tidak cocok \d,\d,\d)');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

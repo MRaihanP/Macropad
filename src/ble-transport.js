@@ -93,7 +93,7 @@ function armDumpWatchdog() {
     // Kondisi ini SANGAT sulit ditandai dari log biasa: app connect, GATT
     // sehat, notify jalan - tapi tidak satu baris pun ter-render karena
     // parser menganggap semua respons sebagai isi dump.
-    log(t('ble.dumpStuck'), 'err');
+    log(t('ble.dumpStuck', { kind: namesInProgress ? 'DUMPNAMES' : 'DUMP' }), 'err');
     // Buka diri supaya baris berikutnya bisa diparse lagi. Tanpa ini parser
     // akan menolak HWINFO/BATT/EVT selamanya sampai app ditutup.
     resetParserState();
@@ -169,12 +169,16 @@ export function handleIncomingChunk(data) {
   // apa-apa, tanpa error lain. Deteksi diam-diam seperti itu hampir mustahil
   // ditebak dari log panel.
   //
-  // Syaratnya sengaja longgar: DUMP_BEGIN + >=1 baris isi sudah cukup. Dipakai
-  // juga untuk DUMPNAMES, yang penandanya NAMES_BEGIN/NAMES_END.
+  // Syaratnya sengaja longgar: penanda dump (DUMP_BEGIN/ENC_BEGIN/NAMES_BEGIN)
+  // plus >=1 baris isi sudah cukup. Baris isi DUMP/DUMPENC cocok pola
+  // \d,\d,\d; baris DUMPNAMES ("<idx>,<name>") tidak, jadi keduanya dicek
+  // terpisah supaya frame NAMES ikut terlindungi.
+  //
   // Perhatikan: di backend ini dumpInProgress itu VARIABEL (export let), bukan
-// fungsi seperti di facade transport.js. facade mengekspornya sebagai getter
-// supaya bisa/backend berganti; backend sendiri menyimpan nilainya langsung.
-if (dumpInProgress && /\d,\d,\d/.test(lineBuffer)) armDumpWatchdog();
+  // fungsi seperti di facade transport.js. facade mengekspornya sebagai getter
+  // supaya tidak beku saat backend berganti.
+  if (dumpInProgress && /\d,\d,\d/.test(lineBuffer)) armDumpWatchdog();
+  else if (namesInProgress && lineBuffer.length > 0) armDumpWatchdog();
 }
 
 // ---- Pengiriman ----

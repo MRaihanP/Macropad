@@ -458,7 +458,7 @@ export const id = {
 'ble.readError': '[BLE] Gagal menarik data: {err}',
 'ble.pickTransportFirst': 'Pilih transport BLE dulu di dropdown Transport',
 'ble.traceSwitched': '[BLE] Transport diganti ke BLE, memindai device...',
-'ble.dumpStuck': '[BLE] DUMP tidak pernah ditutup (DUMP_END hilang) - parser sempat menelan semua baris berikutnya. State direset, coba ↻ Refresh Layer.',
+'ble.dumpStuck': '[BLE] {kind} tidak pernah ditutup (penutup hilang) - parser sempat menelan semua baris berikutnya. State direset, coba ↻ Refresh Layer.',
 'ble.traceNone': '[BLE] Scan selesai: TIDAK ada device ditemukan',
 'ble.traceFound': '[BLE] Scan selesai: {count} device ({names})',
 'ble.traceConnected': '[BLE] Tersambung ke {id}, menunggu data device',
