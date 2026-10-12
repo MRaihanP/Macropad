@@ -454,5 +454,7 @@ export const id = {
 'ble.autoConnectOk': '[AUTO] BLE tersambung ke {name}',
 'ble.autoNotFound': '[BLE] MacroPad tidak ditemukan otomatis. Pindai dan pilih manual.',
 'ble.pickDevice': 'Pilih device BLE dulu (klik ↻ bila kosong)',
+'ble.foundLog': '[BLE] {count} device ditemukan.',
+'main.transportSwitchError': 'Ganti transport gagal: {err}',
 
 };

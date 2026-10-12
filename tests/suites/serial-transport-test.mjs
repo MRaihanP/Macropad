@@ -67,10 +67,22 @@ for (const sym of ['listPortPaths', 'refreshPorts', 'probeWhoAmI', 'tryAutoConne
 }
 ok(!/^(let|const) port\b/m.test(mainSrc), 'objek port tidak lagi dideklarasikan di main.js');
 ok(!/^(let|const) deviceWasLost\b/m.test(mainSrc), 'deviceWasLost tidak lagi dideklarasikan di main.js');
-ok(/from "\.\/serial-transport\.js"/.test(mainSrc), 'main.js meng-import serial-transport.js');
-ok(/initTransport\(\{/.test(mainSrc), 'initTransport() dipanggil dengan hook');
+// main.js reaching device lewat facade transport.js, bukan langsung ke
+// serial-transport.js. Hook-nya didaftarkan ke facade lalu diinstal ke backend
+// aktif lewat initActiveBackend() - kalau initTransport( langsung dipanggil,
+// pergantian backend runtime tidak akan memasang hook-nya.
+ok(/from "\.\/transport\.js"/.test(mainSrc), 'main.js meng-import facade transport.js');
+ok(/setPendingTransportHooks\(\{/.test(mainSrc), 'hook didaftarkan ke facade transport');
+ok(/initActiveBackend\(\)/.test(mainSrc), 'hook dipasang ke backend yang aktif');
 ok(/onLine: \(line\) => handleLine\(line\)/.test(mainSrc), 'baris device diarahkan ke handleLine');
 ok(/\bisConnected\(\)/.test(mainSrc), 'main.js memakai isConnected() alih-alih variabel port');
+// Tidak boleh ada modul lain yang menembak serial-transport.js secara langsung:
+// itulah yang membuat BLE tidak pernah benar-benar jalan - modul lain tetap
+// menulis ke port COM walau user sudah pilih BLE.
+for (const f of ['adaptive.js', 'home-page.js', 'tray.js', 'protocol-parser.js']) {
+  const src = fs.readFileSync(`${SRC}/${f}`, 'utf8');
+  ok(!/from ['"]\.\/serial-transport\.js['"]/.test(src), `${f} Reaching device lewat facade, bukan serial-transport.js langsung`);
+}
 
 console.log('\n--- 2. connect() membuka port dan mengirim urutan handshake ---');
 resetEv(); S.instances.length = 0; lines = [];

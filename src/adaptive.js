@@ -21,7 +21,7 @@ import {
   mapping, encConfig, layerNames, layerCount, currentLayer,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
-import { sendLine, sendBatch, isConnected, dumpInProgress } from './serial-transport.js';
+import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';
 import { t } from './i18n.js';
 
 // ---- State ----
@@ -119,7 +119,7 @@ function autoSwitchBlockedByLayerChoice() {
   // menyisipkan perintah baru ke stream dump yang sedang dibaca, dan DUMP_END
   // bisa resolve waiter yang salah. Tunggu saja - dump ini hampir selalu
   // selesai dalam hitungan milidetik.
-  return dumpInProgress;
+  return dumpInProgress();
 }
 
 // ---- Waiter DUMP ----

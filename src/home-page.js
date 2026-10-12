@@ -15,7 +15,7 @@ import {
   setCurrentLayer, reorderLayer, emptyLayer,
 } from './device-state.js';
 import { el, escapeHtml } from './dom.js';
-import { sendLine } from './serial-transport.js';
+import { sendLine } from './transport.js';
 import { openAppPicker } from './app-picker.js';
 import { t } from './i18n.js';
 

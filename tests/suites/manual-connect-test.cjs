@@ -68,7 +68,10 @@ ok(/export async function autoDetect/.test(serial), 'autoDetect() masih ada');
 ok(/export async function pollPorts/.test(serial), 'pollPorts() masih ada (polling daftar port)');
 ok(/export async function tryAutoConnect/.test(serial), 'tryAutoConnect() masih ada (probe WHOAMI)');
 ok(/autoDetect\(\);/.test(main), 'autoDetect() tetap dipanggil saat start');
-ok(/setInterval\(pollPorts, 2000\)/.test(main), 'pollPorts() tetap dipanggil tiap 2 detik');
+// Poll lewat facade supaya backend aktif yang memutuskan apa yang dipantau,
+// tapi jeda 2 detik dan fungsi pollPorts()-nya sendiri tidak boleh hilang.
+ok(/setInterval\(\(\) => \{ poll\(\); \}, 2000\)/.test(main), 'poll() facade tetap dipanggil tiap 2 detik');
+ok(/export async function pollPorts/.test(serial), 'pollPorts() masih ada di backend serial');
 
 console.log('\n--- E. Label tombol tidak bertabrakan dengan i18n ---');
 // Tombol ini labelnya berasal dari JS. Kalau dikasih data-i18n, applyI18n()

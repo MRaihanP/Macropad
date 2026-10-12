@@ -15,7 +15,7 @@ const ok = (c, m) => { console.log(`  ${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) fai
 
 console.log('--- 1. main.js meneruskan baris DUMP ke applyDumpRow ---');
 const dumpBranch = parser.slice(
-  parser.indexOf('if (dumpInProgress) {'),
+  parser.indexOf('if (dumpInProgress()) {'),
   parser.indexOf("if (line.startsWith('ENC_BEGIN'))")
 );
 ok(dumpBranch.length > 0, 'blok parser DUMP ditemukan');

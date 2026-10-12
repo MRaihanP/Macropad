@@ -16,15 +16,15 @@ import { el, log, escapeHtml } from "./dom.js";
 import {
   rgb, renderRgbAll, initRgbPage, setRgbTransport, hexToRgb,
 } from "./rgb-page.js";
-// Seluruh urusan port serial (connect/reconnect, buffer baris, framing parser,
-// pengiriman perintah) dipisah ke modul sendiri. Yang diimpor di sini hanya yang
-// benar-benar dipakai main.js - sisanya dipanggil transport lewat hook initTransport()
-// sehingga isi config/layer/preset tidak bocor ke dalam modul transport.
+// Transport device lewat facade, bukan langsung ke serial-transport.js.
+// Facade meneruskan ke backend yang sedang aktif (USB atau BLE), jadi perintah
+// di bawah ikut ke device yang benar tanpa perlu tahu mana yang sedang hidup.
 import {
   initTransport, sendLine, sendBatch, connect, disconnect,
-  autoDetect, pollPorts, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
-  updateConnectButton,
-} from "./serial-transport.js";
+  autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  updateConnectButton, setPendingTransportHooks, initActiveBackend,
+  setTransportBackend, transportId,
+} from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
@@ -149,17 +149,19 @@ initProtocolParser({
 });
 
 // ==================== SAMBUNGKAN TRANSPORT ====================
-// serial-transport.js tidak tahu apa pun soal isi config, layer, atau preset, dan
-// juga tidak memanggil fungsi main.js secara langsung. Semua sisi aplikasi
-// disuntikkan di sini - titik pertemuan tunggal antara transport dan app.
-initTransport({
+// Backend transport (USB atau BLE) tidak tahu apa pun soal isi config, layer,
+// atau preset, dan juga tidak memanggil fungsi main.js secara langsung. Semua
+// sisi aplikasi disuntikkan di sini - titik pertemuan tunggal antara transport
+// dan app. Hook disimpan dulu di facade supaya backend yang diganti运行时
+// (mis. user pilih BLE) juga menerimanya, bukan cuma backend awal.
+setPendingTransportHooks({
   // Setiap baris dari device berakhir di protocol-parser.js. Transport hanya
   // hanya pemisah baris; ia tidak tahu apa arti baris-baris itu.
   onLine: (line) => handleLine(line),
   onConnected: () => {
     // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
     // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
-    notify(deviceWasLost ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
+    notify(deviceWasLost() ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
     switchPage('home');   // Home selalu tampil saat pertama kali connect
   },
   onDisconnected: () => {
@@ -182,6 +184,9 @@ initTransport({
   onAutoConnectOk: () => { },
   onAutoConnectFail: () => { },
 });
+// Pasang hook ke backend yang aktif sekarang (default USB). Kalau user nanti
+// ganti ke BLE, facade memasang ulang hook yang sama di backend BLE.
+initActiveBackend();
 el('btnRefreshPorts').onclick = autoDetect;
 // Label tombol sambung/putus berasal dari JS (berubah sesuai status koneksi),
 // jadi applyI18n() akan menimpanya dengan teks statis setiap kali user ganti
@@ -194,6 +199,56 @@ el('btnConnect').onclick = () => {
   enableAutoReconnect();
   connect();
 };
+
+// ---- Pemilih transport (USB / BLE) ----
+// Backend BLE dimuat lewat import() dinamis di facade, jadi modul baru diunduh
+// hanya kalau user benar-benar memilih BLE.
+const transportSel = el('transportSelect');
+if (transportSel) {
+  transportSel.innerHTML = '';
+  for (const opt of [
+    { id: 'usb', label: t('header.transportUsb') },
+    { id: 'ble', label: t('header.transportBle') },
+  ]) {
+    const o = document.createElement('option');
+    o.value = opt.id; o.textContent = opt.label;
+    transportSel.appendChild(o);
+  }
+  transportSel.value = transportId();
+
+  // Baris device BLE hanya relevan di mode BLE. Port USB disembunyikan
+  // sebaliknya supaya user tidak memilih endpoint yang tidak akan dipakai.
+  const syncTransportRows = () => {
+    const isBle = transportSel.value === 'ble';
+    const bleRow = el('bleRow');
+    if (bleRow) bleRow.style.display = isBle ? '' : 'none';
+    const usbRow = el('usbRow');
+    if (usbRow) usbRow.style.display = isBle ? 'none' : '';
+    const usbLabel = el('usbPortLabel');
+    if (usbLabel) usbLabel.style.display = isBle ? 'none' : '';
+  };
+  transportSel.onchange = async () => {
+    try {
+      await setTransportBackend(transportSel.value);
+      syncTransportRows();
+      updateConnectButton(isConnected());
+    } catch (e) {
+      log(t('main.transportSwitchError', { err: e }), 'err');
+      transportSel.value = transportId();   // kembalikan ke yang benar-benar aktif
+    }
+  };
+  syncTransportRows();
+}
+const btnRefreshBle = el('btnRefreshBle');
+if (btnRefreshBle) {
+  btnRefreshBle.onclick = async () => {
+    try {
+      const ble = await import('./ble-transport.js');
+      const found = await ble.scanAndUpdateSelect();
+      if (found.length) log(t('ble.foundLog', { count: found.length }), 'ok');
+    } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
+  };
+}
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
 el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
@@ -259,7 +314,9 @@ el('globalAdaptiveToggle').onchange = (e) => {
   syncGlobalToggles();
 };
 el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
-setInterval(pollPorts, 2000);
+// Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
+// dipantau (port COM untuk USB, status GATT untuk BLE).
+setInterval(() => { poll(); }, 2000);
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
 // tidak ada import bolak-balik antara main.js dan rgb-page.js.

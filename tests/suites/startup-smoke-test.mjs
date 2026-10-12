@@ -112,7 +112,7 @@ for (const name of new Set(declaredHere)) {
 }
 // (b) init* yang diekstrak ke modul lain dan harus dipanggil dari main.js
 for (const name of ['initSidebar', 'initRouter', 'initAdaptive', 'initAdaptivePage',
-  'initBatteryUi', 'initProtocolParser', 'initTransport', 'initRgbPage', 'setRgbTransport',
+  'initBatteryUi', 'initProtocolParser', 'setPendingTransportHooks', 'initActiveBackend', 'initRgbPage', 'setRgbTransport',
   'initHomePage', 'initEditorPanel', 'initAppPicker',
   'initTray', 'initAutostart', 'initAutostartToggle', 'initTrayHandlers']) {
   const n = callsIn(mainSrc).filter((c) => c === name).length;

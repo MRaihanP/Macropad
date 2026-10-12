@@ -29,10 +29,14 @@ import {
 } from './device-state.js';
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
+// Lewat facade transport.js, bukan serial-transport.js langsung: dump bisa
+// datang lewat USB atau BLE, dan state framing (dumpInProgress dll) milik
+// backend yang sedang aktif. Dipakai sebagai fungsi, bukan nilai - facade
+// mengekspornya sebagai getter supaya tidak beku di nilai import.
 import {
   sendLine, dumpInProgress, dumpEncInProgress, namesInProgress,
   setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
-} from './serial-transport.js';
+} from './transport.js';
 import { handleRgbLine } from './rgb-page.js';
 import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from './battery-ui.js';
 import {
@@ -146,7 +150,7 @@ export function handleLine(line) {
     noteDeviceLayerEvent();
     // Dump yang sedang berjalan sengaja diabaikan, lalu diterapkan setelah selesai.
     // Lihat catatan panjang di deklarasi pendingLayerAfterDump.
-    if (dumpInProgress) {
+    if (dumpInProgress()) {
       pendingLayerAfterDump = n;
       log(t('parser.layerDuringDump', { n }));
       return;
@@ -183,7 +187,7 @@ export function handleLine(line) {
     }
     return;
   }
-  if (dumpInProgress) {
+  if (dumpInProgress()) {
     const p = line.split(',');
     // Lihat aturan 1 di header modul ini. Validasi ada di applyDumpRow().
     if (p.length >= 4) {
@@ -200,7 +204,7 @@ export function handleLine(line) {
     return;
   }
   if (line === 'ENC_END') { setDumpEncInProgress(false); hooks.renderEncoderList(); return; }
-  if (dumpEncInProgress) {
+  if (dumpEncInProgress()) {
     if (line.startsWith('IDX:')) { applyEncIdx(parseInt(line.substring(4))); return; }
     const p = line.split(',');
     // Allowlist kunci ada di applyEncRow - tanpa itu device bisa mengirim
@@ -245,7 +249,7 @@ export function handleLine(line) {
   if (handleRgbLine(line, log)) return;
   if (line === 'NAMES_BEGIN') { setNamesInProgress(true); return; }
   if (line === 'NAMES_END') { setNamesInProgress(false); hooks.renderTabs(); return; }
-  if (namesInProgress) {
+  if (namesInProgress()) {
     // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
     const idx = line.indexOf(',');
     if (idx > -1) {

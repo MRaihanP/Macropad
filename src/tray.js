@@ -17,8 +17,7 @@ import { listen } from '@tauri-apps/api/event';
 import { el, log } from './dom.js';
 import { showModalBase } from './ui-modal.js';
 import { t } from './i18n.js';
-import { sendLine } from './serial-transport.js';
-import { isConnected } from './serial-transport.js';
+import { sendLine, isConnected } from './transport.js';
 import { stopRecordingContinuous, clearSelection } from './home-page.js';
 
 // ---- Hook ke main.js ----

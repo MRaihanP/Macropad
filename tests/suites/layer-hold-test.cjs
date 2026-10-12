@@ -37,10 +37,10 @@ ok(/if \(autoSwitchBlockedByLayerChoice\(\)\) return;/.test(adaptive),
   'pollFocusedApp() benar-benar memakai helper itu (read-only state jadi berfungsi)');
 
 console.log('\n--- B. Ditunda juga saat dump berjalan ---');
-ok(/return dumpInProgress;/.test(adaptive),
+ok(/return dumpInProgress\(\);/.test(adaptive),
   'helper juga memblokir selama dump berjalan');
-ok(/dumpInProgress/.test(adaptive) && /from '\.\/serial-transport\.js'/.test(adaptive),
-  'dumpInProgress diambil dari serial-transport (tidak ada siklus baru)');
+ok(/dumpInProgress/.test(adaptive) && /from '\.\/transport\.js'/.test(adaptive),
+  'dumpInProgress diambil dari facade transport (tidak ada siklus baru)');
 
 console.log('\n--- C. EVT:LAYER: di tengah dump ditunda, bukan diterapkan ---');
 ok(/let pendingLayerAfterDump = null;/.test(parser),
@@ -48,13 +48,13 @@ ok(/let pendingLayerAfterDump = null;/.test(parser),
 const evBlock = parser.match(/if \(line\.startsWith\('EVT:LAYER:'\)\) \{([\s\S]*?)\n  \}/);
 ok(!!evBlock, 'blok EVT:LAYER: ditemukan');
 if (evBlock) {
-  ok(/if \(dumpInProgress\) \{/.test(evBlock[1]),
+  ok(/if \(dumpInProgress\(\)\) \{/.test(evBlock[1]),
     'EVT:LAYER: memeriksa dumpInProgress');
   ok(/pendingLayerAfterDump = n;/.test(evBlock[1]),
     'layer disimpan untuk diterapkan nanti (bukan diabaikan/dibuang)');
   // applyLayerEvent harus TIDAK dipanggil di cabang dump - kalau dipanggil,
   // currentLayer berubah di tengah dump dan DUMP_END resolve waiter yang salah.
-  const dumpBranch = evBlock[1].match(/if \(dumpInProgress\) \{([\s\S]*?)\n    \}/);
+  const dumpBranch = evBlock[1].match(/if \(dumpInProgress\(\)\) \{([\s\S]*?)\n    \}/);
   ok(dumpBranch && !/applyLayerEvent/.test(dumpBranch[1]),
     'applyLayerEvent TIDAK dipanggil saat dump berjalan (currentLayer tidak berubah di tengah dump)');
 }

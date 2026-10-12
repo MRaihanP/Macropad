@@ -457,5 +457,7 @@ export const en = {
 'ble.autoConnectOk': '[AUTO] BLE connected to {name}',
 'ble.autoNotFound': '[BLE] MacroPad not found automatically. Scan and pick manually.',
 'ble.pickDevice': 'Pick a BLE device first (click ↻ when empty)',
+'ble.foundLog': '[BLE] {count} device(s) found.',
+'main.transportSwitchError': 'Transport switch failed: {err}',
 
 };

@@ -86,8 +86,12 @@
     <details class="manual-connect" id="manualConnect">
       <summary data-i18n="header.manualConnect">Koneksi manual</summary>
       <div class="manual-connect-body">
-        <label class="hint" for="portSelect" data-i18n="header.portLabel">Port device</label>
+        <label class="hint" for="transportSelect" data-i18n="header.transportLabel">Transport</label>
         <div class="manual-connect-row">
+          <select id="transportSelect" data-i18n-attr="aria-label:header.transportLabel"></select>
+        </div>
+        <label class="hint" for="portSelect" id="usbPortLabel" data-i18n="header.portLabel">Port device</label>
+        <div class="manual-connect-row" id="usbRow">
           <select id="portSelect" data-i18n-attr="aria-label:header.portLabel"></select>
           <button class="small" id="btnRefreshPorts" data-i18n-attr="aria-label:header.refreshPorts|title:header.refreshPorts">↻</button>
           <!-- Label tombol ini DIKELOLA JS (updateConnectButton di
@@ -97,6 +101,16 @@
                statis setiap ganti bahasa dan tombol akan selalu membaca
                "Sambung" padahal device sedang tersambung. -->
           <button id="btnConnect" class="primary">Sambung</button>
+        </div>
+        <!-- Baris device BLE hanya relevan kalau transport di atas diisi BLE.
+             Disembunyikan lewat JS saat USB aktif supaya user tidak memilih
+             device yang tidak akan dipakai. -->
+        <div id="bleRow" style="display:none;">
+          <label class="hint" for="bleDeviceSelect" data-i18n="header.bleDeviceLabel">Device BLE</label>
+          <div class="manual-connect-row">
+            <select id="bleDeviceSelect" data-i18n-attr="aria-label:header.bleDeviceLabel"></select>
+            <button class="small" id="btnRefreshBle" data-i18n-attr="aria-label:header.bleRefresh|title:header.bleRefresh">↻</button>
+          </div>
         </div>
         <div class="hint" data-i18n="header.manualConnectHint">Device biasanya tersambung otomatis. Buka ini hanya kalau status di atas tidak berubah ke "Tersambung".</div>
       </div>

@@ -104,7 +104,7 @@ const evBlock = parser.match(/if \(line\.startsWith\('EVT:LAYER:'\)\) \{([\s\S]*
 ok(!!evBlock, 'blok EVT:LAYER: ditemukan');
 if (evBlock) {
   const body = evBlock[1];
-  const dumpBranch = body.match(/if \(dumpInProgress\) \{([\s\S]*?)\n    \}/);
+  const dumpBranch = body.match(/if \(dumpInProgress\(\)\) \{([\s\S]*?)\n    \}/);
   ok(!!dumpBranch, 'cabang dumpInProgress ada');
   if (dumpBranch) {
     // Ini yang membuat simulasi di atas berlaku: di cabang ini TIDAK BOLEH
