@@ -1099,10 +1099,16 @@ async fn ble_is_connected() -> bool {
 
 #[tauri::command]
 async fn ble_switch_interface(iface: String) -> Result<(), String> {
-    // Kirim perintah IFACE:USB atau IFACE:BLE ke firmware
+    // Kirim perintah IFACE:USB atau IFACE:BLE ke firmware.
+    //
+    // PENTING: newline WAJIB ikut terkirim. Firmware hanya menjalankan
+    // handleSerialCommand() saat menerima '\n' (lihat macropad_core.h) -
+    // tanpa newline, perintahnya menggantung di serialLine[] selamanya dan
+    // tidak pernah diproses. Versi sebelumnya mengirim byte mentah tanpa
+    // newline, jadi perintah ini diam-diam tidak pernah berpengaruh.
     let cmd = match iface.as_str() {
-        "usb" => "IFACE:USB",
-        "ble" => "IFACE:BLE",
+        "usb" => "IFACE:USB\n",
+        "ble" => "IFACE:BLE\n",
         _ => return Err("Invalid interface. Use 'usb' or 'ble'".to_string()),
     };
     let (resp, rx) = tokio::sync::oneshot::channel();

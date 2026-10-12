@@ -92,11 +92,11 @@ console.log('\n--- 5. disconnect() melepas semua handle ---');
 // BUG 5: disconnect() tidak men-null CCCD dan tidak Close() service, sehingga
 // Windows menahan handle dan connect berikutnya bisa gagal.
 const disc = ble.slice(ble.indexOf('pub fn disconnect'));
-const discBody = disc.slice(0, disc.indexOf('\n    }') + 6);
-ok(/RemoveValueChanged/.test(discBody), 'langganan event ValueChanged dilepas');
-ok(/GattClientCharacteristicConfigurationDescriptorValue::None/.test(discBody),
+const jsDisc = disc.slice(0, disc.indexOf('\n    }') + 6);
+ok(/RemoveValueChanged/.test(jsDisc), 'langganan event ValueChanged dilepas');
+ok(/GattClientCharacteristicConfigurationDescriptorValue::None/.test(jsDisc),
   'CCCD dinolkan (device tahu tidak ada yang mendengarkan)');
-ok(/service\.Close\(\)|Close\(\)/.test(discBody),
+ok(/service\.Close\(\)|Close\(\)/.test(jsDisc),
   'handle service GATT ditutup');
 ok(/service:\s*Option<GattDeviceService>/.test(ble),
   'transport menyimpan handle service');
@@ -127,6 +127,58 @@ ok(/flow control|WriteWithoutResponse/.test(ble),
   'ada penjelasan kenapa bukan WriteWithoutResponse');
 ok(/ConnectionStatus|rusak|sleep/.test(ble),
   'ada penjelasan kenapa is_connected() harus cek status link');
+
+console.log('\n--- 8. Jalur END-TO-END: notify (Rust) -> buffer -> tarikan (frontend) ---');
+// BUG 8 (paling fatal dari semua yang pernah ditemukan di repo ini):
+// firmware notify -> handler di ble.rs menaruh byte ke rx_buffer. Tapi TIDAK ADA
+// frontend yang memanggil ble_read. Buffer itu tidak pernah dikosongkan, jadi
+// handleLine() di protocol-parser tidak pernah dipanggil, dan companion app
+// diam saja: tidak ada INFO, tidak ada preset, tidak ada apa pun - padahal
+// GATT-nya tersambung dan notify-nya jalan.
+//
+// Gejalanya persis seperti yang dilaporkan user ("preset dan informasi tidak
+// diterima"), padahal penyebabnya ada di frontend, bukan di pairing atau
+// karakteristik GATT.
+const bleJs = read('src/ble-transport.js');
+ok(/invoke\('ble_read'/.test(bleJs),
+  'frontend memanggil ble_read (satu-satunya jalan keluar dari rx_buffer Rust)');
+ok(/READ_POLL_MS\s*=\s*40/.test(bleJs),
+  'jeda tarik jauh di bawah poll koneksi serial 2 detik');
+ok(/#readPoll masih 2 detik/.test(bleJs) === false,
+  'bukan 2 detik: UI akan terasa macet padahal device sehat');
+ok(/handleIncomingChunk/.test(bleJs) && /TextDecoder/.test(bleJs),
+  'byte dari ble_read didekode dan masuk framing baris');
+// Loop pembacaan harus hidup di connect() dan mati di SEMUA jalur keluar.
+const jsConn = bleJs.match(/export async function connect[\s\S]*?\n\}/);
+ok(jsConn && /startReadLoop\(\)/.test(jsConn[0]),
+  'loop pembacaan dinyalakan di connect()');
+const bleJsDisc = bleJs.match(/export async function disconnect[\s\S]*?\n\}/);
+ok(bleJsDisc && /stopReadLoop\(\)/.test(bleJsDisc[0]),
+  'loop pembacaan dimatikan di disconnect()');
+ok(/handleDeviceLost[\s\S]*?stopReadLoop\(\)/.test(bleJs),
+  'loop pembacaan dimatikan juga di handleDeviceLost()');
+// Tanpa latch readBusy, poll 40 ms bisa tumpang tindih dan merebut buffer.
+ok(/readBusy/.test(bleJs),
+  'ada latch readBusy (poll cepat bisa tumpang tindih tanpa itu)');
+
+console.log('\n--- 9. Perintah dari app ke firmware harus berakhir newline ---');
+// BUG 9: firmware hanya menjalankan handleSerialCommand() saat menerima '\n'.
+// ble_switch_interface mengirim "IFACE:USB" polos, jadi perintahnya menggantung
+// di serialLine[] dan tidak pernah dieksekusi - tanpa error apa pun.
+const rsSwitch = lib.match(/async fn ble_switch_interface[\s\S]*?\n\}/);
+ok(!!rsSwitch, 'ble_switch_interface terambil');
+if (rsSwitch) {
+  ok(/"IFACE:USB\\n"/.test(rsSwitch[0]), 'IFACE:USB dikirim dengan newline');
+  ok(/"IFACE:BLE\\n"/.test(rsSwitch[0]), 'IFACE:BLE dikirim dengan newline');
+}
+ok(/newline WAJIB ikut terkirim/.test(lib) || /hanya menjalankan[\s\S]*?handleSerialCommand/.test(lib),
+  'ada penjelasan kenapa newline wajib');
+
+console.log('\n--- 10. UUID dan nama field sama di kedua sisi ---');
+// Field snake_case dari serde: frontend harus membacanya apa adanya.
+ok(/is_paired:\s*bool/.test(lib), 'BleDeviceInfo punya field is_paired (snake_case)');
+ok(/isPaired:\s*!!d\.is_paired/.test(bleJs),
+  'scan() memetakan is_paired (snake_case dari serde) -> isPaired');
 
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail === 0 ? 0 : 1);

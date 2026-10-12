@@ -34,6 +34,23 @@ const PING_MS = 1500;
 // Batas per write. Characteristic NUS hanya 512 byte; menulis lebih dari itu
 // di-potong diam-diam oleh stack dan menyisakan separuh baris di device.
 const WRITE_CHUNK_MAX = 400;
+// Tarikan per panggilan ble_read. Rust clamps ke 1..4096, jadi nilai di sini
+// cukup besar untuk membaca buffer 256 KiB dalam beberapa iterasi poll.
+const READ_CHUNK_MAX = 4096;
+
+// Seberapa sering buffer BLE ditarik.
+//
+// PENTING: ini harus jauh lebih cepat dari poll koneksi serial (2 detik).
+// Serial menerima byte lewat port.read() yang dipanggil tiap loop - data
+// sampai dalam hitungan milidetik. lewat BLE, data mendarat di buffer Rust
+// lalu HARUS ditarik; tidak ada yang memanggilnya otomatis. Kalau jeda 2
+// detik, satu dump 9 tombol yang dikirim dalam ~100 ms baru selesai dibaca
+// 2 detik kemudian, dan jawaban INFO pun telat 2 detik - aplikasi terasa
+// macet padahal device sebenarnya sehat.
+//
+// 40 ms memberi latensi di bawah yang bisa dirasakan manusia (~25 Hz) dengan
+// overhead invoke() yang masih ringan (satu round-trip IPC ke thread BLE).
+const READ_POLL_MS = 40;
 
 // ---- State koneksi ----
 let deviceId = null;
@@ -212,6 +229,10 @@ export async function connect(deviceIdArg) {
   hooks.onConnected();
   deviceWasLost = false;
   startPing();
+  // Loop pembacaan harus hidup SEBELUM handshake, bukan sesudahnya. Handshake
+  // mengirim WHOAMI dalam 400 ms, dan jawabannya perlu langsung ditarik -
+  // kalau loop belum jalan, jawaban itu menunggu sampai poll 2 detik berikutnya.
+  startReadLoop();
   suppressEventsUntil = Date.now() + 800;
   await sendLine('PING');
   await afterConnectHandshake();
@@ -226,6 +247,10 @@ export async function disconnect(manual) {
     log(t('ble.autoPausedLog'));
   }
   stopPing();
+  // Loop pembacaan WAJIB ikut dimatikan di setiap jalur keluar. Kalau tidak,
+  // interval tetap berjalan dan menarik buffer dari koneksi yang sudah tutup -
+  // memunculkan "GATT tidak terhubung" berulang padahal user sudah disconnect.
+  stopReadLoop();
   // Parser ikut dibersihkan di jalur manual juga: tanpa ini baris parsial dari
   // sesi lama menempel pada byte pertama device berikutnya.
   resetParserState();
@@ -252,6 +277,7 @@ export async function handleDeviceLost() {
   hooks.onDeviceLost();
   hooks.onDisconnected();
   stopPing();
+  stopReadLoop();
   updateConnectButton(false);
   if (autoReconnect && wasId) scheduleRetry([wasId]);
 }
@@ -312,14 +338,47 @@ export async function autoDetect() {
   if (!ok && lastGoodDeviceId) scheduleRetry([lastGoodDeviceId]);
 }
 
-// Pantau status koneksi dari sisi Rust. bledevices bisa hilang tanpa Notifikasi
+// Tarik data dari device. INI WAJIB ADA, bukan opsional.
+//
+// Data masuk lewat GATT notify: firmware memanggil bleNusRx->notify() ->
+// handler di ble.rs menaruhnya di rx_buffer -> frontend WAJIB mengambilnya
+// lewat ble_read. Kalau poll() hanya mengecek `ble_is_connected` tanpa menarik
+// buffer, notify tetap masuk ke Rust tapi TIDAK PERNAH sampai ke handleLine(),
+// dan companion app diam saja: tidak ada INFO, tidak ada preset, tidak ada
+// apa pun. Gejalanya persis seperti "tidak menerima apa-apa dari device".
+export async function readIncoming() {
+  if (!connected) return 0;
+  let got = 0;
+  try {
+    // Baca ulang sampai buffer kosong. Satu panggilan saja akan tertinggal
+    // data kalau device mengirim lebih cepat dari satu iterasi poll.
+    for (let i = 0; i < 4; i++) {
+      const chunk = await invoke('ble_read', { maxLen: READ_CHUNK_MAX });
+      if (!chunk || chunk.length === 0) break;
+      handleIncomingChunk(new TextDecoder().decode(Uint8Array.from(chunk)));
+      got += chunk.length;
+    }
+  } catch (e) {
+    // invoke gagal = GATT sudah turun. Perlakukan sebagai putus supaya
+    // poll berikutnya tidak mencoba menarik data dari koneksi mati.
+    log(t('ble.readError', { err: e }), 'err');
+    await handleDeviceLost();
+  }
+  return got;
+}
+
+// Pantau status koneksi dari sisi Rust. Device bisa hilang tanpa memberi tahu
 // (jarak, device mati), jadi harus dicek berkala seperti port serial.
 export async function poll() {
   if (!connected) return;
   try {
     const stillUp = await invoke('ble_is_connected');
-    if (!stillUp) await handleDeviceLost();
-  } catch (e) { /* invoke gagal = Perlakukan sebagai putus, bukan diamkan */ await handleDeviceLost(); }
+    if (!stillUp) { await handleDeviceLost(); return; }
+    await readIncoming();
+  } catch (e) {
+    log(t('ble.pollError', { err: e }), 'err');
+    await handleDeviceLost();
+  }
 }
 
 // ---- Ping ----
@@ -327,6 +386,34 @@ export function startPing() {
   stopPing();
   pingTimer = setInterval(() => { if (connected) sendLine('PING'); }, PING_MS);
 }
+
+// ---- Loop pembacaan ----
+// Terpisah dari poll() yang hanya dicek tiap 2 detik: poll itu untuk
+// MEMANTAUK koneksi, sedangkan ini untuk MENARIK DATA. Menitipkan pembacaan
+// ke poll() membuat seluruh UI berjalan dalam kelipatan 2 detik.
+let readTimer = null;
+let readBusy = false;
+
+function startReadLoop() {
+  stopReadLoop();
+  readTimer = setInterval(async () => {
+    // readBusy mencegah tumpang tindih: poll 40 ms lebih cepat daripada
+    // respons invoke, jadi tanpa ini beberapa read bisa jalan bersamaan dan
+    // merebut buffer satu sama lain (data hilang tanpa jejak).
+    if (readBusy || !connected) return;
+    readBusy = true;
+    try { await readIncoming(); }
+    finally { readBusy = false; }
+  }, READ_POLL_MS);
+}
+
+function stopReadLoop() {
+  if (readTimer) clearInterval(readTimer);
+  readTimer = null;
+}
+
+// Ekspor untuk test; dipakai juga oleh disconnect().
+export function stopAllBleTimers() { stopPing(); stopReadLoop(); }
 export function stopPing() { if (pingTimer) clearInterval(pingTimer); pingTimer = null; }
 
 // ---- UI ----

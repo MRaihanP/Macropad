@@ -458,6 +458,8 @@ export const en = {
 'ble.autoNotFound': '[BLE] MacroPad not found automatically. Scan and pick manually.',
 'ble.pickDevice': 'Pick a BLE device first (click ↻ when empty)',
 'ble.foundLog': '[BLE] {count} device(s) found.',
+'ble.readError': '[BLE] Failed to pull data: {err}',
+'ble.pollError': '[BLE] Connection poll failed: {err}',
 'main.transportSwitchError': 'Transport switch failed: {err}',
 
 };

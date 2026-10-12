@@ -32,7 +32,7 @@ globalThis.localStorage = { _m: {}, getItem(k) { return this._m[k] ?? null; }, s
 // bledevices: pakai snake_case persis seperti struct BleDeviceInfo di Rust.
 // Kalau test ini memakai camelCase, backend akan salah baca dan bug is_paired
 // tidak akan pernah terdeteksi.
-globalThis.__Invoke = { calls: [], failOn: new Set(), connected: true, devices: [] };
+globalThis.__Invoke = { calls: [], failOn: new Set(), connected: true, devices: [], readQueue: [] };
 const CORE_STUB = pathToFileURL(`${process.cwd()}/tests/suites/.ble-core-stub.mjs`).href;
 fs.writeFileSync(
   `${process.cwd()}/tests/suites/.ble-core-stub.mjs`,
@@ -42,6 +42,12 @@ fs.writeFileSync(
   if (S.failOn.has(cmd)) throw new Error('stub: ' + cmd + ' gagal');
   if (cmd === 'ble_scan') return S.devices;
   if (cmd === 'ble_is_connected') return S.connected;
+  // Meniru rx_buffer di ble.rs: notify menumpuk byte, ble_read mengambilnya.
+  if (cmd === 'ble_read') {
+    const next = S.readQueue.shift();
+    if (!next) return [];
+    return Array.from(new TextEncoder().encode(next.join('\\n') + '\\n'));
+  }
   return null;
 }
 `,
@@ -192,7 +198,33 @@ eq(ev.deviceLost, 1, 'poll melaporkan device lost saat GATT sudah turun');
 I.connected = true;
 BLE.stopPing();               // matikan interval ping, kalau tidak proses tidak akan keluar
 
-console.log('\n--- 9. Facade meneruskan ke backend USB secara default ---');
+console.log('\n--- 8b. Jalur PENARIKAN DATA dari buffer Rust (regresi "tidak menerima apa-apa") ---');
+// Regresi yang paling fatal: notify masuk ke rx_buffer Rust, tapi TIDAK ADA
+// frontend yang memanggil ble_read. Buffer tidak pernah dikosongkan, handleLine()
+// tidak pernah dipanggil, companion app diam saja padahal GATT tersambung.
+// Test ini MENARIK DATA sungguhan lewat stub invoke() untuk memastikan jalurnya ada.
+I.calls = [];
+I.readQueue = [];                       // antrean yang akan dikembalikan ble_read
+BLE.initTransport(HOOKS);
+eq(await BLE.connect('zz:11'), true, 'connect untuk uji tarik data');
+BLE.stopPing(); BLE.stopAllBleTimers();
+lines = [];
+I.readQueue.push(['INFO:3x3', 'DUMPNAMES', 'NAMES_END']);
+const pulled = await BLE.readIncoming();
+ok(pulled > 0, `readIncoming() menarik ${pulled} byte dari buffer`);
+eq(lines, ['INFO:3x3', 'DUMPNAMES', 'NAMES_END'],
+  'baris dari buffer Rust sampai ke hook onLine (ini yang hilang di regresi)');
+// Buffer kosong harus berhenti dan tidak memanggil handleLine dengan junk.
+lines = [];
+I.readQueue = [];
+await BLE.readIncoming();
+eq(lines, [], 'buffer kosong tidak menghasilkan baris apa pun');
+// Decoding harus aman untuk byte non-ASCII (nama layer/preset bisa UTF-8).
+lines = [];
+I.readQueue.push(['EVT:APP:aplikasi.exe']);
+await BLE.readIncoming();
+eq(lines, ['EVT:APP:aplikasi.exe'], 'byte UTF-8 multi-byte didekode utuh, tidak jadi rusak');
+I.readQueue = [];
 eq(F.transportId(), 'usb', 'backend default adalah USB');
 ok(typeof F.isConnected === 'function', 'facade mengekspor isConnected()');
 ok(typeof F.dumpInProgress === 'function', 'facade mengekspor dumpInProgress() sbg getter');
