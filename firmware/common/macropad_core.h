@@ -703,7 +703,11 @@ void handleSerialCommand(const String& cmd) {
   lastHostSeenMs = millis();
 
   if (cmd == "WHOAMI") {
-    SERIAL->printf("WHOAMI:MacroPad:v1:rows=%d,cols=%d,encoders=%d\n", ROWS, COLS, NUM_ENCODERS);
+    // fw= muncul supaya user bisa tahu firmware mana yang terpasang tanpa
+    // perlu menebak dari perilaku. "v1" setelah nama adalah versi PROTOCOL
+    // (bentuk pesan), bukan versi firmware - keduanya memang terpisah.
+    SERIAL->printf("WHOAMI:MacroPad:v1:fw=%d,rows=%d,cols=%d,encoders=%d\n",
+                   FW_VERSION, ROWS, COLS, NUM_ENCODERS);
     return;
   }
 

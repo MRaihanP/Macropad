@@ -151,5 +151,42 @@ if (printlnBody) {
   }
 }
 
+console.log('\n--- I. Nomor versi harus punya SATU sumber dan terlihat dari device ---');
+// Dua nomor versi yang tidak saling mengenal = sumber kebinguan berulang:
+// user tidak bisa tahu firmware mana yang terpasang, dan tidak bisa ditelusuri
+// perubahan hanya dari komit berhex panjang.
+//
+// Aturan: FW_VERSION di limits.h adalah satu-satunya sumber. Header sketsh
+// hanya catatan. Dan WHOAMI wajib mengirimkannya supaya bisa dibaca langsung
+// dari Serial Monitor maupun companion app.
+const limH = read('firmware/common/limits.h');
+const coreH = read('firmware/common/macropad_core.h');
+const fwVerMatch = limH.match(/#define\s+FW_VERSION\s+(\d+)/);
+ok(!!fwVerMatch, 'FW_VERSION ada di limits.h (sumber tunggal nomor versi)');
+if (fwVerMatch) {
+  const fwVer = fwVerMatch[1];
+  // WHOAMI harus mengirimkannya - inilah yang membuat versi bisa DILIHAT,
+  // bukan sekadar diasumsikan.
+  ok(new RegExp('WHOAMI:.*fw=%d').test(coreH),
+    'WHOAMI mengirim fw= (versi firmware terbaca dari Serial Monitor dan app)');
+  // Header sketsh harus cocok dengan FW_VERSION, kalau tidak orang akan baca
+  // "Firmware v6" di header padahal device melaporkan fw=7.
+  for (const sk of ['HID_Keypad_Prototype', 'HID_Keypad_Final']) {
+    const src = read(`firmware/${sk}/${sk}.ino`);
+    const headerVer = (src.match(/Firmware v(\d+)/) || [])[1];
+    ok(headerVer === fwVer,
+      `${sk}: header "Firmware v${headerVer}" cocok dengan FW_VERSION=${fwVer}`);
+  }
+}
+
+// App version harus sama di ketiga berkas - kalau beda, installer dan UI
+// menampilkan nomor yang berbeda.
+const pkg = JSON.parse(read('package.json'));
+const cargo = read('src-tauri/Cargo.toml');
+const tauriConf = JSON.parse(read('src-tauri/tauri.conf.json'));
+const cargoVer = (cargo.match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+ok(pkg.version === cargoVer && pkg.version === tauriConf.version,
+  `versi app sama di package.json / Cargo.toml / tauri.conf.json (${pkg.version})`);
+
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail ? 1 : 0);

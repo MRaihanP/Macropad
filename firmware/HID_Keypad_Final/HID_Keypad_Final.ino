@@ -1,5 +1,7 @@
 /*
-  ESP32-S3 Macro Pad - Firmware v5 - SKETCH FINAL
+  ESP32-S3 Macro Pad - Firmware v7 - SKETCH FINAL
+  (nomor resmi ada di FW_VERSION, firmware/common/limits.h - jangan diubah
+   di sini; nilai header ini hanya catatan, yang dikirim ke app adalah FW_VERSION)
   ==============================================
   Profile: FINAL - 2 knob, 9x SK6812 MINI-E (GPIO14 data + GPIO15 enable),
   voltage divider baterai 100k/100k (GPIO16 read + GPIO17 enable).

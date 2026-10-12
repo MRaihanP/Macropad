@@ -6,6 +6,19 @@
 // (ChargeState, RgbState), dan sekarang bisa masuk lewat jalur include berbeda
 // (sketsh langsung, lalu hid_link.h) sehingga tanpa guard akan jadi
 // "multiple definition".
+//
+// =================== VERSI FIRMWARE ===================
+//
+// Satu-satunya sumber nomor versi firmware. Dikirim di balasan WHOAMI, jadi
+// companion app dan Serial Monitor bisa langsung tahu firmware mana yang
+// benar-benar terpasang di device - hal yang selama ini tidak bisa dipastikan,
+// dan jadi sumber kebinguan berulang.
+//
+// Naikkan nomornya setiap kali firmware mengubah perilaku, bukan setiap
+// commit. Perubahan kecil tidak perlu menaikkan.
+#ifndef FW_VERSION
+#define FW_VERSION 7
+#endif
 #pragma once
 
 // =================== HID LINK SELECTION ===================

@@ -5,6 +5,51 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-12
+
+Checkpoint. Transport BLE sudah bisa dipilih dari app; switch USB<->BLE via
+tombol BOOT sudah ada di firmware PROTOTYPE. Git tag: `app-v0.6.0`.
+
+### Known issues (belum selesai)
+- `[BLE] DUMP never closed (terminator lost)` masih muncul kadang. Penyebabnya
+  belum teridentifikasi - dua kemungkinan (firmware tidak mengirim DUMP_END,
+  atau hilang di jalur BLE) masih belum dibedakan karena tidak ada data.
+  Cara memeriksa tanpa mengubah apa pun: `[BLE] NUS RX` di Serial Monitor
+  (115200) menunjukkan apakah perintah `DUMP:0` benar-benar sampai ke firmware.
+
+### Added
+- **Facade transport (`src/transport.js`).** Semua modul yang menghubungi
+  device kini lewat satu facade, bukan langsung ke `serial-transport.js`:
+  protocol-parser, adaptive, home-page, tray, main. Tanpa ini, memilih BLE di
+  app tidak berefek - keempat modul itu tetap menulis ke port COM.
+- **Backend BLE (`src/ble-transport.js`)** memenuhi kontrak facade yang sama,
+  dengan state framing sendiri (tidak bergantung serial-transport).
+- **Pemilih transport USB/BLE** di panel Koneksi manual, plus pemindaian
+  device otomatis saat BLE dipilih.
+- **Switch USB<->BLE via GPIO0 (tombol BOOT)** di firmware PROTOTYPE
+  (`common/switch_iface.h`). Satu tekan memindahkan HID_LINK dan PROTO_LINK
+  sekaligus; LED berkedip 200 ms selama 1 detik untuk BLE, menyala 1 detik
+  untuk USB.
+- **Nomor versi firmware yang terbaca.** `FW_VERSION` di `limits.h` dikirim di
+  balasan `WHOAMI:...fw=<n>`, jadi firmware mana yang terpasang bisa langsung
+  dilihat dari Serial Monitor maupun companion app - bukan lagi ditebak dari
+  perilaku atau dari komit berhex.
+
+### Fixed
+- Jalur data BLE: notify dari device masuk ke buffer Rust tapi tidak pernah
+  ditarik ke frontend, sehingga companion app tidak menerima apa pun (INFO,
+  preset, HWINFO) meski GATT tersambung.
+- `ble_switch_interface` mengirim perintah tanpa newline; firmware hanya
+  menjalankan perintah saat menerima '\n', jadi perintah itu tidak pernah
+  diproses.
+- Event real-time (`EVT:*`, `[KEY]`) tertelan frame dump yang sedang berjalan.
+- `INFO` dibuang sebagai "baris nama layer" saat frame DUMPNAMES berjalan, jadi
+  grid tidak pernah dimuat ulang setelah preset berganti.
+- Preset berganti bolak-balik tanpa henti (tambah cooldown 2,5 detik).
+- `println()` firmware menulis string dan newline sebagai dua write terpisah;
+  lewat BLE, kalau write newline yang gagal, baris tidak pernah diakhiri dan
+  penutup frame hilang.
+
 ## [Unreleased]
 
 Rencana lengkap ada di `C:\Users\Raihan\.opencode\plan\macropad-roadmap.md`.

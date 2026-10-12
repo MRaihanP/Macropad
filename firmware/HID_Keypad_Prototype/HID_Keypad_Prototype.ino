@@ -1,5 +1,7 @@
 /*
-  ESP32-S3 Macro Pad - Firmware v6 - SKETCH PROTOTYPE
+  ESP32-S3 Macro Pad - Firmware v7 - SKETCH PROTOTYPE
+  (nomor resmi ada di FW_VERSION, firmware/common/limits.h - jangan diubah
+   di sini; nilai header ini hanya catatan, yang dikirim ke app adalah FW_VERSION)
   ==================================================
   Profile: PROTOTYPE - 1 knob, LED status biasa di GPIO12.
   TIDAK punya: RGB (HAS_RGB=0), voltage divider / baterai (HAS_VDIV=0),
