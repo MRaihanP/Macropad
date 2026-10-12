@@ -25,13 +25,6 @@ import {
   autoDetect, pollPorts, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton,
 } from "./serial-transport.js";
-
-import {
-  initBleTransport, sendLineBle, sendBatchBle,
-  connectBle, disconnectBle, scanAndUpdateSelect,
-  isBleConnected, isBleAutoBusy, enableBleAutoReconnect,
-  bleDeviceWasLost, pollBle, updateBleConnectButton,
-} from "./ble-transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
@@ -73,9 +66,6 @@ initLanguageSelect(el('languageSelect'));
 // Config di device berubah tapi belum disimpan ke flash. Dipakai dialog "Simpan
 // dulu?" saat keluar, dan disuntikkan ke home-page lewat initHomePage({ markDirty }).
 let dirty = false;
-
-// Transport selection state
-let currentTransport = 'usb'; // 'usb' | 'ble'
 
 // Profil & kemampuan hardware (HWINFO) sekarang milik protocol-parser.js, karena
 // baris HWINFO: yang mengisinya diparse di sana. Badge di bawah membacanya sebagai
@@ -159,83 +149,50 @@ initProtocolParser({
 });
 
 // ==================== SAMBUNGKAN TRANSPORT ====================
-// serial-transport.js dan ble-transport.js tidak tahu apa pun soal isi config,
-// layer, atau preset, dan juga tidak memanggil fungsi main.js secara langsung.
-// Semua sisi aplikasi disuntikkan di sini - titik pertemuan tunggal antara
-// transport dan app.
-
-function getTransport() {
-  if (currentTransport === 'ble') {
-    return {
-      isConnected: isBleConnected,
-      isAutoBusy: isBleAutoBusy,
-      sendLine: sendLineBle,
-      sendBatch: sendBatchBle,
-      connect: connectBle,
-      disconnect: disconnectBle,
-      isConnected: isBleConnected,
-      isAutoBusy: isBleAutoBusy,
-      enableAutoReconnect: enableBleAutoReconnect,
-      deviceWasLost: bleDeviceWasLost,
-      poll: pollBle,
-      updateConnectButton: updateBleConnectButton,
-      initTransport: initBleTransport,
-    };
-  }
-  return {
-    isConnected,
-    isAutoBusy,
-    sendLine,
-    sendBatch,
-    connect,
-    disconnect,
-    isConnected,
-    isAutoBusy,
-    enableAutoReconnect,
-    deviceWasLost,
-    poll: pollPorts,
-    updateConnectButton,
-    initTransport,
-  };
-}function initCurrentTransport() {
-  const t = getTransport();
-  t.initTransport({
-    onLine: (line) => handleLine(line),
-    onConnected: () => {
-      notify(tDeviceWasLost() ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
-      switchPage('home');
-    },
-    onDisconnected: () => {
-      resetDeviceProfile();
-      clearBattery();
-      renderDeviceProfileBadge();
-    },
-    onDeviceLost: () => {
-      resetAdaptiveRuntimeState();
-      resetEditorState();
-    },
-    clearDirty: () => { dirty = false; },
-    notify: (text, kind) => notify(text, kind),
-    onAutoConnectOk: () => { },
-    onAutoConnectFail: () => { },
-  });
-}
-
-initCurrentTransport();
+// serial-transport.js tidak tahu apa pun soal isi config, layer, atau preset, dan
+// juga tidak memanggil fungsi main.js secara langsung. Semua sisi aplikasi
+// disuntikkan di sini - titik pertemuan tunggal antara transport dan app.
+initTransport({
+  // Setiap baris dari device berakhir di protocol-parser.js. Transport hanya
+  // hanya pemisah baris; ia tidak tahu apa arti baris-baris itu.
+  onLine: (line) => handleLine(line),
+  onConnected: () => {
+    // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
+    // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
+    notify(deviceWasLost ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
+    switchPage('home');   // Home selalu tampil saat pertama kali connect
+  },
+  onDisconnected: () => {
+    // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus: profile
+    // (dan badge SIMULASI) serta meter baterai harus ikut kosong, kalau tidak user
+    // mengira device masih hidup dan tegangan terkahoir.
+    resetDeviceProfile();
+    clearBattery();
+    renderDeviceProfileBadge();
+  },
+  // Saat koneksi putus, state yang BARU BOLEH ada di device hilang sekalian -
+  // tidak ada yang perlu "menunggu upload", karena isi RAM device ikut hilang.
+  // Yang tersisa hanya state lokal app (preset, editor, daftar aplikasi).
+  onDeviceLost: () => {
+    resetAdaptiveRuntimeState();
+    resetEditorState();
+  },
+  clearDirty: () => { dirty = false; },
+  notify: (text, kind) => notify(text, kind),
+  onAutoConnectOk: () => { },
+  onAutoConnectFail: () => { },
+});
 el('btnRefreshPorts').onclick = autoDetect;
-// For BLE, we need a separate scan button
-if (el('btnRefreshBle')) el('btnRefreshBle').onclick = scanAndUpdateSelect;
-
 // Label tombol sambung/putus berasal dari JS (berubah sesuai status koneksi),
 // jadi applyI18n() akan menimpanya dengan teks statis setiap kali user ganti
 // bahasa. Daftarkan render ulang agar label ikut diterjemahkan DAN tetap
 // mencerminkan status koneksi yang sedang berjalan.
 registerRerender(() => updateConnectButton(isConnected()));
 el('btnConnect').onclick = () => {
-  if (tIsConnected()) { tDisconnect(true); return; }
-  if (tIsAutoBusy()) { log(t('transport.autoBusy')); return; }
-  tEnableAutoReconnect();
-  tConnect();
+  if (isConnected()) { disconnect(true); return; }
+  if (isAutoBusy()) { log(t('transport.autoBusy')); return; }
+  enableAutoReconnect();
+  connect();
 };
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
 el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
