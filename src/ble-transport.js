@@ -255,6 +255,10 @@ export async function connect(deviceIdArg) {
   // mengirim WHOAMI dalam 400 ms, dan jawabannya perlu langsung ditarik -
   // kalau loop belum jalan, jawaban itu menunggu sampai poll 2 detik berikutnya.
   startReadLoop();
+  // Tampilkan UI utama. Tanpa ini, #app (dan panel log di dalamnya) tetap
+  // tersembunyi di mode BLE walau GATT sudah tersambung - user melihat
+  // aplikasi yang masih kosong padahal sebenarnya sudah connect.
+  setConnected(true);
   suppressEventsUntil = Date.now() + 800;
   await sendLine('PING');
   await afterConnectHandshake();
@@ -292,8 +296,7 @@ export async function disconnect(manual) {
   connected = false;
   deviceId = null;
   hooks.onDeviceLost();
-  hooks.onDisconnected();
-  updateConnectButton(false);
+  setConnected(false);
 }
 
 // Device hilang tanpa userDisconnect: bersihkan total lalu coba lagi kalau
@@ -309,10 +312,9 @@ export async function handleDeviceLost() {
   hooks.clearDirty();   // RAM device hilang; tidak ada yang tertunda untuk di-save
   resetParserState();
   hooks.onDeviceLost();
-  hooks.onDisconnected();
   stopPing();
   stopReadLoop();
-  updateConnectButton(false);
+  setConnected(false);
   if (autoReconnect && wasId) scheduleRetry([wasId]);
 }
 
@@ -458,4 +460,24 @@ export function stopPing() { if (pingTimer) clearInterval(pingTimer); pingTimer 
 export function updateConnectButton(state) {
   const btn = el('btnConnect');
   if (btn) btn.textContent = state ? t('transport.disconnect') : t('header.connect');
+}
+
+// Perbarui indikator di header DAN tampilkan UI utama.
+//
+// WAJIB ada di backend BLE, bukan hanya di serial-transport.js. #app (seluruh
+// halaman aplikasi DAN panel log) disembunyikan lewat style.display, dan
+// selama ini HANYA setConnected() di serial yang pernah mengubahnya. Backend
+// BLE tidak pernah memanggilnya, jadi di mode BLE UI utama - termasuk panel
+// log - tidak pernah muncul sama sekali. Akibatnya user tidak bisa melihat
+// apa pun yang terjadi dan harus pindah ke USB untuk membaca log, padahal
+// masalahnya justru sedang terjadi di BLE.
+export function setConnected(state) {
+  const dot = el('dot');
+  if (dot) dot.classList.toggle('on', state);
+  const st = el('statusText');
+  if (st) st.textContent = state ? t('transport.connected') : t('transport.notConnected');
+  updateConnectButton(state);
+  const app = el('app');
+  if (app) app.style.display = state ? 'block' : 'none';
+  if (!state) hooks.onDisconnected();
 }

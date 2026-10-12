@@ -214,6 +214,9 @@ if (transportSel) {
     o.value = opt.id; o.textContent = opt.label;
     transportSel.appendChild(o);
   }
+  // Nilai awal harus dipasang SEBELUM onchange dipasang. Kalau dibalik,
+  // menugaskan .value memicu event 'change' dan menjalankan onchange - sehingga
+  // scan berjalan dua kali: sekali dari inisialisasi, sekali dari klik user.
   transportSel.value = transportId();
 
   // Baris device BLE hanya relevan di mode BLE. Port USB disembunyikan

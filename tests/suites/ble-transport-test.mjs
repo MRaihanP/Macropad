@@ -304,6 +304,44 @@ I.devices = [];
 eq(await BLE.connect('zz:22'), true, 'connect setelah disconnect berhasil');
 BLE.stopPing(); BLE.stopAllBleTimers();
 
+console.log('\n--- 9c. UI harus terlihat di mode BLE ---');
+const bleSrc2 = fs.readFileSync(`${SRC}/ble-transport.js`, 'utf8');
+// Dari log user: tidak bisa melihat panel log di mode BLE dan harus balik ke
+// USB. Penyebabnya DUA hal, keduanya tersembunyi di balik ini.
+//
+// #app (seluruh halaman aplikasi + panel log) disembunyikan lewat
+// style.display dan HANYA serial-transport.js yang pernah mengubahnya.
+// Backend BLE tidak punya setConnected sama sekali.
+//
+// Dan tombol Sambung pernah diletakkan DI DALAM #usbRow, yang
+// disembunyikan saat mode BLE - jadi di mode BLE tidak ada tombol untuk
+// menyambung sama sekali.
+const html = fs.readFileSync(`${SRC}/index.html`, 'utf8');
+ok(/export function setConnected/.test(bleSrc2),
+  'backend BLE punya setConnected() seperti serial');
+ok(/app\.style\.display/.test(bleSrc2),
+  'setConnected() backend BLE menampilkan #app (UI + panel log)');
+// Tombol connect HARUS di luar usbRow maupun bleRow.
+const connectBtnAt = html.indexOf('id="btnConnect"');
+const usbRowAt = html.indexOf('id="usbRow"');
+const bleRowAt = html.indexOf('id="bleRow"');
+ok(connectBtnAt > 0 && usbRowAt > 0 && bleRowAt > 0, 'ketiga elemen ada di index.html');
+const usbRowEnd = html.indexOf('</div>\n        <!-- Baris device BLE', usbRowAt);
+ok(connectBtnAt > usbRowEnd, 'btnConnect DI LUAR #usbRow (tidak ikut hilang di mode BLE)');
+ok(connectBtnAt > bleRowAt, 'btnConnect DI LUAR #bleRow');
+// setConnected(true) harus dipanggil di connect() supaya #app muncul.
+const cBody = fs.readFileSync(`${SRC}/ble-transport.js`, 'utf8')
+  .match(/export async function connect[\s\S]*?\n\}/);
+ok(cBody && /setConnected\(true\)/.test(cBody[0]),
+  'connect() memanggil setConnected(true) - UI muncul setelah tersambung');
+// onchange harus赋值 nilai awal SEBELUM dipasang, kalau tidak scan dobel.
+ok(switchBody && switchBody[1].indexOf('scanAndUpdateSelect') > -1, 'onchange tetap scan');
+const mainCode = fs.readFileSync(`${SRC}/main.js`, 'utf8');
+const valueAt = mainCode.indexOf('transportSel.value = transportId()');
+const onchangeAt = mainCode.indexOf('transportSel.onchange');
+ok(valueAt > 0 && onchangeAt > valueAt,
+  'nilai awal di-set SEBELUM onchange dipasang (scan tidak dobel)');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

@@ -94,13 +94,6 @@
         <div class="manual-connect-row" id="usbRow">
           <select id="portSelect" data-i18n-attr="aria-label:header.portLabel"></select>
           <button class="small" id="btnRefreshPorts" data-i18n-attr="aria-label:header.refreshPorts|title:header.refreshPorts">↻</button>
-          <!-- Label tombol ini DIKELOLA JS (updateConnectButton di
-               serial-transport.js), bukan oleh data-i18n. Alasannya: labelnya
-               berubah antara "Sambung" dan "Putuskan" mengikuti status koneksi.
-               Kalau memakai data-i18n, applyI18n() akan menimpanya dengan teks
-               statis setiap ganti bahasa dan tombol akan selalu membaca
-               "Sambung" padahal device sedang tersambung. -->
-          <button id="btnConnect" class="primary">Sambung</button>
         </div>
         <!-- Baris device BLE hanya relevan kalau transport di atas diisi BLE.
              Disembunyikan lewat JS saat USB aktif supaya user tidak memilih
@@ -111,6 +104,19 @@
             <select id="bleDeviceSelect" data-i18n-attr="aria-label:header.bleDeviceLabel"></select>
             <button class="small" id="btnRefreshBle" data-i18n-attr="aria-label:header.bleRefresh|title:header.bleRefresh">↻</button>
           </div>
+        </div>
+        <!-- Tombol Sambung/Putus BERADA DI LUAR dari usbRow dan bleRow.
+             Pernahrkletakkan di dalam usbRow, dan #usbRow disembunyikan saat
+             mode BLE - jadi di mode BLE tombolnya ikut hilang dan user tidak
+             punya cara apa pun untuk menyambung. -->
+        <div class="manual-connect-row">
+          <!-- Label tombol ini DIKELOLA JS (updateConnectButton), bukan oleh
+               data-i18n. Alasannya: labelnya berubah antara "Sambung" dan
+               "Putuskan" mengikuti status koneksi. Kalau memakai data-i18n,
+               applyI18n() akan menimpanya dengan teks statis setiap ganti
+               bahasa dan tombol akan selalu membaca "Sambung" padahal device
+               sedang tersambung. -->
+          <button id="btnConnect" class="primary">Sambung</button>
         </div>
         <div class="hint" data-i18n="header.manualConnectHint">Device biasanya tersambung otomatis. Buka ini hanya kalau status di atas tidak berubah ke "Tersambung".</div>
       </div>
