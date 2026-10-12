@@ -69,6 +69,11 @@ let quietOkUntil = 0;
 // baris [OK] yang tidak perlu ditampilkan.
 export function suppressDeviceEcho() { return Date.now() < quietOkUntil; }
 
+// Definisi markBatchSettling ada di upload-state.js - modul itu sengaja
+// dipisah dari adaptive.js supaya backend BLE bisa memakainya tanpa mengimpor
+// modul ini (adaptive -> transport <- BLE transport = siklus import).
+import { markBatchSettling } from './upload-state.js';
+
 // Dipanggil handleLine untuk notifikasi [LAYER] yang harus menyebut nama preset.
 export function activePresetName() {
   const p = currentActivePresetId ? presetsData.presets.find(x => x.id === currentActivePresetId) : null;
@@ -515,6 +520,10 @@ async function activatePresetRuntime(preset, exe) {
   // mengira slot itu utuh - berikutnya SLOT:<n>:USE akan mengaktifkan konten rusak.
   slotTable[slot] = null;
   await sendBatch(lines);
+  // Jawaban device masih keluar setelah perintah terakhir terkirim. Jeda ini
+  // yang membuat watchdog dump tahu bahwa "belum ada DUMP_END" itu wajar,
+  // bukan tanda frame hilang.
+  markBatchSettling(4000);
   slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
   currentActivePresetId = preset.id;
   updateActivePresetLabel();
@@ -556,6 +565,7 @@ async function pollFocusedApp() {
       } else {
         quietOkUntil = Date.now() + 500;
         await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
+        markBatchSettling(4000);
         currentActivePresetId = null;
         updateActivePresetLabel();
         log(t('adaptive.backDefaultLog'), null);

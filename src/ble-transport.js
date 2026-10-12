@@ -27,6 +27,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
+import { batchUploadInFlight, resetBatchUploadState, registerOnBatchStart } from './upload-state.js';
 
 const LAST_DEVICE_KEY = 'macropad.lastBleDevice';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -90,6 +91,21 @@ function armDumpWatchdog() {
   if (dumpWatchdogTimer) return;
   dumpWatchdogTimer = setTimeout(() => {
     dumpWatchdogTimer = null;
+    // Pengecualian HARUS diulang di sini, bukan hanya saat arming.
+    //
+    // Watchdog bisa ter-arm sebelum batch upload dimulai (mis. dump dari
+    // handshake masih berjalan). Batch yang menyusul lalu menahan frame, jadi
+    // saat timer ini matured device sedang sibuk dan DUMP_END memang belum
+    // keluar. Melempar error di titik itu akan melapor frame yang sehat
+    // sebagai hilang - persis gejala yang muncul saat user alt+tab cepat
+    // antar aplikasi.
+    //
+    // Perpanjang timer selama batch masih jalan - dump yang dump yang
+    // ditunda hanya butuh lebih waktu, bukan perlu diperbaiki.
+    if (batchUploadInFlight()) {
+      armDumpWatchdog();
+      return;
+    }
     // Kondisi ini SANGAT sulit ditandai dari log biasa: app connect, GATT
     // sehat, notify jalan - tapi tidak satu baris pun ter-render karena
     // parser menganggap semua respons sebagai isi dump.
@@ -130,6 +146,12 @@ export function resetParserState() {
   dumpEncInProgress = false;
   namesInProgress = false;
   cancelDumpWatchdog();
+  // SENGAJA TIDAK mereset flag batch di sini. resetParserState() juga dipanggil
+  // dari dalam callback watchdog saat ia memutuskan dump perlu dibuka paksa -
+  // dan pada saat itu device mungkin sedang dikejar antrean upload. Mereset
+  // flag di sana akan menghapus bukti bahwa device sedang sibuk, sehingga
+  // watchdog terus MENYALAKAN dirinya sendiri. Flag batch hanya direset di
+  // disconnect(), di mana memang tidak ada lagi yang sedang diunggah.
 }
 export function setDumpInProgress(v) { dumpInProgress = v; }
 export function setDumpEncInProgress(v) { dumpEncInProgress = v; }
@@ -175,6 +197,14 @@ export function handleIncomingChunk(data) {
     // Buka watchdog kalau isi frame terlihat. Dicek per baris supaya tidak
     // bergantung pada pemenggalan chunk: baris isi bisa terbagi dua chunk,
     // dan pola \d,\d,\d bisa terpotong di tengah.
+    //
+    // TAPI jangan saat ada batch upload yang sedang jalan. Mengunggah preset
+    // = ratusan perintah SET yang device harus proses satu per satu; jawaban
+    // DUMP:0 yang menyusul benar-benar tertahan di antrean dan baru keluar
+    // belasan detik kemudian pada preset besar. Tanpa pengecualian ini,
+    // watchdog menyimpulkan dump hilang padahal device masih sibuk - persis
+    // gejala yang muncul saat user alt+tab cepat antar aplikasi.
+    if (batchUploadInFlight()) continue;
     if ((dumpInProgress && /\d,\d,\d/.test(line)) ||
         (namesInProgress && line.indexOf(',') > 0)) {
       armDumpWatchdog();
@@ -348,6 +378,8 @@ export async function disconnect(manual) {
   // Parser ikut dibersihkan di jalur manual juga: tanpa ini baris parsial dari
   // sesi lama menempel pada byte pertama device berikutnya.
   resetParserState();
+  // Disconnect = tidak ada lagi yang sedang diunggah ke device ini.
+  resetBatchUploadState();
   try { await invoke('ble_disconnect'); } catch (e) { log(t('ble.disconnectError', { err: e }), 'err'); }
   connected = false;
   deviceId = null;
@@ -507,6 +539,11 @@ function stopReadLoop() {
   if (readTimer) clearInterval(readTimer);
   readTimer = null;
 }
+
+// Batch upload baru dimulai: watchdog yang sudah ter-arm tidak relevan lagi.
+// Device akan sibuk memproses antrean, jadi "DUMP_END belum keluar" itu
+// wajar, bukan tanda frame hilang.
+registerOnBatchStart(() => { cancelDumpWatchdog(); });
 
 // Ekspor untuk test; dipakai juga oleh disconnect().
 export function stopAllBleTimers() { stopPing(); stopReadLoop(); }

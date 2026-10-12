@@ -61,6 +61,7 @@ registerHooks({
 });
 
 const BLE = await import(`${SRC_URL}/ble-transport.js`);
+const { markBatchSettling, batchUploadInFlight } = await import(`${SRC_URL}/upload-state.js`);
 const F = await import(`${SRC_URL}/transport.js`);
 const I = globalThis.__Invoke;
 
@@ -501,6 +502,95 @@ await BLE.readIncoming();
 await new Promise(r => setTimeout(r, 2400));
 eq(stuckWarned, true, 'frame yang benar-benar menggantung tetap terdeteksi');
 BLE.setNamesInProgress(false);
+// Tutup timer yang SISA di-arm dari kasus menggantung di atas. Kalau dibiarkan,
+// dia akan jatuh tempo di tengah section 9h dan test itu tidak menguji apa pun.
+BLE.setDumpInProgress(false);
+await BLE.disconnect(true);
+BLE.stopAllBleTimers();
+
+console.log('\n--- 9h. Watchdog tahan saat batch upload preset sedang jalan ---');
+// Dari log user: saat alt+tab cepat antara app dan companion app,
+// "DUMP never closed (terminator lost)" muncul padahal device sehat.
+//
+//activatePresetRuntime() mengirim ratusan perintah SET. Device memprosesnya
+// satu per satu dan membalas [OK] untuk tiap baris - jadi jawaban DUMP:0
+// yang menyusul BENAR-BENAR tertahan di antrean dan baru keluar belasan
+// detik kemudian pada preset besar. Watchdog yang tidak tahu soal ini
+// menyimpulkan dump-nya hilang.
+const uploadSrc = fs.readFileSync(`${SRC}/upload-state.js`, 'utf8');
+ok(/export function batchUploadInFlight/.test(uploadSrc),
+  'upload-state.js mengekspor batchUploadInFlight()');
+ok(/export function markBatchSettling/.test(uploadSrc),
+  'upload-state.js mengekspor markBatchSettling()');
+// PENTING: tidak boleh menaruh flag ini di adaptive.js. adaptive mengimpor
+// transport, dan backend BLE mengimpor adaptive = siklus import runtime.
+ok(/from '\.\/upload-state\.js'/.test(bleSrc2),
+  'backend BLE membaca flag dari upload-state.js, bukan adaptive.js');
+ok(!/from '\.\/adaptive\.js'/.test(bleSrc2),
+  'backend BLE TIDAK mengimpor adaptive.js (hindari siklus import)');
+ok(/import \{ markBatchSettling \} from '\.\/upload-state\.js'/.test(
+    fs.readFileSync(`${SRC}/adaptive.js`, 'utf8')),
+  'adaptive.js menandai batch lewat upload-state.js');
+ok(/batchUploadInFlight\(\)\) continue;/.test(bleSrc2),
+  'watchdog DITAHAN saat batch upload sedang jalan');
+// resetParserState() SENGAJA tidak mereset flag batch. Watchdog memanggilnya
+// dari dalam callback-nya sendiri saat memaksa membuka dump yang macet - dan
+// pada saat itu device mungkin sedang dikejar antrean upload. Kalau flag di
+// sana ikut terhapus, bukti "device sedang sibuk" hilang, watchdog melapor
+// frame sehat sebagai hilang, dan karena ia me-arm ulang dirinya sendiri,
+// itu berulang terus.
+ok(!/resetParserState\(\)[\s\S]{0,900}resetBatchUploadState\(\)/.test(
+    bleSrc2.slice(bleSrc2.indexOf('export function resetParserState'),
+                  bleSrc2.indexOf('export function resetParserState') + 900)),
+  'resetParserState() TIDAK mereset flag batch (kalau iya watchdog loop tanpa henti)');
+// Flag batch harus direset DI disconnect (device tidak lagi menerima apa pun),
+// dan TIDAK di resetParserState (dipakai watchdog saat memaksa membuka dump).
+const resetStateBody = bleSrc2.slice(
+  bleSrc2.indexOf('export function resetParserState'),
+  bleSrc2.indexOf('export function resetParserState') + 600);
+ok(!/resetBatchUploadState/.test(resetStateBody),
+  'resetParserState() tidak mereset flag batch');
+ok(/disconnect[\s\S]{0,900}resetBatchUploadState\(\)/.test(bleSrc2),
+  'flag batch direset di jalur disconnect (tempatnya satu-satunya)');
+
+// Uji perilaku: dengan batch aktif, dump yang menggantung tidak boleh
+// dilaporkan hilang - device memang sedang sibuk.
+BLE.initTransport({ onLine() { }, onDumpStuck() { stuckWarned = true; },
+  onDeviceLost() { }, onDisconnected() { }, clearDirty() { }, notify() { } });
+// Section sebelumnya meninggalkan watchdog ter-arm DAN flag batch aktif.
+// Bersihkan keduanya dulu lewat disconnect (satu-satunya jalur yang mereset
+// flag batch), kalau tidak test ini menguji sisa state section lain.
+await BLE.disconnect(true);
+BLE.stopAllBleTimers();
+I.devices = [];
+eq(await BLE.connect('zz:44'), true, 'connect untuk uji batch');
+BLE.stopPing(); BLE.stopAllBleTimers();
+BLE.initTransport({ onLine() { }, onDumpStuck() { stuckWarned = true; },
+  onDeviceLost() { }, onDisconnected() { }, clearDirty() { }, notify() { } });
+
+// Section 9g berakhir dengan stuckWarned = true (kasus "menggantung" yang
+// memang harus terdeteksi). Reset di sini, kalau tidak assertion di bawah
+// selalu gagal bukan karena bug, tapi karena sisa section sebelumnya.
+stuckWarned = false;
+markBatchSettling(6000);
+ok(batchUploadInFlight(), 'flag batch aktif sebelum test');
+BLE.setDumpInProgress(true);
+I.readQueue = [['0,0,0,1,1', '0,0,1,1,2']];
+const pulledH = await BLE.readIncoming();
+ok(pulledH > 0, `readIncoming menarik ${pulledH} byte (batch aktif)`);
+await new Promise(r => setTimeout(r, 2400));
+ok(batchUploadInFlight(), 'flag batch masih aktif selama tunggu (dasar test)');
+eq(stuckWarned, false, 'batch upload aktif -> watchdog tidak salah melapor');
+
+// Setelah jeda settling habis, deteksi harus hidup kembali.
+BLE.setDumpInProgress(false);
+markBatchSettling(0);
+BLE.setDumpInProgress(true);
+I.readQueue = [['0,0,0,1,1']];
+await BLE.readIncoming();
+await new Promise(r => setTimeout(r, 2400));
+eq(stuckWarned, true, 'setelah batch selesai, deteksi kembali normal');
+BLE.setDumpInProgress(false);
 
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
