@@ -180,5 +180,51 @@ ok(/is_paired:\s*bool/.test(lib), 'BleDeviceInfo punya field is_paired (snake_ca
 ok(/isPaired:\s*!!d\.is_paired/.test(bleJs),
   'scan() memetakan is_paired (snake_case dari serde) -> isPaired');
 
+console.log('\n--- 11. Jejak diagnostik ada di titik yang MEMBEDAKAN penyebab ---');
+// Tanpa jejak, "tidak menerima apa-apa" punya setidaknya lima penyebab yang
+// butuh tindakan berbeda, dan semuanya tampak sama dari sisi user. Trace ini
+// discriminating: dari baris mana yang muncul, bisa diketahui bagian mana yang
+// putus tanpa perlu menebak.
+ok(ble.includes('ble-trace'), 'ada prefix trace yang seragam');
+// Titik kunci: setelah subscribe. Kalau baris ini tidak muncul, masalahnya
+// DI BAWAH companion app (pairing/CCCD/stack BT) - tidak bisa diperbaiki di repo.
+ok(/\[ble-trace\] notify DISUBSCRIBE-kan/.test(ble),
+  'trace setelah CCCD notify di-enable (batas app vs device)');
+// Titik kedua: byte benar-benar sampai. Kalau subscribe ada tapi ini tidak,
+// masalahnya advertising/subscribe di sisi device.
+ok(/\[ble-trace\] NOTIFY masuk/.test(ble),
+  'trace saat notify dari device masuk ke buffer');
+// Setiap cabang kegagalan di handler harus punya jejaknya. Tanpa ini, mutex
+// yang poisoned membuat notify DILEWATI diam-diam dan gejalanya persis sama
+// dengan "tidak menerima apa-apa".
+for (const [pat, msg] of [
+  [/GAGAL lock buffer/, 'mutex poisoned (notify dilewati diam-diam)'],
+  [/GAGAL baca byte/, 'gagal baca byte dari notification'],
+  [/GAGAL ambil CharacteristicValue/, 'gagal ambil nilai characteristic'],
+]) {
+  ok(pat.test(ble), `ada trace untuk: ${msg}`);
+}
+// Titik ketiga: buffer benar-benar DITARIK oleh frontend. Tanpa ini, notify
+// masuk tapi tidak pernah sampai ke handleLine - regresi yang sudah terjadi.
+ok(/\[ble-trace\]   -> DIKIRIM ke app/.test(ble),
+  'trace saat buffer ditarik ke frontend');
+// Log di read_bulk harus HANYA saat ada isi; kalau selalu, loop 40 ms
+// menghasilkan 25 baris/detik yang tidak pernah informatif.
+const bulk = ble.match(/pub fn read_bulk[\s\S]*?\n    \}/);
+ok(bulk && /if !out\.is_empty\(\)/.test(bulk[0]),
+  'trace read_bulk hanya saat buffer berisi (loop 40 ms tidak membanjiri log)');
+// Sisi app: harus bisa membedakan "write gagal" dari "write sukses tapi diam".
+ok(/seenResponseAt/.test(bleJs), 'frontend menandai waktu device terakhir menjawab');
+ok(/ble\.traceSilent/.test(bleJs), 'ada peringatan handshake diam (batas waktu 6 detik)');
+
+console.log('\n--- 12. Semua key i18n trace benar-benar ada ---');
+const idLoc = read('src/locales/id.js');
+const enLoc = read('src/locales/en.js');
+const usedKeys = [...new Set([...bleJs.matchAll(/t\('(ble\.[a-zA-Z]+)'/g)].map(m => m[1]))];
+for (const k of usedKeys) {
+  ok(idLoc.includes(`'${k}'`), `key ${k} ada di locales/id.js`);
+  ok(enLoc.includes(`'${k}'`), `key ${k} ada di locales/en.js`);
+}
+
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail === 0 ? 0 : 1);

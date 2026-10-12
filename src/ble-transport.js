@@ -65,6 +65,9 @@ let retryTimer = null;
 
 // ---- State framing (milik backend ini) ----
 let lineBuffer = '';
+// Penanda terakhir ada byte yang masuk dari device. Dipakai afterConnectHandshake
+// untuk membedakan "write gagal" dari "write sukses tapi device diam".
+let seenResponseAt = 0;
 export let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
 // Device yang baru connect boleh mengirim event sisa (EVT:APP:) sebelum user
 // sempat conscious. Waited mirror of serial-transport.js.
@@ -180,6 +183,12 @@ export async function scan() {
 
 export async function scanAndUpdateSelect() {
   const devices = await scan();
+  // Log panel app, bukan hanya stderr Rust. User tidak pernah melihat stderr;
+  // tanpa baris ini, "scan tidak menemukan apa pun" di panel log sama sekali
+  // tidak bisa dibedakan dari "app belum pernah memanggil scan".
+  log(devices.length === 0
+    ? t('ble.traceNone')
+    : t('ble.traceFound', { count: devices.length, names: devices.map(d => d.name).join(', ') }));
   const sel = el('bleDeviceSelect');
   if (!sel) return devices;
   const keep = sel.value;
@@ -201,6 +210,7 @@ export async function scanAndUpdateSelect() {
 // INFO dulu akan sempat memuat layer yang salah), lalu dump encoder, baterai, RGB.
 async function afterConnectHandshake() {
   setTimeout(async () => {
+    log(t('ble.traceHandshake'));
     await sendLine('WHOAMI');
     await sendLine('HWINFO');
     await sendLine('LAYER:0');
@@ -208,6 +218,17 @@ async function afterConnectHandshake() {
     await sendLine('DUMPENC');
     await sendLine('BATT');
     await sendLine('RGB:DUMP');
+    // Batas waktu. Kalau device tidak menjawab dalam 6 detik, tunjukkan di log
+    // bahwa write BERHASIL tapi jawabannya tidak pernah datang - itu bukti
+    // masalah ada di sisi device/subscribe, bukan di pengiriman perintah.
+    const deadline = Date.now() + 6000;
+    const before = seenResponseAt;
+    const watch = setInterval(() => {
+      if (seenResponseAt !== before) { clearInterval(watch); return; }
+      if (Date.now() < deadline) return;
+      clearInterval(watch);
+      log(t('ble.traceSilent'), 'err');
+    }, 250);
   }, 400);
 }
 
@@ -221,6 +242,7 @@ export async function connect(deviceIdArg) {
     log(t('ble.connectError', { err: e }), 'err');
     return false;
   }
+  log(t('ble.traceConnected', { id }));
   connected = true;
   deviceId = id;
   lastGoodDeviceId = id;
@@ -355,6 +377,10 @@ export async function readIncoming() {
     for (let i = 0; i < 4; i++) {
       const chunk = await invoke('ble_read', { maxLen: READ_CHUNK_MAX });
       if (!chunk || chunk.length === 0) break;
+      // Tandai bahwa device MEMANG menjawab. afterConnectHandshake memakai
+      // penanda ini untuk membedakan "write gagal" dari "write sukses tapi
+      // device diam" - dua masalah yang sama sekali punya tindakan berbeda.
+      seenResponseAt = Date.now();
       handleIncomingChunk(new TextDecoder().decode(Uint8Array.from(chunk)));
       got += chunk.length;
     }

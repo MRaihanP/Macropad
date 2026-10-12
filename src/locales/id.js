@@ -456,6 +456,11 @@ export const id = {
 'ble.pickDevice': 'Pilih device BLE dulu (klik ↻ bila kosong)',
 'ble.foundLog': '[BLE] {count} device ditemukan.',
 'ble.readError': '[BLE] Gagal menarik data: {err}',
+'ble.traceNone': '[BLE] Scan selesai: TIDAK ada device ditemukan',
+'ble.traceFound': '[BLE] Scan selesai: {count} device ({names})',
+'ble.traceConnected': '[BLE] Tersambung ke {id}, menunggu data device',
+'ble.traceHandshake': '[BLE] Mengirim handshake (WHOAMI/HWINFO/LAYER:0/INFO/DUMPENC/BATT/RGB)',
+'ble.traceSilent': '[BLE] Perintah terkirim tapi device tidak menjawab dalam 6 detik - masalah di sisi device/subscribe, bukan di pengiriman',
 'ble.pollError': '[BLE] Gagal mem-poll koneksi: {err}',
 'main.transportSwitchError': 'Ganti transport gagal: {err}',
 

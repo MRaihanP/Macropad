@@ -459,6 +459,11 @@ export const en = {
 'ble.pickDevice': 'Pick a BLE device first (click ↻ when empty)',
 'ble.foundLog': '[BLE] {count} device(s) found.',
 'ble.readError': '[BLE] Failed to pull data: {err}',
+'ble.traceNone': '[BLE] Scan done: NO devices found',
+'ble.traceFound': '[BLE] Scan done: {count} device(s) ({names})',
+'ble.traceConnected': '[BLE] Connected to {id}, waiting for device data',
+'ble.traceHandshake': '[BLE] Sending handshake (WHOAMI/HWINFO/LAYER:0/INFO/DUMPENC/BATT/RGB)',
+'ble.traceSilent': '[BLE] Commands sent but device did not answer within 6s - problem is on device/subscribe side, not in sending',
 'ble.pollError': '[BLE] Connection poll failed: {err}',
 'main.transportSwitchError': 'Transport switch failed: {err}',
 
