@@ -173,14 +173,6 @@ public:
   }
 };
 
-// DIAGNOSTIK: apakah perintah DUMP benar-benar sampai ke firmware?
-//
-// Ini titik kritis yang belum pernah terlihat dari sisi app. Kalau baris
-// NUS RX tidak muncul untuk perintah yang sudah app kirim, masalahnya ada di
-// jalur app -> BLE -> firmware, BUKAN di pengiriman jawaban. Dua arah itu
-// selama ini tertukar karena sama-sama tampak sebagai "penutup tidak sampai".
-};
-
 // 6e400003: app men-subscribe notifikasi di sini. Hanya setelah ini notify
 // benar-benar sampai ke companion app.
 class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {

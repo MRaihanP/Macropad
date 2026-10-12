@@ -877,29 +877,12 @@ void handleSerialCommand(const String& cmd) {
     long layerL;
     if (!parseIntRange(cmd.substring(5), 0, activeCfg->layerCount - 1, layerL)) { SERIAL->println("[ERROR] Layer index tidak valid"); return; }
     uint8_t layer = (uint8_t)layerL;
-    // DIAGNOSTIK SAJA - tidak mengubah perilaku apa pun.
-    //
-    // Tujuannya memecah masalah jadi dua kemungkinan yang JELAS berbeda, yang
-    // selama ini tertukar:
-    //   (a) firmware tidak pernah mengirim DUMP_END
-    //   (b) firmware mengirimnya, tapi hilang di antara device dan app
-    //
-    // Kalau baris [DUMP] selesai muncul di Serial Monitor, masalahnya ada di
-    // sisi app/BLE. Kalau tidak, masalahnya ada di firmware.
-    //
-    // Memakai jalur protokol (SERIAL), bukan jalur diagnostik USB: yang
-    // diagnostik selalu USB CDC, jadi pesannya tidak akan terlihat saat device
-    // sedang bicara lewat BLE - justru saat paling perlu dilihat. Prefix
-    // [DUMP] tidak cocok pola apa pun di protocol-parser.js, jadi aman di
-    // stream protokol.
-    SERIAL->printf("[DUMP] mulai layer=%u\n", (unsigned)layer);
     SERIAL->printf("DUMP_BEGIN:%d\n", layer);
     for (uint8_t r = 0; r < ROWS; r++)
       for (uint8_t c = 0; c < COLS; c++) {
         KeyAction a = activeCfg->layerMap[layer][r][c];
         SERIAL->printf("%d,%d,%d,%s\n", r, c, a.type, a.value);
       }
-    SERIAL->printf("[DUMP] layer=%u selesai, mengirim DUMP_END\n", (unsigned)layer);
     SERIAL->println("DUMP_END");
     return;
   }

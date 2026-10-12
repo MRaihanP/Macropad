@@ -151,42 +151,5 @@ if (printlnBody) {
   }
 }
 
-console.log('\n--- H. Diagnostik DUMP harus ada dan TIDAK mengubah perilaku ---');
-// Tanpa log ini, "penutup frame hilang" punya DUA kemungkinan yang sama
-// sekali geomotri:
-//
-//   (a) firmware tidak pernah mengirim DUMP_END
-//   (b) firmware mengirimnya tapi hilang di antara device dan app
-//
-// Keduanya tampak sama dari sisi app, dan keduanya menghasilkan gejala yang
-// identik. Selama ini setiap fix danced aimed(a) padahal bukti-bukti
-// menunjukkan notify() tidak pernah gagal - jadi (a) belum pernah terbukti.
-const coreH = read('firmware/common/macropad_core.h');
-const dumpBlock = coreH.match(/if \(cmd\.startsWith\("DUMP:"\)\) \{([\s\S]*?)\n  \}/);
-ok(!!dumpBlock, 'blok handler DUMP: ditemukan');
-if (dumpBlock) {
-  const db = dumpBlock[1];
-  ok(/SERIAL->printf\("\[DUMP\] mulai/.test(db), 'ada log saat DUMP dimulai (tahu perintah sampai)');
-  ok(/\[DUMP\].*selesai.*DUMP_END/.test(db), 'ada log tepat sebelum DUMP_END dikirim');
-  // WAJIB SERIAL-> bukan LOGS->: LOGS selalu USB CDC jadi pesan tidak terlihat
-  // saat device bicara BLE - persis saat diagnosinya paling dibutuhkan. Test
-  // contract-logpath-test.cjs juga melarang LOGS-> di file ini.
-  ok(!/LOGS->/.test(db), 'diagnostik memakai SERIAL-> (dilarang LOGS-> di macropad_core.h)');
-  // UrutanWAJIB: log harus SESUDAH DUMP_BEGIN dan SEBELUM DUMP_END.
-  const beginAt = db.indexOf('DUMP_BEGIN:%d');
-  const beginLog = db.indexOf('[DUMP] mulai');
-  // lastIndexOf, BUKAN indexOf: '[DUMP]' muncul dua kali dan indexOf akan
-  // menemukan yang pertama (log "mulai"), bukan log sebelum DUMP_END.
-  const endLog = db.lastIndexOf('[DUMP]');
-  const endSend = db.indexOf('SERIAL->println("DUMP_END")');
-  ok(beginLog < beginAt, 'log "mulai" diletakkan sebelum DUMP_BEGIN');
-  ok(endLog > beginAt && endLog < endSend,
-    'log "selesai" diletakkan tepat sebelum DUMP_END dikirim');
-}
-// Perintah dari app harus terlihat di Serial Monitor - itu yang membedakan
-// "app tidak mengirim" dari "firmware tidak menjawab".
-const hidH = read('firmware/common/ble_hid.h');
-ok(/NUS RX/.test(hidH), 'ada log NUS RX (perintah dari app terlihat di Serial Monitor)');
-
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail ? 1 : 0);
