@@ -262,6 +262,18 @@ export async function connect(deviceIdArg) {
 }
 
 export async function disconnect(manual) {
+  // Tanpa guard ini, disconnect() yang dipanggil saat device BELUM pernah
+  // tersambung tetap menjalankan seluruh ekor: mematikan autoReconnect,
+  // mengirim notifikasi "terputus" yang tidak benar, dan memunculkan error
+  // "BLE tidak terhubung" yang menyesatkan.
+  //
+  // Yang memancingnya adalah setTransportBackend() di facade, yang memutus
+  // backend LAMA setiap kali selector transport berubah - termasuk saat
+  // berubah dari USB ke BLE, di mana BLE memang belum pernah tersambung.
+  if (!connected) {
+    if (manual) autoReconnect = false;
+    return;
+  }
   if (manual) {
     autoReconnect = false;
     deviceWasLost = false;

@@ -459,6 +459,8 @@ export const en = {
 'ble.pickDevice': 'Pick a BLE device first (click ↻ when empty)',
 'ble.foundLog': '[BLE] {count} device(s) found.',
 'ble.readError': '[BLE] Failed to pull data: {err}',
+'ble.pickTransportFirst': 'Pick BLE transport first in the Transport dropdown',
+'ble.traceSwitched': '[BLE] Transport switched to BLE, scanning for devices...',
 'ble.traceNone': '[BLE] Scan done: NO devices found',
 'ble.traceFound': '[BLE] Scan done: {count} device(s) ({names})',
 'ble.traceConnected': '[BLE] Connected to {id}, waiting for device data',

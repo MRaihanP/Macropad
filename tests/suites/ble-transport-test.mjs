@@ -236,6 +236,32 @@ eq(F.dumpInProgress(), true, 'setter facade mengubah state backend');
 F.setDumpInProgress(false);
 eq(F.dumpInProgress(), false, 'setter facade bisa mengosongkan lagi');
 
+console.log('\n--- 9b. Memilih transport BLE harus langsung scan device ---');
+// Dari log user: device BERHASIL ditemukan (scan menemukan 1 device), tapi
+// dropdown device tidak pernah terisi. Sebabnya memilih transport BLE hanya
+// mengganti backend - tidak ada yang memicu scan, jadi user tidak pernah
+// punya device untuk dipilih dan tidak bisa menekan Sambung.
+const mainSrc = fs.readFileSync(`${SRC}/main.js`, 'utf8');
+ok(/bleBackend\(\)/.test(mainSrc),
+  'main.js mengambil backend BLE lewat facade (bukan import langsung)');
+ok(!/await import\('\.\/ble-transport\.js'\)/.test(mainSrc),
+  'tidak ada import langsung ble-transport.js di main.js (bisa dapat modul berbeda)');
+const switchBody = mainSrc.match(/transportSel\.onchange = async \(\) => \{([\s\S]*?)\n  \};/);
+ok(!!switchBody, 'badan onchange handler terambil');
+if (switchBody) {
+  ok(/setTransportBackend\(/.test(switchBody[1]), 'onchange mengganti backend');
+  ok(/scanAndUpdateSelect\(\)/.test(switchBody[1]),
+    'onchange LANGSUNG scan setelah backend terpasang (dropdown tidak boleh kosong)');
+  // Urutan: ganti backend DULU, baru scan. Kalau scan dulu, yang dipanggil
+  // scan() dari instance modul yang belum jadi backend aktif.
+  ok(switchBody[1].indexOf('setTransportBackend')
+      < switchBody[1].indexOf('scanAndUpdateSelect'),
+    'setTransportBackend() dijalankan SEBELUM scanAndUpdateSelect()');
+}
+ok(/export function bleBackend/.test(
+    fs.readFileSync(`${SRC}/transport.js`, 'utf8')),
+  'facade mengekspor bleBackend()');
+
 console.log('\n--- 10. Tidak ada modul yang menembak serial-transport.js langsung ---');
 // Inilah regresi yang membuat BLE tidak pernah jalan: main.js diarahkan ke facade,
 // tapi empat modul lain tetap menulis ke port COM.
@@ -250,6 +276,33 @@ ok(!/from ['"]\.\/serial-transport\.js['"]/.test(bleSrc), 'backend BLE tidak ber
 for (const sym of ['dumpInProgress', 'isConnected', 'autoBusy', 'lineBuffer']) {
   ok(new RegExp(`(let|const|export let)\\s+${sym}\\b`).test(bleSrc), `backend BLE punya state sendiri: ${sym}`);
 }
+
+console.log('\n--- 8c. disconnect() saat BELUM pernah tersambung tidak boleh merusak state ---');
+// Regresi dari log user: saat memilih transport BLE, facade memanggil
+// disconnect(true) pada backend yang belum pernah tersambung. Tanpa guard,
+// disconnect() tetap mematikan autoReconnect, mengirim notifikasi "terputus"
+// yang tidak benar, dan memunculkan error "BLE tidak terhubung" - yang
+// menutupi masalah sebenarnya dan membuat user mengira BLE rusak total.
+BLE.initTransport(HOOKS);
+I.readQueue = [];
+// Section sebelumnya meninggalkan device tersambung. Tutup dulu supaya test
+// ini benar-benar menguji disconnect() pada kondisi "tidak pernah tersambung"
+// - kondisi yang memicu bug di dunia nyata.
+await BLE.disconnect(true);
+BLE.stopAllBleTimers();
+I.calls = [];
+ev = { connected: 0, disconnected: 0, deviceLost: 0, clearDirty: 0 };
+eq(BLE.isConnected(), false, 'kondisi awal: belum tersambung');
+await BLE.disconnect(true);
+eq(ev.deviceLost, 0, 'tidak memicu onDeviceLost saat memang tidak ada koneksi');
+eq(ev.disconnected, 0, 'tidak memicu onDisconnected saat memang tidak ada koneksi');
+ok(!I.calls.some(c => c.cmd === 'ble_disconnect'),
+  'tidak memanggil ble_disconnect ke Rust saat tidak ada koneksi (hindari "BLE tidak terhubung")');
+// Yang penting: setelah disconnect() lalu connect(), autoReconnect TIDAK boleh
+// tersangkut false - kalau iya, retry otomatis tidak akan pernah berjalan.
+I.devices = [];
+eq(await BLE.connect('zz:22'), true, 'connect setelah disconnect berhasil');
+BLE.stopPing(); BLE.stopAllBleTimers();
 
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'

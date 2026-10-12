@@ -23,7 +23,7 @@ import {
   initTransport, sendLine, sendBatch, connect, disconnect,
   autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
-  setTransportBackend, transportId,
+  setTransportBackend, transportId, bleBackend,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -232,6 +232,15 @@ if (transportSel) {
       await setTransportBackend(transportSel.value);
       syncTransportRows();
       updateConnectButton(isConnected());
+      // Baru scan setelah backend benar-benar terpasang. Tanpa ini, user
+      // memilih BLE lalu dropdown device tetap kosong dan tidak ada yang
+      // memberi tahu -_DEVICE_ yang harus dipilih tidak pernah muncul.
+      const ble = bleBackend();
+      if (transportSel.value === 'ble') {
+        if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
+        log(t('ble.traceSwitched'));
+        await ble.scanAndUpdateSelect();
+      }
     } catch (e) {
       log(t('main.transportSwitchError', { err: e }), 'err');
       transportSel.value = transportId();   // kembalikan ke yang benar-benar aktif
@@ -242,8 +251,9 @@ if (transportSel) {
 const btnRefreshBle = el('btnRefreshBle');
 if (btnRefreshBle) {
   btnRefreshBle.onclick = async () => {
+    const ble = bleBackend();
+    if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
     try {
-      const ble = await import('./ble-transport.js');
       const found = await ble.scanAndUpdateSelect();
       if (found.length) log(t('ble.foundLog', { count: found.length }), 'ok');
     } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }

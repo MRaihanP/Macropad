@@ -456,6 +456,8 @@ export const id = {
 'ble.pickDevice': 'Pilih device BLE dulu (klik ↻ bila kosong)',
 'ble.foundLog': '[BLE] {count} device ditemukan.',
 'ble.readError': '[BLE] Gagal menarik data: {err}',
+'ble.pickTransportFirst': 'Pilih transport BLE dulu di dropdown Transport',
+'ble.traceSwitched': '[BLE] Transport diganti ke BLE, memindai device...',
 'ble.traceNone': '[BLE] Scan selesai: TIDAK ada device ditemukan',
 'ble.traceFound': '[BLE] Scan selesai: {count} device ({names})',
 'ble.traceConnected': '[BLE] Tersambung ke {id}, menunggu data device',

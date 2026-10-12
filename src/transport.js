@@ -104,3 +104,14 @@ export async function setTransportBackend(id) {
   backend.initTransport(pendingHooks);
   return backendId;
 }
+
+// Backend BLE yang sudah terpasang, atau null kalau transport-nya USB.
+//
+// scan() hanya hidup di backend BLE, jadi main.js perlu mengambil backend
+// lewat sini - bukan meng-import './ble-transport.js' langsung. Import
+// langsung mengembalikan SALINAN MODUL YANG BERBEDA kalau ever terjadi
+// (Vite/HMR bisa memuat dua kali), dan scan yang mengisi dropdown akan
+// menulis ke instance yang bukan yang sedang dipakai.
+export function bleBackend() {
+  return backendId === 'ble' ? backend : null;
+}
