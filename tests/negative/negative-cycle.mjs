@@ -10,8 +10,8 @@ const target = `${REPO}/src/adaptive.js`;
 const orig = fs.readFileSync(target, 'utf8');
 
 const broken = orig.replace(
-  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './serial-transport.js';`,
-  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './serial-transport.js';\nimport { handleLine } from './protocol-parser.js';`
+  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';`,
+  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';\nimport { handleLine } from './protocol-parser.js';`
 );
 if (broken === orig) { console.log('GAGAL: pola tidak ditemukan'); process.exit(2); }
 

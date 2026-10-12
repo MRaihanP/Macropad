@@ -32,7 +32,7 @@ const cases = [
   {
     name: 'blokir saat dump dihapus - dump & auto-switch saling menimpa',
     file: adaptive,
-    from: 'return dumpInProgress;',
+    from: 'return dumpInProgress();',
     to: 'return false;',
   },
   {
