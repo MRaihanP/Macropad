@@ -401,6 +401,42 @@ ok(/kind: namesInProgress \? 'DUMPNAMES' : 'DUMP'/.test(bleSrc2),
 ok(/else if \(namesInProgress/.test(bleSrc2),
   'NAMES punya predicate sendiri (baris "<idx>,<name>" tidak cocok \d,\d,\d)');
 
+console.log('\n--- 9f. Event real-time harus menang atas frame dump ---');
+// Dari log user: device masuk mode BLE, DUMP_BEGIN/DUMPNAMES datang, lalu
+// setiap EVT:BATT dan [KEY] yang datang DI TENGAH dump dianggap "isi dump"
+// dan ditolak ("Invalid DUMP line"). Akibatnya notifikasi overlay hilang
+// tepat saat user menekan tombol, meter baterai berhenti, dan log dibanjiri
+// ratusan error yang menutupi masalah sebenarnya.
+//
+// Device tidak tahu sedang di-dump dan tidak menunggu - EVT:BATT dikirim tiap
+// ~1 detik, [KEY] setiap tombol ditekan. Keduanya sah dan harus selalu diparse.
+const psrc = fs.readFileSync(`${SRC}/protocol-parser.js`, 'utf8');
+ok(/function handleRealtimeLine/.test(psrc), 'ada jalur terpisah untuk event real-time');
+ok(/function handleFrameLine/.test(psrc), 'ada jalur terpisah untuk frame');
+// handleLine harus mengalihkan SEBELUM memanggil frame handler.
+const hl = psrc.match(/export function handleLine[\s\S]*?\n\}/);
+ok(!!hl, 'badan handleLine() terambil');
+if (hl) {
+  const body = hl[0];
+  ok(/line\.startsWith\('EVT:'\) \|\| line\.startsWith\('\['\)/.test(body),
+    'handleLine mengalihkan EVT: dan [ ke jalur realtime');
+  ok(body.indexOf('handleRealtimeLine(line)')
+      < body.indexOf('handleFrameLine(line)'),
+    'realtime dijalankan SEBELUM frame (event tidak pernah tertelan dump)');
+}
+// EVT:LAYER: harus tetap menunda saat dump, tapi ceknya pindah ke realtime.
+const rt = psrc.match(/function handleRealtimeLine[\s\S]*?\n\}/);
+ok(rt && /EVT:LAYER:/.test(rt[0]), 'EVT:LAYER: ditangani di jalur realtime');
+ok(rt && /pendingLayerAfterDump = n/.test(rt[0]),
+  'EVT:LAYER: masih menunda saat dump berjalan (currentLayer tidak berubah di tengah dump)');
+// EVT:BATT / EVT:CHG harus di realtime, bukan di frame (kalau di frame, tak
+// terjangkau karena handleLine sudah menyaring "EVT:").
+for (const k of ['EVT:BATT:', 'EVT:CHG:']) {
+  ok(rt && rt[0].includes(k), `${k} ditangani di jalur realtime`);
+  const fr = psrc.match(/function handleFrameLine[\s\S]*?\n\}\s*$/);
+  ok(!fr || !fr[0].includes(k), `${k} tidak lagi di jalur frame (jadi tidak dead code)`);
+}
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

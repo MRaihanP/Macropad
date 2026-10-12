@@ -61,6 +61,11 @@ let dumpParseLayer = NaN;
 // Menunda event-nya membuat dump selesai dulu, baru layer yang diabaikan itu
 // diterapkan - aman karena dua hal tidak saling menginterupsi.
 let pendingLayerAfterDump = null;
+// Sudah dicatat error untuk frame yang sedang berjalan? Satu error per frame,
+// bukan per baris - kalau per baris, panel log jadi hanya berisi error yang
+// sama berulang dan masalah yang sebenarnya jadi tidak terlihat.
+let dumpErrorLogged = false;
+let namesErrorLogged = false;
 export function takePendingLayerAfterDump() {
   const n = pendingLayerAfterDump;
   pendingLayerAfterDump = null;
@@ -99,7 +104,37 @@ export function handleLine(line) {
   line = line.trim();
   if (!line) return;
 
-  // ---- Notifikasi overlay dari event hardware ----
+  // ---- Event real-time SELALU menang atas frame dump ----
+  //
+  // Baris EVT:* (baterai, charger, app yang dibuka) dan [KEY] (penekanan
+  // tombol) adalah event yang terjadi KAPAN SAJA - termasuk di tengah dump
+  // yang sedang berjalan. Device tidak tahu sedang di-dump, dan tidak
+  // menunggu.
+  //
+  // Semula baris-baris ini dicek setelah branch dumpInProgress. Akibatnya
+  // setiap EVT:BATT dan [KEY] yang datang saat dump berjalan dianggap "isi
+  // dump" lalu ditolak - jadi notifikasi overlay hilang tepat saat user
+  // menekan tombol, dan meter baterai berhenti bergerak.
+  //
+  // Dua alasan ini harus演出 di depan semua branch frame:
+  //   1. Kehilangan event - notifikasi tombol tidak pernah muncul.
+  //   2. Menajamkan noise - device mengirim EVT:BATT tiap ~1 detik, jadi satu
+  //      dump yang panjang bisa menghasilkan ratusan "Invalid DUMP line" yang
+  //      menutupi masalah yang sebenarnya.
+  //
+  // Aman terhadap kebingungan: DUMP_BEGIN/END, ENC_BEGIN/END, NAMES_BEGIN/END
+  // dan baris isinya tidak pernah diawali "EVT:" atau "[", jadi tidak ada
+  // risiko baris frame salah dikira event.
+  if (line.startsWith('EVT:') || line.startsWith('[')) {
+    return handleRealtimeLine(line);
+  }
+
+  return handleFrameLine(line);
+}
+
+// Notifikasi overlay dari event hardware. Dipisah supaya bisa dipanggil dari
+// jalur "selalu menang" di atas, tanpa ikut masuk ke logika frame.
+function handleRealtimeLine(line) {
   let mm;
   if ((mm = line.match(/^\[LAYER\] Pindah ke layer (\d+)/))) {
     const n = parseInt(mm[1]);
@@ -148,8 +183,10 @@ export function handleLine(line) {
     // parser -> adaptive, yang memang sudah jadi arah import yang ada; kalau
     // dibalik, muncul siklus import.
     noteDeviceLayerEvent();
-    // Dump yang sedang berjalan sengaja diabaikan, lalu diterapkan setelah selesai.
-    // Lihat catatan panjang di deklarasi pendingLayerAfterDump.
+    // Berlaku juga di jalur ini (bukan hanya saat dump): device bisa memindah
+    // layer sendiri kapan saja. Kalau dump sedang berjalan, tunda lalu terapkan
+    // setelah selesai - kalau tidak则 currentLayer berubah di tengah dump dan waiter
+    // DUMP_END me-resolve layer yang salah.
     if (dumpInProgress()) {
       pendingLayerAfterDump = n;
       log(t('parser.layerDuringDump', { n }));
@@ -164,9 +201,36 @@ export function handleLine(line) {
     return;
   }
 
-  if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpParseLayer = parseInt(line.substring(11)); return; }
+  if (line.startsWith('EVT:BATT:')) {
+    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
+    if (kv.profile !== undefined) deviceProfile.profile = kv.profile;
+    setBatteryFromKv(kv);
+    return;
+  }
+  if (line.startsWith('EVT:CHG:')) {
+    const m = line.match(/state=(\d+)/);
+    if (m) {
+      const st = parseInt(m[1]);
+      setChargeState(st);
+      // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
+      // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
+      // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
+      if (st === 1) hooks.notify(t('batt.chargeStarted'), 'charge', { hold: 5000 });
+      else if (st === 2) hooks.notify(t('batt.chargeDone'), 'charge-done', { hold: 5000 });
+      // state 0 (charger dicabut) sengaja tidak dinotifikasi supaya tidak membising.
+    }
+    return;
+  }
+}
+
+// ---- Frame (DUMP / DUMPENC / DUMPNAMES) dan status ----
+// Semua baris yang TIDAK diawali "EVT:" atau "[" sampai di sini. Event
+// real-time sudah ditangani lebih dulu oleh handleLine() supaya tidak pernah
+// tertelan oleh dump yang sedang berjalan.
+function handleFrameLine(line) {
+  if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpErrorLogged = false; dumpParseLayer = parseInt(line.substring(11)); return; }
   if (line === 'DUMP_END') {
-    setDumpInProgress(false); hooks.renderGrid();
+    setDumpInProgress(false); dumpErrorLogged = false; hooks.renderGrid();
     // Resolve waiter milik layer yang benar-benar didump. Waiter-nya dimiliki
     // adaptive.js (dia yang menunggunya), tapi pemicunya baris di sini.
     const done = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
@@ -193,7 +257,15 @@ export function handleLine(line) {
     if (p.length >= 4) {
       const layer = (Number.isNaN(dumpParseLayer) ? currentLayer : dumpParseLayer);
       const applied = applyDumpRow(layer, parseInt(p[0]), parseInt(p[1]), parseInt(p[2]), p.slice(3).join(','), log);
-      if (!applied) log(t('parser.dumpInvalid', { line }), 'err');
+      // Satu baris per frame, bukan satu per baris rusak. Dump yang benar
+      // saliendo boleh gagal di beberapa baris; kalau log setiap kegagalan,
+      // panel_log jadi hanya berisi error dan masalah yang SEBENARNYA (mis.
+      // penutup frame yang hilang) jadi tidak kelihatan di antara ratusan
+      // baris yang sama.
+      if (!applied && !dumpErrorLogged) {
+        dumpErrorLogged = true;
+        log(t('parser.dumpInvalid', { line }), 'err');
+      }
     }
     return;
   }
@@ -225,36 +297,19 @@ export function handleLine(line) {
     hooks.renderDeviceProfileBadge();
     return;
   }
-  if (line.startsWith('EVT:BATT:')) {
-    const kv = {}; line.substring(9).split(',').forEach(p => { const eq = p.indexOf('='); if (eq > 0) kv[p.substring(0, eq)] = p.substring(eq + 1); });
-    if (kv.profile !== undefined) deviceProfile.profile = kv.profile;
-    setBatteryFromKv(kv);
-    return;
-  }
-  if (line.startsWith('EVT:CHG:')) {
-    const m = line.match(/state=(\d+)/);
-    if (m) {
-      const st = parseInt(m[1]);
-      setChargeState(st);
-      // Penting: kind harus salah satu dari yang dipakai filter notifikasi baterai.
-      // Sebelumnya dipakai 'batt' yang TIDAK ada di daftar filter, sehingga notifikasi
-      // baterai ikut dikendalikan toggle "Notifikasi dasar", bukan "Notifikasi baterai".
-      if (st === 1) hooks.notify(t('batt.chargeStarted'), 'charge', { hold: 5000 });
-      else if (st === 2) hooks.notify(t('batt.chargeDone'), 'charge-done', { hold: 5000 });
-      // state 0 (charger dicabut) sengaja tidak dinotifikasi supaya tidak membising.
-    }
-    return;
-  }
   // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
   if (handleRgbLine(line, log)) return;
-  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); return; }
-  if (line === 'NAMES_END') { setNamesInProgress(false); hooks.renderTabs(); return; }
+  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); namesErrorLogged = false; return; }
+  if (line === 'NAMES_END') { setNamesInProgress(false); namesErrorLogged = false; hooks.renderTabs(); return; }
   if (namesInProgress()) {
     // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
     const idx = line.indexOf(',');
     if (idx > -1) {
-      if (!applyName(parseInt(line.substring(0, idx)), line.substring(idx + 1), log))
+      // Sama seperti DUMP: satu error per frame (lihat catatan di branch dump).
+      if (!applyName(parseInt(line.substring(0, idx)), line.substring(idx + 1), log) && !namesErrorLogged) {
+        namesErrorLogged = true;
         log(t('parser.namesInvalid', { line }), 'err');
+      }
     }
     return;
   }
