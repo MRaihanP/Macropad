@@ -52,6 +52,11 @@ const READ_CHUNK_MAX = 4096;
 // overhead invoke() yang masih ringan (satu round-trip IPC ke thread BLE).
 const READ_POLL_MS = 40;
 
+// Batas tunggu sebelum dianggap dump menggantung. DUMP untuk 3x3 hanya ~10 baris
+// dan dikirim dalam hitungan milidetik, jadi 2 detik sudah sangat longgar - cukup
+// untuk device lambat tanpa membuat user menunggu lama tanpa penjelasan.
+const DUMP_STUCK_MS = 2000;
+
 // ---- State koneksi ----
 let deviceId = null;
 let lastGoodDeviceId = null;
@@ -68,6 +73,34 @@ let lineBuffer = '';
 // Penanda terakhir ada byte yang masuk dari device. Dipakai afterConnectHandshake
 // untuk membedakan "write gagal" dari "write sukses tapi device diam".
 let seenResponseAt = 0;
+// Watchdog dump:-armed saat isi dump terlihat, dibatalkan saat DUMP_END/NAMES_END
+// datang. Kalau tembak, berarti penutup dump hilang di tengah jalan - dan itu
+// kondisi paling damaging karena diam-diam berlaku ke semua baris berikutnya.
+let dumpWatchdogTimer = null;
+
+function cancelDumpWatchdog() {
+  if (dumpWatchdogTimer) clearTimeout(dumpWatchdogTimer);
+  dumpWatchdogTimer = null;
+}
+
+function armDumpWatchdog() {
+  // Jangan arm ulang berkali-kali: setiap baris isi dump akan memicu
+  // handleIncomingChunk, dan timer yang di-reset terus tidak akan pernah
+  //cemic tembak walau penutupnya benar-benar hilang.
+  if (dumpWatchdogTimer) return;
+  dumpWatchdogTimer = setTimeout(() => {
+    dumpWatchdogTimer = null;
+    // Kondisi ini SANGAT sulit ditandai dari log biasa: app connect, GATT
+    // sehat, notify jalan - tapi tidak satu baris pun ter-render karena
+    // parser menganggap semua respons sebagai isi dump.
+    log(t('ble.dumpStuck'), 'err');
+    // Buka diri supaya baris berikutnya bisa diparse lagi. Tanpa ini parser
+    // akan menolak HWINFO/BATT/EVT selamanya sampai app ditutup.
+    resetParserState();
+    lineBuffer = '';
+    hooks.onDumpStuck();
+  }, DUMP_STUCK_MS);
+}
 export let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
 // Device yang baru connect boleh mengirim event sisa (EVT:APP:) sebelum user
 // sempat conscious. Waited mirror of serial-transport.js.
@@ -83,6 +116,7 @@ let hooks = {
   onDeviceLost: () => { },
   onAutoConnectOk: () => { },
   onAutoConnectFail: () => { },
+  onDumpStuck: () => { },
   notify: () => { },
   clearDirty: () => { },
 };
@@ -95,6 +129,7 @@ export function resetParserState() {
   dumpInProgress = false;
   dumpEncInProgress = false;
   namesInProgress = false;
+  cancelDumpWatchdog();
 }
 export function setDumpInProgress(v) { dumpInProgress = v; }
 export function setDumpEncInProgress(v) { dumpEncInProgress = v; }
@@ -119,11 +154,27 @@ export function handleIncomingChunk(data) {
     resetParserState();
     lineBuffer = tail;
   }
+  // Penutup dump yang sehat membatalkan watchdog.
+  if (lineBuffer.indexOf('DUMP_END') >= 0 || lineBuffer.indexOf('ENC_END') >= 0 ||
+      lineBuffer.indexOf('NAMES_END') >= 0) cancelDumpWatchdog();
   let idx;
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {
     hooks.onLine(lineBuffer.slice(0, idx));
     lineBuffer = lineBuffer.slice(idx + 1);
   }
+  // Jaring pengaman untuk dump yang menggantung. Kalau DUMP_BEGIN sampai tapi
+  // DUMP_END tidak pernah datang, flag dumpInProgress tidak pernah turun dan
+  // SEMUA baris sesudahnya (HWINFO, BATT, EVT:*) dianggap "isi dump" lalu
+  // ditolak satu per satu - gejalanya app connect tapi tidak pernah menampilkan
+  // apa-apa, tanpa error lain. Deteksi diam-diam seperti itu hampir mustahil
+  // ditebak dari log panel.
+  //
+  // Syaratnya sengaja longgar: DUMP_BEGIN + >=1 baris isi sudah cukup. Dipakai
+  // juga untuk DUMPNAMES, yang penandanya NAMES_BEGIN/NAMES_END.
+  // Perhatikan: di backend ini dumpInProgress itu VARIABEL (export let), bukan
+// fungsi seperti di facade transport.js. facade mengekspornya sebagai getter
+// supaya bisa/backend berganti; backend sendiri menyimpan nilainya langsung.
+if (dumpInProgress && /\d,\d,\d/.test(lineBuffer)) armDumpWatchdog();
 }
 
 // ---- Pengiriman ----

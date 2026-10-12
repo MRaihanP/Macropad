@@ -342,6 +342,38 @@ const onchangeAt = mainCode.indexOf('transportSel.onchange');
 ok(valueAt > 0 && onchangeAt > valueAt,
   'nilai awal di-set SEBELUM onchange dipasang (scan tidak dobel)');
 
+console.log('\n--- 9d. Dump yang menggantung harus terdeteksi, tidak menelan semua baris ---');
+// Dari log user: HWINFO dan LAYER diterima, lalu SETIAP baris berikutnya
+// ditolak "Invalid DUMP line". Artinya DUMP_BEGIN sampai tapi DUMP_END tidak
+// pernah datang, flag dumpInProgress tidak pernah turun, dan HWINFO/BATT/
+// EVT:* berikutnya dianggap "isi dump".
+//
+// Akarnya di firmware: println() menulis string dan "\n" sebagai DUA write.
+// Di serial tidak masalah; lewat BLE notify bisa gagal, dan kalau yang gagal
+// write newline, baris tidak pernah diakhiri - parser yang hanya memproses
+// setelah '\n' akan menunggunya selamanya.
+const fwTransport = fs.readFileSync(`${SRC}/../firmware/common/transport.h`, 'utf8');
+const printlnBody = fwTransport.match(/void println\(const char\* str\) override \{([\s\S]*?)\n  \}/);
+ok(!!printlnBody, 'println() override di transport.h ditemukan');
+if (printlnBody) {
+  const body = printlnBody[1];
+  // WAJIB satu write: string + newline digabung sebelum dikirim.
+  ok(/memcpy\(line, str, len\)/.test(body) && /line\[len\]\s*=\s*'\\n'/.test(body),
+    'println() menyalin newline ke buffer, bukan write terpisah');
+  ok(/write\(\(const uint8_t\*\)line,\s*len \+ 1\)/.test(body),
+    'println() menulis string + newline dalam SATU write() (notify tidak bisa gagal di tengah)');
+  ok(!/write\(\(const uint8_t\*\)&nl, 1\)/.test(body),
+    'tidak ada lagi write terpisah untuk newline');
+}
+// Sisi app: watchdog harus membukanya lagi supaya tidak terkunci selamanya.
+ok(/armDumpWatchdog/.test(bleSrc2), 'backend BLE punya watchdog dump menggantung');
+ok(/ble\.dumpStuck/.test(bleSrc2), 'ada pesan yang menjelaskan penyebabnya ke user');
+ok(/resetParserState\(\);\s*\n\s*lineBuffer = ''/.test(bleSrc2) || /cancelDumpWatchdog/.test(bleSrc2),
+  'watchdog membatalkan dirinya agar parser tidak terkunci selamanya');
+ok(/DUMP_STUCK_MS\s*=\s*2000/.test(bleSrc2), 'batas tunggu 2 detik (cukup panjang, cukup cepat)');
+ok(/onDumpStuck/.test(bleSrc2), 'backend memberi tahu app lewat hook onDumpStuck');
+ok(/onDumpStuck/.test(mainSrc), 'main.js memasang hook onDumpStuck');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

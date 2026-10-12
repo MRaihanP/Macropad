@@ -179,6 +179,14 @@ setPendingTransportHooks({
     resetAdaptiveRuntimeState();
     resetEditorState();
   },
+  // Dump menggantung: parser sempat menganggap semua respons sebagai isi dump.
+  // Minta render ulang supaya grid dan badge kembali sinkron dengan device.
+  onDumpStuck: () => {
+    renderGrid();
+    renderTabs();
+    renderEncoderList();
+    renderDeviceProfileBadge();
+  },
   clearDirty: () => { dirty = false; },
   notify: (text, kind) => notify(text, kind),
   onAutoConnectOk: () => { },

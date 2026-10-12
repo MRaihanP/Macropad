@@ -69,12 +69,27 @@ public:
     }
   }
 
-  // Default println: write string + newline.
+  // Default println: tulis string DAN newline dalam SATU write.
+  //
+  // Sebelumnya dua write terpisah (string, lalu "\n"). Di serial tidak
+  // masalah. lewat BLE tidak: notify adalah fungsi yang bisa gagal (peer
+  // belum siap, buffer penuh, link terputus sebentar). Kalau write newline
+  // yang gagal, baris jadi tidak pernah diakhiri newline - dan parser
+  // companion app yang hanya memproses baris setelah '\n'received akan
+  // menunggunya SELAMANYA.
+  //
+  // Dampak yang diam-diam dan fatal: DUMP_END hilang newline-nya -> flag
+  // dumpInProgress tidak pernah turun -> semua baris sesudahnya (HWINFO,
+  // BATT, EVT:*) dianggap "isi dump" dan ditolak. Gejalanya: app connect
+  // tapi tidak pernah menampilkan apa-apa, tanpa error lain.
   void println(const char* str) override {
-    size_t len = strlen(str);
-    write((const uint8_t*)str, len);
-    const char nl = '\n';
-    write((const uint8_t*)&nl, 1);
+    const size_t len = strlen(str);
+    // Buffer stack supaya tidak perlu alokasi heap per baris.
+    char line[257];
+    if (len > sizeof(line) - 2) len = sizeof(line) - 2;
+    memcpy(line, str, len);
+    line[len] = '\n';
+    write((const uint8_t*)line, len + 1);
   }
 };
 
