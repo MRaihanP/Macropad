@@ -592,6 +592,41 @@ await new Promise(r => setTimeout(r, 2400));
 eq(stuckWarned, true, 'setelah batch selesai, deteksi kembali normal');
 BLE.setDumpInProgress(false);
 
+console.log('\n--- 9i. Baris status tidak dibuang saat frame NAMES berjalan ---');
+// Dari log user: "Invalid NAMES line, skipped: INFO:layerCount=1,..."
+// berulang, dan grid tidak pernah berubah saat preset berganti.
+//
+// INFO mengandung koma (INFO:layerCount=1,rows=3,...), jadi tanpa
+// pembeda ia diperlakukan sebagai "<idx>,<nama>" dan applyName() menolaknya -
+// lalu DIBUANG. Padahal INFO-lah yang memicu loadLayer(); membuangnya berarti
+// grid tidak pernah dimuat ulang setelah preset berganti.
+const psrc2 = fs.readFileSync(`${SRC}/protocol-parser.js`, 'utf8');
+ok(/function isNamesRow/.test(psrc2), 'ada isNamesRow() untuk membedakan isi frame dari baris status');
+ok(/function processDeferredLines/.test(psrc2), 'ada processDeferredLines() untuk memproses antrean tertunda');
+ok(/deferredLines\.push\(line\)/.test(psrc2),
+  'baris non-frame DITUNDA (bukan dibuang) saat frame NAMES berjalan');
+ok(/processDeferredLines\(\)/.test(psrc2),
+  'antrean diproses begitu NAMES_END datang');
+ok(/DEFERRED_MAX/.test(psrc2), 'antrean dibatasi (NAMES_END hilang tidak boleh menumpuk selamanya)');
+// Isi frame NAMES = "<idx>,<nama>"; head sebelum koma harus angka.
+const isNamesRowBody = psrc2.match(/function isNamesRow[\s\S]*?\n\}/);
+ok(isNamesRowBody && /\^\\d\+\$/.test(isNamesRowBody[0]),
+  'isNamesRow() memeriksa head "<idx>" adalah angka');
+
+// Preset switch harus minta dump ulang layer.
+const adaptiveSrc = fs.readFileSync(`${SRC}/adaptive.js`, 'utf8');
+ok(/hooks\.loadLayer\(currentLayer\)/.test(adaptiveSrc),
+  'activatePresetRuntime meminta dump layer lewat hooks.loadLayer (grid ikut berubah)');
+ok(!/from '\.\/home-page\.js'/.test(adaptiveSrc),
+  'adaptive.js tetap tidak mengimpor home-page.js (aturan kontrak)');
+// Cooldown: companion app sendiri yang sedang fokus memicu "Back to Default",
+// lalu target memicu switch balik - dua-duanya upload penuh.
+ok(/SWITCH_COOLDOWN_MS/.test(adaptiveSrc), 'ada cooldown antar perpindahan preset');
+ok(/Date\.now\(\) - lastSwitchAt < SWITCH_COOLDOWN_MS/.test(adaptiveSrc),
+  'cooldown dicek sebelum switch baru');
+ok(/lastSwitchAt = Date\.now\(\)/.test(adaptiveSrc),
+  'lastSwitchAt diperbarui saat switch terjadi');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

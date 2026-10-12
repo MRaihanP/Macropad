@@ -66,6 +66,34 @@ let pendingLayerAfterDump = null;
 // sama berulang dan masalah yang sebenarnya jadi tidak terlihat.
 let dumpErrorLogged = false;
 let namesErrorLogged = false;
+
+// Baris non-frame yang datang SELAMA frame NAMES sedang berjalan.
+//
+// Device mengirim jawaban secara berurutan, tapi baris status (INFO, HWINFO,
+// WHOAMI, [OK]) bisa tiba tepat di tengah frame DUMPNAMES kalau dua perintah
+// dikirim berdekatan. Baris-baris itu tidak boleh dibuang - INFO khususnya
+// memicu loadLayer(), jadi membuangnya berarti grid tidak pernah dimuat ulang.
+//
+// Batasi jumlahnya: kalau device_selection_node salah benar-benar hanya mengirim
+// baris non-frame tanpa pernah NAMES_END, queue ini akan tumbuh tanpa batas.
+const deferredLines = [];
+const DEFERRED_MAX = 64;
+
+function isNamesRow(line) {
+  // Isi frame NAMES adalah "<idx>,<nama>". Nama layer boleh mengandung koma,
+  // jadi yang diperiksa hanya bagian pertama sebelum koma pertama: harus angka.
+  const idx = line.indexOf(',');
+  if (idx < 0) return false;
+  const head = line.substring(0, idx).trim();
+  return /^\d+$/.test(head);
+}
+
+function processDeferredLines() {
+  while (deferredLines.length) {
+    const l = deferredLines.shift();
+    handleFrameLine(l);
+  }
+}
 export function takePendingLayerAfterDump() {
   const n = pendingLayerAfterDump;
   pendingLayerAfterDump = null;
@@ -300,9 +328,23 @@ function handleFrameLine(line) {
   // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
   if (handleRgbLine(line, log)) return;
   if (line === 'NAMES_BEGIN') { setNamesInProgress(true); namesErrorLogged = false; return; }
-  if (line === 'NAMES_END') { setNamesInProgress(false); namesErrorLogged = false; hooks.renderTabs(); return; }
+  if (line === 'NAMES_END') { setNamesInProgress(false); namesErrorLogged = false; processDeferredLines(); hooks.renderTabs(); return; }
   if (namesInProgress()) {
-    // Nama layer boleh mengandung koma, jadi field terakhir adalah sisa baris.
+    // Baris status yang BUKAN isi frame harus DITUNDA, bukan dibuang.
+    //
+    // INFO juga mengandung koma (INFO:layerCount=1,rows=3,...), jadi tanpa
+    // cek ini ia ikut diperlakukan sebagai "<idx>,<nama>" dan applyName()
+    // menolaknya. Akibatnya INFO hilang - dan INFO-lah yang memicu
+    // loadLayer(). Kalau INFO hilang, grid app tidak pernah dimuat ulang
+    // setelah preset berganti: user melihat keymap preset SEBELUMNYA.
+    if (!isNamesRow(line)) {
+      // Batasi: kalau NAMES_END tidak pernah datang, queue ini akan menumpuk
+      // tanpa akhir. Baris paling lama dibuang - sama seperti batas buffer di
+      // transport.
+      if (deferredLines.length >= DEFERRED_MAX) deferredLines.shift();
+      deferredLines.push(line);
+      return;
+    }
     const idx = line.indexOf(',');
     if (idx > -1) {
       // Sama seperti DUMP: satu error per frame (lihat catatan di branch dump).

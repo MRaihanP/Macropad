@@ -109,6 +109,10 @@ initAdaptive({
   resetEditorState,
   isDirty: () => dirty,
   setDirty: (v) => { dirty = !!v; },
+  // Dipakai setelah preset aktif: muat ulang isi layer supaya grid ikut
+  // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya -
+  // preset sudah aktif di device, tapi layarnya belum.
+  loadLayer,
 });
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);

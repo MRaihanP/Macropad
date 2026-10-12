@@ -57,6 +57,15 @@ let bindableAppsCache = null;
 
 const FOCUS_DEBOUNCE_MS = 150;
 const FOCUS_POLL_MS = 120;
+// Jeda minimal antar dua perpindahan preset.
+//
+// Upload preset itu mahal: ratusan perintah SET yang harus device proses satu
+// per satu, dan switch berikutnya tidak boleh menumpuk di belakang yang
+// sedang jalan. Tanpa jeda ini, companion app (yang sedang difokuskan) memicu
+// "Back to Default" dan target memicu switch balik - menghasilkan bolak-balik
+// tanpa henti yang membanjiri antrean device.
+const SWITCH_COOLDOWN_MS = 2500;
+let lastSwitchAt = 0;
 
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
 let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
@@ -94,6 +103,10 @@ let hooks = {
   resetEditorState: () => { },
   isDirty: () => false,
   setDirty: () => { },
+  // Dipasang main.js. adaptive TIDAK mengimpor home-page.js: aturan proyeknya
+  // modul ini tidak boleh memanggil fungsi halaman secara langsung, supaya arah
+  // ketergantungan tetap satu arah dan tidak muncul siklus import.
+  loadLayer: async () => { },
 };
 export function initAdaptive(h) { hooks = Object.assign({}, hooks, h); }
 
@@ -514,6 +527,14 @@ async function activatePresetRuntime(preset, exe) {
   }
   quietOkUntil = Date.now() + 500;
   const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
+  // SLOT:n:USE TIDAK mengirim INFO ke device, dan INFO pun tidak cukup:
+  // INFO memicu muat ulang layer dari protocol-parser, tapi pemanggilan itu
+  // ditunda kalau ada frame lain yang sedang berjalan (DUMP/DUMPNAMES).
+  // Akibatnya grid di app tetap menampilkan isi preset LAMA setelah preset
+  // berganti - persis gejala "matrix tombol tidak berubah".
+  //
+  // Jadi minta dump layer secara eksplisit, terpisah dari batch upload, dan
+  // baru setelah jeda singkat supaya device selesai消化 antrean preset dulu.
   lines.push('INFO', 'DUMPENC');
   // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di tengah
   // (kabel dicabut), device punya keymap setengah jadi sementara tabel app
@@ -529,6 +550,21 @@ async function activatePresetRuntime(preset, exe) {
   updateActivePresetLabel();
   log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
   hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
+  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
+  // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
+  // sebelumnya sampai user menekan Refresh secara manual.
+  await loadActiveLayerDump();
+}
+
+// Minta dump layer aktif dari device supaya grid ikut berubah saat preset
+// berganti.
+//
+// Dipisah dari activatePresetRuntime karena harus dikirim SETELAH batch upload
+// selesai, bukan di baris yang sama. Kalau dikirim bersamaan, DUMP:0 masuk ke
+// antrean device di belakang ratusan perintah SET dan jawabannya tertahan lama
+// - dan kalau ada frame lain yang sedang berjalan, parser menundanya.
+async function loadActiveLayerDump() {
+  await hooks.loadLayer(currentLayer);
 }
 
 let pollInFlight = false;
@@ -557,6 +593,17 @@ async function pollFocusedApp() {
     const matched = presetsData.presets.find(p => p.enabled && p.exeName === exe);
     const targetId = matched ? matched.id : null;
     if (targetId === currentActivePresetId) return;
+    // Cooldown setelah switch. Tanpa ini, companion app sendiri yang sedang
+    // difokuskan ikut memicu "Back to Default", lalu user alt+tab ke aplikasi
+    // target memicu switch lagi - dan dua-duanya butuh upload penuh (ratusan
+    // perintah SET). Akibatnya preset berganti bolak-balik tanpa henti,
+    // device tidak pernah selesai memproses antrean, dan grid app tidak pernah
+    // sempat menampilkan keymap yang benar.
+    //
+    // Jeda ini bukan penalti: switch yang sah tetap terjadi, hanya tidak
+    // menumpuk dengan switch berikutnya yang belum sempat selesai.
+    if (Date.now() - lastSwitchAt < SWITCH_COOLDOWN_MS) return;
+    lastSwitchAt = Date.now();
 
     autoSwitchBusy = true;
     try {
