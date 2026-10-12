@@ -437,6 +437,8 @@ export const en = {
 
 // ---- BLE Transport ----
 'header.transportLabel': 'Transport',
+'header.transportLock': 'Lock this mode',
+'main.transportUsbTookOver': '[APP] USB available, switching from BLE to USB',
 'header.transportUsb': 'USB (CDC)',
 'header.transportBle': 'BLE (NUS)',
 'header.bleDeviceLabel': 'BLE Device',

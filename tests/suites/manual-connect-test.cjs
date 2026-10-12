@@ -70,7 +70,11 @@ ok(/export async function tryAutoConnect/.test(serial), 'tryAutoConnect() masih 
 ok(/autoDetect\(\);/.test(main), 'autoDetect() tetap dipanggil saat start');
 // Poll lewat facade supaya backend aktif yang memutuskan apa yang dipantau,
 // tapi jeda 2 detik dan fungsi pollPorts()-nya sendiri tidak boleh hilang.
-ok(/setInterval\(\(\) => \{ poll\(\); \}, 2000\)/.test(main), 'poll() facade tetap dipanggil tiap 2 detik');
+// Interval 2 detik tetap. Isinya berubah jadi supervisor koneksi (yang
+// akhirnya memanggil poll() lewat facade) karena supervisor juga harus bisa
+// memindahkan mode USB<->BLE - satu interval saja yang menjalankan keduanya.
+ok(/setInterval\(\(\) => \{ connectionSupervisor\(\); \}, 2000\)/.test(main),
+  'supervisor koneksi dipanggil tiap 2 detik');
 ok(/export async function pollPorts/.test(serial), 'pollPorts() masih ada di backend serial');
 
 console.log('\n--- E. Label tombol tidak bertabrakan dengan i18n ---');
