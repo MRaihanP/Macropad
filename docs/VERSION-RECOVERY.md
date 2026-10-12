@@ -8,9 +8,9 @@ Ada tiga tag yang perlu diingat:
 
 | Tag | Arti |
 |---|---|
-| `app-v0.6.0` | Companion app versi 0.6.0 |
-| `fw-v7` | Firmware versi 7 (untuk board PROTOTYPE / FINAL) |
-| `checkpoint-app0.6.0-fw7` | Titik kembali yang stabil, keduanya sekaligus |
+| `app-v0.7.0` | Companion app versi 0.7.0 - auto-connect memulihkan diri sendiri |
+| `fw-v9` | Firmware versi 9 - ring NUS 4 KB, overflow tercatat, BLE:RING |
+| `checkpoint-app0.7.0-fw9` | Titik kembali stabil: auto-connect BLE memulihkan diri sendiri |
 
 Cara cek versi yang sedang dipakai:
 
@@ -50,7 +50,7 @@ ketiganya tidak berbeda.
 ## Cara Kembali ke Checkpoint
 
 ```bash
-git checkout checkpoint-app0.6.0-fw7
+git checkout checkpoint-app0.7.0-fw9
 ```
 
 Itu hanya memindahkan posisi folder - tidak menghapus apa pun. Untuk kembali
@@ -69,7 +69,7 @@ satu tempat:
 |---|---|
 | `[BLE] NUS RX` | Perintah dari app **sampai** ke firmware |
 | `[BLE] Connect` / `[BLE] Putus` | Status koneksi BLE |
-| `[DUMP] ...` | Masih ada di firmware ini (dihapus di checkpoint ini) |
+| `[BLE] NUS RX` | Perintah dari app sampai ke firmware |
 
 Kalau baris `[BLE] NUS RX` **tidak muncul** padahal app sudah mengirim
 perintah, masalahnya di jalur app → BLE → firmware, bukan di pengiriman
