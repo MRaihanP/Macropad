@@ -169,9 +169,14 @@ console.log('\n--- 6. Batas write BLE (NUS ~512 byte) ---');
 I.calls = [];
 const long = 'A'.repeat(300);
 await BLE.sendBatch([long, long, long]);
-for (const c of I.calls) {
+// Hanya panggilan write yang punya payload. sendBatch() kini memberi jeda, jadi
+// selama jeda itu loop baca (ble_read) juga jalan dan tercatat di I.calls
+// tanpa args.data - iterate semuanya akan meledak.
+for (const c of I.calls.filter(c => c.cmd === 'ble_write')) {
   ok(c.args.data.length <= 512, `write ${c.args.data.length} byte <= 512 (batas NUS)`);
 }
+ok(I.calls.filter(c => c.cmd === 'ble_write').length >= 3,
+  'batch panjang dipecah jadi beberapa write');
 
 console.log('\n--- 7. Tulis gagal diperlakukan sebagai device hilang ---');
 I.calls = [];

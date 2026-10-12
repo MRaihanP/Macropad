@@ -9,7 +9,7 @@
 //   HID:SELF:<k>[+<k>]    -> kirim 1 report ke backend aktif SAJA (untuk tes)
 //   BLE:ADV               -> restart paksa advertising
 //   BLE:BOND:CLEAR        -> hapus semua bond di sisi device
-//   BLE:RAM               -> sisa heap
+//   BLE:RAM / BLE:RING               -> sisa heap / status ring buffer NUS
 //
 // HID:SELF mengetuk backend aktif langsung (bukan lewat facade) supaya hasilnya
 // murni dari medium itu dan bisa dipakai membedakan "backend bermasalah" vs
@@ -180,6 +180,22 @@ static bool bleDiagCommand(const String& cmd) {
     LOGS->printf("RAM:free=%lu,min=%lu\n",
                    (unsigned long)ESP.getFreeHeap(),
                    (unsigned long)ESP.getMinFreeHeap());
+    return true;
+  }
+
+  // Status ring buffer NUS. Dihitung ulang dari Head/Tail, jadi benar
+  // walau penghitung overflow di-reset atau belum ada.
+  //
+  // dipped=0 berarti TIDAK ADA satu byte pun perintah companion app yang
+  // terpotong sejak boot - semua perintah sampai utuh. dipped>0 berarti ada
+  // yang hilang, device bisa salah baca perintah, dan itu penyebab paling
+  // mungkin dari preset yang "beberapa kali berhasil lalu stuck".
+  if (cmd == "BLE:RING") {
+    uint16_t used = (uint16_t)((bleNusHead - bleNusTail + BLE_NUS_RING_SIZE) % BLE_NUS_RING_SIZE);
+    LOGS->printf("RING:used=%u/%u,dipped=%lu,overflows=%lu\n",
+                 (unsigned)used, (unsigned)BLE_NUS_RING_SIZE,
+                 (unsigned long)bleNusDroppedBytes,
+                 (unsigned long)bleNusPushOverflows);
     return true;
   }
 

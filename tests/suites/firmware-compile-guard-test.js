@@ -188,5 +188,68 @@ const cargoVer = (cargo.match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
 ok(pkg.version === cargoVer && pkg.version === tauriConf.version,
   `versi app sama di package.json / Cargo.toml / tauri.conf.json (${pkg.version})`);
 
+console.log('\n--- J. Ring buffer NUS tidak boleh membuang perintah diam-diam ---');
+// Gejala yang dilaporkan: preset berpindah BERJAYA beberapa kali, lalu
+// STUCK - dan baru bergerak setelah ada perintah kecil yang ditekan.
+//
+// bleNusPush() lama: saat ring penuh, `break` - dan karena itu byte LANJUTAN
+// dibuang, termasuk kalau ada di TENGAH baris perintah. Perintah korup itu
+// dibaca sebagai perintah lain atau ditolak, dan device masuk state yang
+// tidak sesuai.
+//
+// Yang cocok dengan gejala: switch Several berhasil (ring belum penuh),
+// lalu penuh (preset >1,5 KB vs ring 2 KB), lalu byte terpotong, device
+// kacau. Perintah kecil berikutnya muat, dan stream ikut resinkron.
+const shared = read('firmware/common/ble_shared.h');
+ok(/#define\s+BLE_NUS_RING_SIZE\s+4096/.test(shared),
+  'ring buffer NUS 4096 (batch preset >1,5 KB tidak langsung penuh)');
+ok(/bleNusDroppedBytes/.test(shared), 'ada penghitung byte yang dibuang');
+ok(/bleNusPushOverflows/.test(shared), 'ada penghitung kejadian overflow');
+// Yang paling penting: byte yang dibuang harus TERLIHAT.
+ok(/ring PENUH/.test(shared), 'overflow dicatat lewat log, bukan diam-diam');
+// Drop harus dihitung, bukan hanya di-break tanpa dilog.
+const pushBody = shared.match(/inline void bleNusPush[\s\S]*?\n\}/);
+ok(!!pushBody, 'bleNusPush() terambil');
+if (pushBody) {
+  ok(!/if \(next == bleNusTail\) break;/.test(pushBody[0]),
+    'tidak ada "break" yang membuang sisa tanpa dihitung');
+  ok(/dropped\+\+/.test(pushBody[0]), 'byte yang dibuang dihitung');
+  ok(/bleNusDroppedBytes \+=/.test(pushBody[0]), 'total terpotong ikut bertambah');
+  // Log harus DI LUAR critical section - menulis USB CDC di dalam
+  // portENTER_CRITICAL bisa memblokir dan memperburuk keadaan.
+  const critAt = pushBody[0].indexOf('portENTER_CRITICAL');
+  const exitAt = pushBody[0].indexOf('portEXIT_CRITICAL');
+  const logAt = pushBody[0].indexOf('ring PENUH');
+  ok(critAt >= 0 && exitAt > critAt, 'ada critical section yang seimbang');
+  ok(logAt > exitAt, 'log overflow DI LUAR critical section (menulis USB CDC di dalamnya memblokir)');
+}
+// Perintah untuk mengeceknya harus lewat LOGS, bukan stream protokol - kalau
+// lewat SERIAL, barisnya ikut masuk ke protocol-parser dan bisa merusak
+// parsing, persis masalah sebelumnya.
+const diagH = read('firmware/common/ble_diag.h');
+const ringBlock = diagH.match(/if \(cmd == "BLE:RING"\) \{([\s\S]*?)\n  \}/);
+ok(!!ringBlock, 'perintah BLE:RING ada');
+if (ringBlock) {
+  ok(/LOGS->/.test(ringBlock[1]), 'BLE:RING lewat LOGS (tidak masuk stream protokol)');
+  ok(!/SERIAL->/.test(ringBlock[1]), 'BLE:RING tidak memakai SERIAL');
+}
+
+console.log('\n--- K. Flow control di sisi app: jangan kirim lebih cepat dari firmware ---');
+const bleT2 = read('src/ble-transport.js');
+ok(/const BATCH_CHUNK_MS = \d+/.test(bleT2), 'ada jeda antar potongan batch');
+const sbatch = bleT2.match(/export async function sendBatch[\s\S]*?\n\}/);
+ok(!!sbatch, 'sendBatch() terambil');
+if (sbatch) {
+  ok(/setTimeout/.test(sbatch[0]), 'sendBatch() memberi jeda antar potongan');
+  // Jeda hanya untuk batch. sendLine (perintah tunggal) tidak boleh waited,
+  // supaya respons PING/INFO tetap seketika.
+  const sl = bleT2.match(/export async function sendLine[\s\S]*?\n\}/);
+  ok(sl && !/setTimeout/.test(sl[0]), 'sendLine() TIDAK diberi jeda (respons cepat tetap cepat)');
+}
+
+// PERINGATAN REGRESI: perubahan di sini HARUS BLE-only. Round lalu user melaporkan
+// "perubahan mempengaruhi USB" - karena diagnostic pernah pakai SERIAL (= USB CDC).
+ok(!/SERIAL->/.test(shared), 'ble_shared.h tidak menyentuh jalur protokol (tidak memengaruhi USB)');
+
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail ? 1 : 0);

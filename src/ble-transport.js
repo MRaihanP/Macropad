@@ -238,10 +238,34 @@ export async function sendLine(str) {
 // characteristic NUS. Versi pertama file ini memanggil writeRaw() dengan
 // payload yang sudah dipotong ke 900 byte - angka itu untuk port serial dan
 // melewati batas NUS.
+//
+// FLOW CONTROL: jeda di antara potongan.
+//
+// Firmware menampung perintah di ring buffer 4 KB, dan loop utamanya juga
+// harus menguras ring itu SAMBIL mengirim jawaban. Kalau app melempar satu
+// batch preset (>1,5 KB) tanpa jeda, firmware bisa kewalahan: byte dipotong
+// di tengah perintah, perintah jadi korup, dan device masuk state yang
+// tidak sesuai - lalu tidak bisa jalan sampai perintah kecil berikutnya
+// kebetulan muat.
+//
+// Mengirim lebih kecil dan beri jeda membuat firmware sempat menguras ring
+// di antara potongan. Jeda hanya berlaku untuk sendBatch (upload besar);
+// sendLine untuk perintah tunggal tidak waited, supaya respons PING/INFO
+// tetap terasa seketika.
+const BATCH_CHUNK_MS = 25;
+
 export async function sendBatch(lines) {
   if (!connected) return;
   let chunk = '';
-  const flush = async () => { if (chunk) { await writeRaw(chunk); chunk = ''; } };
+  let chunks = 0;
+  const flush = async () => {
+    if (!chunk) return;
+    await writeRaw(chunk);
+    chunk = '';
+    // Jeda hanya setelah potongan pertama: potongan pertama dikirim saat
+    // buffer masih kosong, jadi tidak perlu menunggu.
+    if (++chunks > 1) await new Promise(r => setTimeout(r, BATCH_CHUNK_MS));
+  };
   for (const ln of lines) {
     if (chunk.length + ln.length + 1 > WRITE_CHUNK_MAX) await flush();
     chunk += ln + '\n';
