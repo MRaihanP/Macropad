@@ -392,13 +392,13 @@ if (infoBlock) {
     'DUMPNAMES hanya dikirim kalau tidak ada dump/nama yang sedang berjalan');
 }
 // Watchdog di backend BLE harus menutup frame NAMES juga, bukan hanya DUMP.
-ok(/namesInProgress && lineBuffer\.length > 0/.test(bleSrc2),
+ok(/namesInProgress && line\.indexOf\(','\) > 0/.test(bleSrc2),
   'watchdog juga armed saat DUMPNAMES menggantung (bukan cuma DUMP)');
 ok(/kind: namesInProgress \? 'DUMPNAMES' : 'DUMP'/.test(bleSrc2),
   'pesan watchdog menyebut frame mana yang menggantung');
 // Baris DUMPNAMES ("<idx>,<name>") tidak cocok pola \d,\d,\d, jadi jalur NAMES
 // tidak bisa pakai predicate yang sama dengan DUMP.
-ok(/else if \(namesInProgress/.test(bleSrc2),
+ok(/\(namesInProgress && line\.indexOf\(','\) > 0\)/.test(bleSrc2),
   'NAMES punya predicate sendiri (baris "<idx>,<name>" tidak cocok \d,\d,\d)');
 
 console.log('\n--- 9f. Event real-time harus menang atas frame dump ---');
@@ -436,6 +436,71 @@ for (const k of ['EVT:BATT:', 'EVT:CHG:']) {
   const fr = psrc.match(/function handleFrameLine[\s\S]*?\n\}\s*$/);
   ok(!fr || !fr[0].includes(k), `${k} tidak lagi di jalur frame (jadi tidak dead code)`);
 }
+
+console.log('\n--- 9g. Watchdog tidak salah melapor pada frame yang SEHAT ---');
+// Dari log user: "DUMPNAMES never closed (terminator lost)" muncul padahal
+// NAMES_END-nya jelas sampai - parser sempat memproses frame itu dengan benar.
+//
+// Penyebabnya urutan cek, bukan data yang hilang. Penutup dicek SEBELUM loop
+// while memproses baris, jadi dalam satu chunk yang memuat frame utuh:
+//
+//   NAMES_BEGIN  -> setNamesInProgress(true)   (di hooks.onLine, SETELAH cek)
+//   0,Layer 0     -> isi frame
+//   NAMES_END     -> setNamesInProgress(false)
+//
+// Cek penutup dijalankan sebelum semua itu, jadi NAMES_END yang ada di chunk
+// sama BELUM terlihat, dan setelah loop flag namesInProgress menyala ->
+// watchdog ter-arm untuk frame yang sudah selesai rapi.
+BLE.initTransport(HOOKS);
+lines = [];
+let stuckWarned = false;
+// Hook harus dipasang ulang SETELAH connect(): connect() memanggil
+// setConnected() yang memicu onDisconnected, dan kita butuh onDumpStuck yang
+// menandai apa pun di section ini.
+BLE.initTransport({
+  onLine: (l) => lines.push(l),
+  onDeviceLost() { }, onDisconnected() { }, onDumpStuck() { stuckWarned = true; },
+  clearDirty() { }, notify() { },
+});
+I.devices = [];
+// Section sebelumnya (9b/9c) memanggil setTransportBackend() yang menutup
+// koneksi. Pastikan kita mulai bersih - kalau tidak, connect() di sini
+// mungkin melihat flag masih nyala dan perilakunya tidak seperti dunia nyata.
+await BLE.disconnect(true);
+BLE.stopAllBleTimers();
+eq(BLE.isConnected(), false, 'kondisi awal bersih untuk uji watchdog');
+eq(await BLE.connect('zz:33'), true, 'connect untuk uji watchdog');
+BLE.stopPing(); BLE.stopAllBleTimers();
+BLE.initTransport({
+  onLine: (l) => lines.push(l),
+  onDeviceLost() { }, onDisconnected() { }, onDumpStuck() { stuckWarned = true; },
+  clearDirty() { }, notify() { },
+});
+
+// Frame NAMES utuh dalam SATU chunk - kasus yang dulu salah dilaporkan.
+I.readQueue = [['NAMES_BEGIN', '0,Layer 0', '1,Layer 1', 'NAMES_END']];
+await BLE.readIncoming();
+eq(lines, ['NAMES_BEGIN', '0,Layer 0', '1,Layer 1', 'NAMES_END'],
+  'frame NAMES utuh terbaca semua');
+eq(stuckWarned, false, 'frame NAMES yang SEHAT tidak memicu watchdog');
+
+// Tunggu sedikit lebih dari batas watchdog: kalau penutup tidak membatalkan
+// timer, ini akan tembak.
+await new Promise(r => setTimeout(r, 2400));
+eq(stuckWarned, false, 'watchdog TIDAK tembak setelah 2,4 detik untuk frame yang sehat');
+
+// Frame yang benar-benar menggantung HARUS tetap terdeteksi - jaring pengaman
+// tidak boleh mati karena perbaikannya di atas.
+//
+// namesInProgress di-set oleh protocol-parser saat NAMES_END hilang. Di test
+// ini parser tidak ikut jalan (backend diuji terpisah), jadi flag-nya diset
+// manual: yang diuji di sini adalah KEPUTUSAN watchdog, bukan parser.
+BLE.setNamesInProgress(true);
+I.readQueue = [['0,Layer 0']];
+await BLE.readIncoming();
+await new Promise(r => setTimeout(r, 2400));
+eq(stuckWarned, true, 'frame yang benar-benar menggantung tetap terdeteksi');
+BLE.setNamesInProgress(false);
 
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'

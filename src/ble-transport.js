@@ -154,31 +154,32 @@ export function handleIncomingChunk(data) {
     resetParserState();
     lineBuffer = tail;
   }
-  // Penutup dump yang sehat membatalkan watchdog.
-  if (lineBuffer.indexOf('DUMP_END') >= 0 || lineBuffer.indexOf('ENC_END') >= 0 ||
-      lineBuffer.indexOf('NAMES_END') >= 0) cancelDumpWatchdog();
   let idx;
+  // Penutup dicek PER BARIS, bukan sekali per chunk lewat indexOf di atas loop.
+  //
+  // Kalau penutup dicek sebelum loop, urutan jadi salah begitu satu chunk
+  // memuat frame utuh: NAMES_BEGIN menyalakan flag, NAMES_END (di chunk yang
+  // SAMA) belum terlihat oleh cek, lalu setelah baris-baris diproses flag
+  // menyala dan watchdog ter-arm - padahal frame-nya sudah selesai rapi.
+  // Hasinya NAMES_END yang sehat dilaporkan sebagai "never closed".
+  //
+  // Perbaruan dicek setelah hooks.onLine() karena flag baru berubah di sana.
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {
-    hooks.onLine(lineBuffer.slice(0, idx));
+    const line = lineBuffer.slice(0, idx);
     lineBuffer = lineBuffer.slice(idx + 1);
+    hooks.onLine(line);
+    if (line === 'DUMP_END' || line === 'ENC_END' || line === 'NAMES_END') {
+      cancelDumpWatchdog();
+      continue;
+    }
+    // Buka watchdog kalau isi frame terlihat. Dicek per baris supaya tidak
+    // bergantung pada pemenggalan chunk: baris isi bisa terbagi dua chunk,
+    // dan pola \d,\d,\d bisa terpotong di tengah.
+    if ((dumpInProgress && /\d,\d,\d/.test(line)) ||
+        (namesInProgress && line.indexOf(',') > 0)) {
+      armDumpWatchdog();
+    }
   }
-  // Jaring pengaman untuk dump yang menggantung. Kalau DUMP_BEGIN sampai tapi
-  // DUMP_END tidak pernah datang, flag dumpInProgress tidak pernah turun dan
-  // SEMUA baris sesudahnya (HWINFO, BATT, EVT:*) dianggap "isi dump" lalu
-  // ditolak satu per satu - gejalanya app connect tapi tidak pernah menampilkan
-  // apa-apa, tanpa error lain. Deteksi diam-diam seperti itu hampir mustahil
-  // ditebak dari log panel.
-  //
-  // Syaratnya sengaja longgar: penanda dump (DUMP_BEGIN/ENC_BEGIN/NAMES_BEGIN)
-  // plus >=1 baris isi sudah cukup. Baris isi DUMP/DUMPENC cocok pola
-  // \d,\d,\d; baris DUMPNAMES ("<idx>,<name>") tidak, jadi keduanya dicek
-  // terpisah supaya frame NAMES ikut terlindungi.
-  //
-  // Perhatikan: di backend ini dumpInProgress itu VARIABEL (export let), bukan
-  // fungsi seperti di facade transport.js. facade mengekspornya sebagai getter
-  // supaya tidak beku saat backend berganti.
-  if (dumpInProgress && /\d,\d,\d/.test(lineBuffer)) armDumpWatchdog();
-  else if (namesInProgress && lineBuffer.length > 0) armDumpWatchdog();
 }
 
 // ---- Pengiriman ----
