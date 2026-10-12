@@ -83,7 +83,9 @@ public:
   // BATT, EVT:*) dianggap "isi dump" dan ditolak. Gejalanya: app connect
   // tapi tidak pernah menampilkan apa-apa, tanpa error lain.
   void println(const char* str) override {
-    const size_t len = strlen(str);
+    // BUKAN const: nilai ini dipotong di bawah kalau baris terlalu panjang,
+    // jadi harus bisa di-assign ulang.
+    size_t len = strlen(str);
     // Buffer stack supaya tidak perlu alokasi heap per baris.
     char line[257];
     if (len > sizeof(line) - 2) len = sizeof(line) - 2;

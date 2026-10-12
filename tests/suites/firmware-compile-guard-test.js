@@ -118,5 +118,38 @@ ok(/TransportType::TP_USB/.test(usb), 'transport_usb.h memakai TransportType::TP
 // transport_ble.h nanti bisa langsung memakainya.
 ok(/TP_BLE/.test(transport), 'TP_BLE ada (dipakai transport_ble.h nanti)');
 
+console.log('\n--- F. println() harus bisa di-assign ulang (bukan const) ---');
+// Bug nyata yang lolos semua test dan baru ketahuan saat user mencoba compile:
+// `const size_t len = strlen(str);` lalu `if (len > ...) len = ...;`
+// -> "assignment of read-only variable". Repo ini tidak punya toolchain
+// Arduino, jadi test ini yang harus menangkap kelas kesalahan ini.
+//
+// Pola umum yang dilindungi: identifier yang di-declare const lalu di-assign
+// ulang di baris berikutnya. Dicek pada fungsi yang jelas punya pemotongan.
+const printlnBody = transportCode.match(/void println\(const char\* str\) override \{([\s\S]*?)\n  \}/);
+ok(!!printlnBody, 'println() override ditemukan');
+if (printlnBody) {
+  const pb = printlnBody[1];
+  const constLen = pb.match(/const\s+size_t\s+len\s*=/);
+  const assignsLen = /(^|[^\w.])len\s*=[^=]/.test(pb.replace(/size_t\s+len\s*=\s*strlen\([^)]*\);/, ''));
+  ok(!constLen || !assignsLen,
+    'len tidak const bila di-assign ulang (const + assign = compile error)');
+  ok(/size_t\s+len\s*=/.test(pb), 'len dideklarasikan size_t');
+  ok(/memcpy\(line, str, len\)/.test(pb), 'isi baris disalin ke buffer stack');
+  ok(/write\(\(const uint8_t\*\)line,\s*len \+ 1\)/.test(pb),
+    'tulis string + newline dalam satu write');
+  // Guard batas harus benar: len maksimal sizeof(line)-2 supaya newline muat.
+  const capMatch = pb.match(/if \(len > sizeof\(line\) - (\d+)\) len = sizeof\(line\) - (\d+);/);
+  ok(!!capMatch && capMatch[1] === capMatch[2] && Number(capMatch[1]) >= 2,
+    'batas pemotongan menyisakan ruang untuk newline (>= 2)');
+  // Tidak boleh ada const di fungsi yang Assignment ulang ke variabel itu.
+  const constDecls = [...pb.matchAll(/const\s+\w+\s+(\w+)\s*=/g)].map(m => m[1]);
+  for (const name of constDecls) {
+    const reassigned = new RegExp('(^|[^\\w.])' + name + '\\s*=[^=]').test(
+      pb.replace(new RegExp('const\\s+\\w+\\s+' + name + '\\s*=[^;]*;'), ''));
+    ok(!reassigned, `${name} tidak const bila di-assign ulang`);
+  }
+}
+
 console.log(`\nHASIL: ${fail} gagal`);
 process.exit(fail ? 1 : 0);
