@@ -30,6 +30,18 @@
   Jejak tiap input diberi tag medium-nya: [IN:USB] atau [IN:BLE].
   Device BLE bernama "MacroPad3x3" (HID over GATT, service 1812).
 
+  PINDAH USB <-> BLE (tombol BOOT):
+  TEKAN SATU KALI GPIO0 / tombol BOOT untuk memindahkan seluruh device antara
+  USB dan BLE. Tidak perlu Serial Monitor, dan tetap bisa dipakai saat
+  companion app sudah tidak bisa bicara.
+
+  -> BLE : LED berkedip (interval 200 ms) selama 1 detik
+  -> USB : LED menyala terus selama 1 detik, lalu mati
+
+  Indikatornya sesaat, bukan status yang menetap - supaya tidak menguras
+  baterai dan tidak menyesatkan setelah device dicabut. Perintah Serial
+  IFACE:* / PROTO:* tetap ada untuk yang mau mengaturnya satu sumbu saja.
+
   Menghapus bond tanpa Serial: TAHAN tombol [0][0] (kiri atas) saat boot.
 */
 #include <Arduino.h>
@@ -66,6 +78,7 @@ bool profileTryCommand(const String& cmd);
 #include "../common/transport_ble.h"
 #include "../common/hid_link.h"
 #include "../common/ble_diag.h"
+#include "../common/switch_iface.h"
 
 // Global USB transport instance - definisi (bukan extern).
 UsbTransport g_usbTransport;
@@ -94,6 +107,47 @@ void protoTransportSwitch() {
     g_transport = &g_usbTransport;
   }
   LOGS->printf("[PROTO] Transport beralih ke %s\n", protoLinkName(g_protoLink));
+}
+
+// ---------------------------------------------------------------------------
+// SWITCH VIA TOMBOL BOOT (GPIO0)
+// ---------------------------------------------------------------------------
+// Satu tekan memindahkan KEDUA sumbu sekaligus: report tombol (HID_LINK) dan
+// protokol companion app (PROTO_LINK). Keduanya ditulis berurutan, tidak lewat
+// perintah String, supaya tidak perlu Serial Monitor.
+//
+// PENTING soal urutan: g_hidLink ditulis LEBIH DAHULU dari g_protoLink.
+//
+//  - Pindah ke BLE: hidLinkSet(BLE) menyalakan advertising + server GATT, jadi
+//    kalau protokol diletakkan ke NUS lebih dulu, app bisa menemukan device
+//    sebelum keyboard siap.
+//  - Pindah ke USB: hidLinkSet(USB) memutus peer BLE dan mematikan advertising
+//    (lihat hid_link.h). Kalau protokol diletakkan lebih dulu, jawaban app akan
+//    hilang di NUS yang tidak lagi diiklankan.
+void ifaceToggleFromButton() {
+#if HID_BLE_SUPPORT
+  const bool goBle = (g_hidLink != HidLink::BLE);
+  if (goBle) {
+    hidLinkSet(HidLink::BLE);
+    g_protoLink = ProtoLink::NUS;
+  } else {
+    hidLinkSet(HidLink::USB);
+    g_protoLink = ProtoLink::CDC;
+  }
+  protoTransportSwitch();
+  // Indikator: berkedip = BLE, menyala = USB. SELALU lewat LOGS (USB CDC),
+  // yang tidak pernah berubah - kalau lewat SERIAL, pesan ini sendiri akan
+  // ikut terkirim ke companion app setelah g_transport dipindah ke NUS dan
+  // muncul sebagai baris protocol yang tidak dikenal.
+  LOGS->printf("[BOOT] pindah ke %s (hid=%s proto=%s)\n",
+               goBle ? "BLE" : "USB", hidLinkName(g_hidLink), protoLinkName(g_protoLink));
+  switchLedStart(goBle ? SwitchLedPattern::SW_BLINK : SwitchLedPattern::SW_SOLID);
+#else
+  // Tanpa BLE, tombol tidak boleh diam-diam tidak berpengaruh. Tetap gerakkan
+  // LED supaya pengguna tahu tombolnya hidup, dan beri tahu lewat log.
+  LOGS->println("[BOOT] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+  switchLedStart(SwitchLedPattern::SW_SOLID);
+#endif
 }
 
 // =================== PROFIL: PROTOTYPE ===================
@@ -307,6 +361,13 @@ static unsigned long bleAdvWatchdogAt = 0;
 const unsigned long BLE_ADV_WATCHDOG_MS = 5000;
 
 void profileSetupHook() {
+  // Siapkan GPIO0 (BOOT) DAN LED indikator. Tombol harus siap SEBELUM
+  // hwPeripheralsInit() - lihat catatan pemanggilan di limits.h.
+#if HAS_STATUS_LED
+  switchLedAttach(STATUS_LED_PIN, true);
+#endif
+  bootSwitchBegin();
+
   // Samakan dengan BLE_Keypad_Test: tahan tombol [0][0] saat boot untuk
   // menghapus semua bond (berguna setelah flashing ulang / ganti nama).
   digitalWrite(ROW_PINS[BLE_CLEAR_ROW], LOW);
@@ -326,6 +387,13 @@ void profileSetupHook() {
 }
 
 void profileLoopHook() {
+  // Switch USB<->BLE lewat tombol BOOT. WAJIB dipanggil SEBELUM return
+  // pertama di bawah: animasi LED harus tetap jalan walau device sedang
+  // tersambung BLE - justru di mode itu tombol switch paling mungkin dipakai
+  // (user harus mencabut kabel dulu, atau sudah tidak punya companion app).
+  if (bootSwitchPoll()) ifaceToggleFromButton();
+  switchLedTick();
+
   // Watchdog advertising: jalankan di mode apa pun. Advertising tidak pernah
   // dimatikan (lihat F4), jadi ini hanya safety net kalau advertising
   // berhenti sendiri karena alasan tertentu (mis. Windows BT stack crash).
