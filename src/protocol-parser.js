@@ -26,6 +26,7 @@ import {
   ROWS, COLS, NUM_ENCODERS, currentLayer, layerNames, encConfig, encParseIdx,
   setNumEncoders, applyInfo, applyDumpRow, applyEncRow, applyName,
   applyLayerEvent, applyEncCount, applyEncIdx,
+  emptyLayer, mapping,
 } from './device-state.js';
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
@@ -256,7 +257,21 @@ function handleRealtimeLine(line) {
 // real-time sudah ditangani lebih dulu oleh handleLine() supaya tidak pernah
 // tertelan oleh dump yang sedang berjalan.
 function handleFrameLine(line) {
-  if (line.startsWith('DUMP_BEGIN:')) { setDumpInProgress(true); dumpErrorLogged = false; dumpParseLayer = parseInt(line.substring(11)); return; }
+  if (line.startsWith('DUMP_BEGIN:')) {
+    setDumpInProgress(true);
+    dumpErrorLogged = false;
+    dumpParseLayer = parseInt(line.substring(11));
+    // Kosongkan mapping untuk layer yang akan didump — tapi HANYA di sini,
+    // saat DUMP_BEGIN pasti diterima, bukan di loadLayer() yang mengirim
+    // perintah DUMP. Alasannya: loadLayer() bisa dipanggil berkali-kali
+    // (info handler, preset switch, refresh manual), tapi DUMP_BEGIN hanya
+    // datang sekali. Jika device lambat merespons (BLE antrean panjang),
+    // grid tetap menampilkan isi lama sampai DUMP_BEGIN benar-benar tiba.
+    if (!Number.isNaN(dumpParseLayer)) {
+      mapping[dumpParseLayer] = emptyLayer();
+    }
+    return;
+  }
   if (line === 'DUMP_END') {
     setDumpInProgress(false); dumpErrorLogged = false; hooks.renderGrid();
     // Resolve waiter milik layer yang benar-benar didump. Waiter-nya dimiliki

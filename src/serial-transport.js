@@ -435,3 +435,9 @@ export function startPing() {
 export function stopPing() { clearInterval(pingTimer); pingTimer = null; }
 
 export { sleep };
+// Serial backend tidak punya poll() khusus: port connection sudah
+// event-driven (SerialPort 'open'/'close'/'error'). pollPorts() di atas
+// memeriksa apakah port masih ada (untuk disconnect detection). Facade
+// transport.js memanggil poll() tiap 2 detik untuk BLE (GATT status);
+// untuk serial, panggil pollPorts() yang sama.
+export const poll = pollPorts;

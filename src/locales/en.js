@@ -282,6 +282,10 @@ export const en = {
 'adaptive.presetActiveLog': '[ADAPT] Active preset: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
 'adaptive.presetNotif': 'Preset: {name}',
+'adaptive.presetUploading': 'Uploading "{name}" to device...',
+'adaptive.presetActivateLog': '[ADAPT] Activate preset: "{name}" ({exe}){cache} slot {cachedSlot}',
+'adaptive.presetUploadError': '[ADAPT] Upload preset "{name}" gagal: {err}',
+'adaptive.presetUploadErrorNotif': 'Gagal mengaktifkan preset: {name}',
 'parser.layerNotif': '{from} · {to}',
 
 'grid.cellLabel': 'Row {r} col {c}: ',

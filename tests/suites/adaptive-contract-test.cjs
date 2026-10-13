@@ -68,7 +68,7 @@ ok(/quietOkUntil = Date\.now\(\) \+ 500/.test(newMod), 'jendela sunyi quietOkUnt
 ok(/timeoutMs \|\| 3000/.test(newMod), 'timeout waiter DUMP masih 3000 ms');
 
 console.log('\n--- 4. main.js tidak lagi menduplikasi logika Adaptive ---');
-for (const fn of ['pollFocusedApp', 'activatePresetRuntime', 'replayPresetLayers', 'buildPresetLines',
+for (const fn of ['pollFocusedApp', 'activatePresetRuntime', 'replayPresetLayers', 'buildPresetLayerLines',
   'packCurrentAsPresetLayers', 'waitForDump', 'fetchAllLayersForPacking', 'pickBindableApp',
   'getBindableApps', 'renderPresetList', 'openPresetEditor', 'exitPresetEditor', 'updateActivePresetLabel']) {
   const stillThere = new RegExp(`^(async )?function ${fn}\\b`, 'm').test(newMain);

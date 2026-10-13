@@ -279,6 +279,10 @@ export const id = {
 'adaptive.presetActiveLog': '[ADAPT] Preset aktif: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
 'adaptive.presetNotif': 'Preset: {name}',
+'adaptive.presetUploading': 'Mengunggah "{name}" ke device...',
+'adaptive.presetActivateLog': '[ADAPT] Aktivasi preset: "{name}" ({exe}){cache} slot {cachedSlot}',
+'adaptive.presetUploadError': '[ADAPT] Upload preset "{name}" gagal: {err}',
+'adaptive.presetUploadErrorNotif': 'Gagal mengaktifkan preset: {name}',
 'parser.layerNotif': '{from} · {to}',
 
 'grid.cellLabel': 'Baris {r} kolom {c}: ',

@@ -74,21 +74,33 @@ let lineBuffer = '';
 // Penanda terakhir ada byte yang masuk dari device. Dipakai afterConnectHandshake
 // untuk membedakan "write gagal" dari "write sukses tapi device diam".
 let seenResponseAt = 0;
-// Watchdog dump:-armed saat isi dump terlihat, dibatalkan saat DUMP_END/NAMES_END
+// Watchdog dump: armed saat isi dump terlihat, dibatalkan saat DUMP_END/NAMES_END
 // datang. Kalau tembak, berarti penutup dump hilang di tengah jalan - dan itu
 // kondisi paling damaging karena diam-diam berlaku ke semua baris berikutnya.
 let dumpWatchdogTimer = null;
+// Berapa kali watchdog sudah tembak berturut-turut. Dipakai untuk backoff
+// eksponensial supaya tidak spam error yang sama berulang.
+let dumpWatchdogStuckCount = 0;
 
 function cancelDumpWatchdog() {
   if (dumpWatchdogTimer) clearTimeout(dumpWatchdogTimer);
   dumpWatchdogTimer = null;
+  // Reset backoff: jika DUMP/NAMES_END datang, artinya dump sehat.
+  // Counter hanya untuk kasus yang benar-benar menggantung.
+  dumpWatchdogStuckCount = 0;
 }
 
 function armDumpWatchdog() {
   // Jangan arm ulang berkali-kali: setiap baris isi dump akan memicu
   // handleIncomingChunk, dan timer yang di-reset terus tidak akan pernah
-  //cemic tembak walau penutupnya benar-benar hilang.
+  // tembak walau penutupnya benar-benar hilang.
   if (dumpWatchdogTimer) return;
+  // Backoff eksponensial: jika watchdog sudah beberapa kali tembak berturut-turut,
+  // beri jeda progresif sebelum boleh tembak lagi. Ini mencegah spam error
+  // yang sama berulang ketika device benar-benar lambat (mis. preset full 8 layer).
+  // 0 tembak -> 2000ms, 1 -> 4000ms, 2 -> 8000ms, dst (max 30000ms).
+  const backoffFactor = Math.min(Math.pow(2, dumpWatchdogStuckCount), 15);
+  const timeout = DUMP_STUCK_MS * backoffFactor;
   dumpWatchdogTimer = setTimeout(() => {
     dumpWatchdogTimer = null;
     // Pengecualian HARUS diulang di sini, bukan hanya saat arming.
@@ -100,22 +112,43 @@ function armDumpWatchdog() {
     // sebagai hilang - persis gejala yang muncul saat user alt+tab cepat
     // antar aplikasi.
     //
-    // Perpanjang timer selama batch masih jalan - dump yang dump yang
-    // ditunda hanya butuh lebih waktu, bukan perlu diperbaiki.
+    // Perpanjang timer selama batch masih jalan - dump yang ditunda hanya
+    // butuh lebih waktu, bukan perlu diperbaiki.
     if (batchUploadInFlight()) {
       armDumpWatchdog();
       return;
     }
-    // Kondisi ini SANGAT sulit ditandai dari log biasa: app connect, GATT
-    // sehat, notify jalan - tapi tidak satu baris pun ter-render karena
-    // parser menganggap semua respons sebagai isi dump.
+    // Watchdog tembak: dump memang menggantung. Laporkan kegagalan, tapi
+    // jangan langsung resetParserState() dan buang lineBuffer — simpan sisa
+    // buffer dan re-arm watchdog dengan backoff. Jika DUMP_END tiba sebentar
+    // setelah tembakan, cancelDumpWatchdog() akan membersihkan timer yang
+    // ter-arm kedua. Ini mencegah "sistem partisi" (sistem yang benar-benar
+    // hilang tetap terdeteksi, tapi DUMP yang hanya sedikit tertunda tidak
+    // disamakan dengan yang benar-benar hilang).
+    dumpWatchdogStuckCount++;
     log(t('ble.dumpStuck', { kind: namesInProgress ? 'DUMPNAMES' : 'DUMP' }), 'err');
-    // Buka diri supaya baris berikutnya bisa diparse lagi. Tanpa ini parser
-    // akan menolak HWINFO/BATT/EVT selamanya sampai app ditutup.
+    // Simpan sisa buffer yang belum selesai (baris parsial setelah newline
+    // terakhir) sebelum reset. Data yang belum lengkap mungkin jadi bagian
+    // akhir dari DUMP yang sedang berjalan — jika kita hanya melemparnya,
+    // DUMP_END yang tersisa tidak akan pernah dikompletnkan.
+    const tail = lineBuffer.lastIndexOf('\n') >= 0
+      ? lineBuffer.slice(lineBuffer.lastIndexOf('\n') + 1)
+      : lineBuffer;
     resetParserState();
-    lineBuffer = '';
+    lineBuffer = tail;
     hooks.onDumpStuck();
-  }, DUMP_STUCK_MS);
+    // Re-arm watchdog dengan backoff: jika DUMP_END datang sebentar lagi,
+    // cancelDumpWatchdog() akan menghancurkan ini. Tapi jika tidak ada,
+    // kita tetap akan tembak lagi — dengan jeda yang progresif.
+    if (dumpInProgress || namesInProgress) {
+      armDumpWatchdog();
+    } else {
+      // State sudah bersih (resetParserState menurunkan flag).
+      // Reset counter supaya attempt berikutnya bisa langsung tembak
+      // tanpa menunggu backoff panjang.
+      dumpWatchdogStuckCount = 0;
+    }
+  }, timeout);
 }
 export let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = false;
 // Device yang baru connect boleh mengirim event sisa (EVT:APP:) sebelum user

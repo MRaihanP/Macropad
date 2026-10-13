@@ -79,17 +79,40 @@ jawaban.
 
 `[BLE] DUMP never closed (terminator lost)` masih muncul kadang.
 
-Penyebabnya belum diketahui. Ada dua kemungkinan yang sampai sekarang belum
+### Kasus yang sudah dipecahkan (sebagian besar)
+
+Setelah switch preset app lewat BLE secara konsisten muncul error ini.
+Penyebabnya bukan firmware atau jalur BLE, tapi **window settling yang habis
+sebelum DUMP response sampai**:
+
+- `activatePresetRuntime()` mengirim ratusan perintah SET dalam satu batch,
+  lalu segera memanggil `markBatchSettling(4000)` dan `loadActiveLayerDump()`
+  (kirim `DUMP:<layer>`).
+- Device tidak merespons DUMP sampai semua perintah SET diproses selesai —
+  pada preset besar berarti > 4000ms.
+- Setelah 4000ms, `batchUploadInFlight()` kembali false, watchdog dump sudah
+  tidak lagi tahan. Jika DUMP response datang setelah itu, watchdog bisa tembak
+  di tengahnya — melaporkan frame sehat sebagai "hilang".
+
+**Perbaikan**: `markBatchSettling(6000)` dipanggil lagi setelah
+`loadActiveLayerDump()` mengirim DUMP, memanjang window hingga response
+benar-benar sampai.
+
+Sebagai lapisan keamanan tambahan:
+- Watchdog yang tembak tidak langsung membuang lineBuffer — sisa parsial
+  disimpan dan re-parse, jadi DUMP_END yang tertuang sebentar setelah
+  tembakan masih bisa diselesaikan.
+- Backoff eksponensial pada watchdog: jika sudah tembak berulang, jeda
+  sebelum tembakan berikutnya bertambah secara progresif.
+- `loadLayer()` tidak lagi mengosongkan grid sebelum DUMP_BEGIN diterima —
+  mapping lama tetap terlihat sampai device benar-benar mulai merespons.
+
+### Sisa kasus yang belum teridentified
+
+Penyebab lain masih mungkin ada. Dua kemungkinan yang sampai sekarang belum
 bisa dibedakan:
 
 1. Firmware tidak pernah mengirim `DUMP_END`.
 2. Firmware mengirimnya, tapi hilang di antara device dan app.
 
-Keduanya menghasilkan gejala yang identik. Upaya menambahkan log untuk
-membedakannya justru menambah baris ke stream USB dan mengganggu — sudah
-dikembalikan di checkpoint ini.
-
-Cara membedakannya **tanpa mengubah kode**: reproduce masalahnya sambil
-Serial Monitor terbuka, lalu cari `[BLE] NUS RX` tepat sebelum error muncul.
-Kalau ada, perintahnya sampai dan masalahnya di jalur jawaban (2). Kalau
-tidak ada, perintahnya tidak sampai (1).
+Keduanya menghasilkan gejala yang identis.

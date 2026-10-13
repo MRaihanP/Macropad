@@ -12,7 +12,7 @@
 import {
   ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
   currentLayer, layerCount, maxLayers, layerNames, mapping, encConfig,
-  setCurrentLayer, reorderLayer, emptyLayer,
+  setCurrentLayer, reorderLayer,
 } from './device-state.js';
 import { el, escapeHtml } from './dom.js';
 import { sendLine } from './transport.js';
@@ -218,6 +218,55 @@ async function moveLayerTo(srcIndex, targetIndex) {
   await sendLine('INFO');
 }
 
+// ==================== LOADING SCREEN UNTUK PRESET UPLOAD ====================
+// Dipanggil adaptive.js via hook saat sedang upload preset per-layer.
+// Wrapper sederhana di sekitar #appOverlay supaya bisa menampilkan progress
+// dan mencegah klik sampai semua layer selesai di-upload.
+export function showPresetUploadProgress(presetName, done, total) {
+  let overlay = el('presetUploadOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'presetUploadOverlay';
+    overlay.innerHTML = `
+      <div class="preset-upload-backdrop">
+        <div class="preset-upload-panel">
+          <h3></h3>
+          <div class="preset-upload-progress-bar">
+            <div class="preset-upload-progress-fill"></div>
+          </div>
+          <div class="preset-upload-text"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    // Style inline agar tidak butuh CSS eksternal
+    const style = document.createElement('style');
+    style.textContent = `
+      #presetUploadOverlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+      #presetUploadOverlay .preset-upload-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.7); }
+      #presetUploadOverlay .preset-upload-panel { position: relative; background: #1a1a2e; color: #fff; padding: 24px; border-radius: 12px; width: 320px; text-align: center; }
+      #presetUploadOverlay .preset-upload-progress-bar { width: 100%; height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin: 16px 0; }
+      #presetUploadOverlay .preset-upload-progress-fill { height: 100%; background: #0f3460; border-radius: 4px; width: 0%; transition: width 0.2s; }
+      #presetUploadOverlay h3 { margin: 0 0 8px 0; font-size: 16px; }
+      #presetUploadOverlay .preset-upload-text { font-size: 13px; color: #aaa; }
+    `;
+    document.head.appendChild(style);
+  }
+  overlay.style.display = 'flex';
+  const title = overlay.querySelector('h3');
+  const fill = overlay.querySelector('.preset-upload-progress-fill');
+  const text = overlay.querySelector('.preset-upload-text');
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  title.textContent = t('adaptive.presetUploading', { name: escapeHtml(presetName || t('adaptive.appPreset')) });
+  fill.style.width = pct + '%';
+  text.textContent = `${done}/${total} layer${done === total ? ' ✓' : ''}`;
+}
+
+export function hidePresetUploadProgress() {
+  const overlay = el('presetUploadOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
 // ==================== GRID & DAFTAR KNOB ====================
 export function renderGrid() {
   const grid = el('grid');
@@ -306,8 +355,14 @@ export function openEditor(kind, params) {
 // jalur baca tidak perlu mengirim LAYER: sama sekali - mengirimnya hanya akan
 // memindahkan layer yang sedang dipakai user di device.
 // Ganti layer sungguhan ditangani switchLayer().
+//
+// PENTING: jangan kosongkan mapping sebelum DUMP mulai. Jika device lambat
+// merespons (terutama di BLE dengan antrean panjang), grid akan kosong sampai
+// DUMP_END — dan kalau watchdog tembak di tengah, grid tetap kosong. Lebih
+// baik biarkan mapping lama terlihat sampai DUMP_BEGIN diterima di
+// protocol-parser.js, baru clear di sana. Jadi renderGrid() akan menampilkan
+// isi layer lama sampai data baru benar-benar mengalir.
 export async function loadLayer(l) {
-  mapping[l] = emptyLayer();
   await sendLine('DUMP:' + l);
 }
 

@@ -49,6 +49,7 @@ import {
   initHomePage, initEditorPanel,
   renderTabs, renderGrid, renderEncoderList, loadLayer,
   resetEditorState, selected, stopRecordingContinuous, cancelEditor,
+  showPresetUploadProgress, hidePresetUploadProgress,
 } from "./home-page.js";
 import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
 // i18n. await di level modul supaya bahasa selesai ditentukan SEBELUM init*
@@ -110,9 +111,12 @@ initAdaptive({
   isDirty: () => dirty,
   setDirty: (v) => { dirty = !!v; },
   // Dipakai setelah preset aktif: muat ulang isi layer supaya grid ikut
-  // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya -
+  // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya —
   // preset sudah aktif di device, tapi layarnya belum.
   loadLayer,
+  // Loading screen saat upload preset per-layer (BLE transport).
+  showPresetUploadProgress,
+  hidePresetUploadProgress,
 });
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);

@@ -19,6 +19,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
   mapping, encConfig, layerNames, layerCount, currentLayer,
+  setCurrentLayer, reorderLayer,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';
@@ -107,6 +108,9 @@ let hooks = {
   // modul ini tidak boleh memanggil fungsi halaman secara langsung, supaya arah
   // ketergantungan tetap satu arah dan tidak muncul siklus import.
   loadLayer: async () => { },
+  // Loading screen untuk upload preset per-layer. Dipasang main.js.
+  showPresetUploadProgress: () => { },
+  hidePresetUploadProgress: () => { },
 };
 export function initAdaptive(h) { hooks = Object.assign({}, hooks, h); }
 
@@ -494,23 +498,38 @@ async function replayPresetLayers(preset) {
 
 // Versi batch dari hal yang sama: banyak baris dalam sedikit write, karena
 // Set<encoder> untuk 3x3 key x beberapa layer bisa ratusan baris.
+//
+// DIPERBARUI: preset di-upload PER LAYER, bukan semua sekaligus. Setiap layer
+// adalah batch kecil (~3000 byte untuk 3x3). Ini mendekati ukuran MTU BLE
+// dan mengurangi kemungkinan watchdog tembak / parser error yang mengaruhi.
 const presetSig = p => JSON.stringify([p.layers, NUM_ENCODERS]);
 
+// buildPresetLines: membangun seluruh baris preset ke dalam satu array.
+// PERINGATAN DEPRECATED: fungsi ini menghasilkan batch yang sangat besar
+// untuk preset dengan banyak layer, meningkatkan risiko error BLE.
+// Gunakan buildPresetLayerLines() untuk setiap layer.
+// Tetap ada untuk kompatibilitas test audit "no-lost-functions".
 function buildPresetLines(preset, slot) {
-  const L = [`SLOT:${slot}:NEW`];
+  const lines = [];
   for (let li = 0; li < preset.layers.length; li++) {
-    if (li > 0) L.push('ADDLAYER');
-    const layer = preset.layers[li];
-    L.push(`RENAMELAYER:${li}:${layer.name}`);
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const k = layer.keys?.[r]?.[c];
-      if (k && k.type !== 0) L.push(`SET:${li}:${r}:${c}:${TYPE_NAMES[k.type]}:${k.value}`);
-    }
-    for (let i = 0; i < NUM_ENCODERS; i++) {
-      for (const [key, name] of [['encCw', 'CW'], ['encCcw', 'CCW'], ['encBtn', 'BTN']]) {
-        const a = layer[key]?.[i];
-        if (a && a.type) L.push(`SETENC:${i}:${name}:${TYPE_NAMES[a.type]}:${a.value}`);
-      }
+    lines.push(...buildPresetLayerLines(preset, li, slot));
+  }
+  return lines;
+}
+
+function buildPresetLayerLines(preset, li, slot) {
+  // Layer pertama memakai SLOT:<n>:NEW, layer berikutnya memakai ADDLAYER.
+  const L = li === 0 ? [`SLOT:${slot}:NEW`] : [`ADDLAYER`];
+  const layer = preset.layers[li];
+  L.push(`RENAMELAYER:${li}:${layer.name}`);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const k = layer.keys?.[r]?.[c];
+    if (k && k.type !== 0) L.push(`SET:${li}:${r}:${c}:${TYPE_NAMES[k.type]}:${k.value}`);
+  }
+  for (let i = 0; i < NUM_ENCODERS; i++) {
+    for (const [key, name] of [['encCw', 'CW'], ['encCcw', 'CCW'], ['encBtn', 'BTN']]) {
+      const a = layer[key]?.[i];
+      if (a && a.type) L.push(`SETENC:${i}:${name}:${TYPE_NAMES[a.type]}:${a.value}`);
     }
   }
   return L;
@@ -520,40 +539,71 @@ async function activatePresetRuntime(preset, exe) {
   const sig = presetSig(preset);
   let slot = slotTable.findIndex(s => s && s.id === preset.id);
   const cached = slot >= 0 && slotTable[slot].sig === sig;
+  log(t('adaptive.presetActivateLog', {
+    name: preset.name, exe, cache: cached ? t('adaptive.cache') : '', cachedSlot: slot,
+  }), 'ok');
   if (slot < 0) {
     // Slot kosong dulu; kalau semuanya penuh, buang yang paling lama dipakai.
     slot = 0; let best = Infinity;
     slotTable.forEach((s, i) => { const u = s ? s.used : -1; if (u < best) { best = u; slot = i; } });
   }
   quietOkUntil = Date.now() + 500;
-  const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
-  // SLOT:n:USE TIDAK mengirim INFO ke device, dan INFO pun tidak cukup:
-  // INFO memicu muat ulang layer dari protocol-parser, tapi pemanggilan itu
-  // ditunda kalau ada frame lain yang sedang berjalan (DUMP/DUMPNAMES).
-  // Akibatnya grid di app tetap menampilkan isi preset LAMA setelah preset
-  // berganti - persis gejala "matrix tombol tidak berubah".
-  //
-  // Jadi minta dump layer secara eksplisit, terpisah dari batch upload, dan
-  // baru setelah jeda singkat supaya device selesai消化 antrean preset dulu.
-  lines.push('INFO', 'DUMPENC');
-  // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di tengah
-  // (kabel dicabut), device punya keymap setengah jadi sementara tabel app
-  // mengira slot itu utuh - berikutnya SLOT:<n>:USE akan mengaktifkan konten rusak.
+  // Simpan state lama untuk restore bila gagal.
+  const savedSlot = slotTable[slot];
+  // Anggap slot tidak valid sampai semua layer berhasil di-upload.
+  // Kalau gagal di tengah (kabel dicabut), device punya keymap setengah jadi
+  // sementara tabel app mengira slot itu utuh - berikutnaya SLOT:<n>:USE akan
+  // mengaktifkan konten rusak.
   slotTable[slot] = null;
-  await sendBatch(lines);
-  // Jawaban device masih keluar setelah perintah terakhir terkirim. Jeda ini
-  // yang membuat watchdog dump tahu bahwa "belum ada DUMP_END" itu wajar,
-  // bukan tanda frame hilang.
-  markBatchSettling(4000);
-  slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
-  currentActivePresetId = preset.id;
-  updateActivePresetLabel();
-  log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
-  hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
-  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
-  // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
-  // sebelumnya sampai user menekan Refresh secara manual.
-  await loadActiveLayerDump();
+  try {
+    if (cached) {
+      // Preset sudah pernah di-upload ke slot ini dan signature-nya masih sama:
+      // cukup kirim SLOT:<n>:USE (satu baris).
+      await sendBatch([`SLOT:${slot}:USE`, 'LAYER:0', 'INFO', 'DUMPENC']);
+      markBatchSettling(4000);
+    } else {
+      // Upload per layer. Setiap layer adalah batch kecil (~3000 byte), jauh
+      // di bawah MTU BLE dan cukup kecil untuk device memprosesnya dalam
+      // hitungan ratusan milidetik — mengurangi kemungkinan watchdog temak
+      // dan parser error yang menganggu.
+      hooks.showPresetUploadProgress?.(preset.name, 0, preset.layers.length);
+      for (let li = 0; li < preset.layers.length; li++) {
+        const layerLines = buildPresetLayerLines(preset, li, slot);
+        await sendBatch(layerLines);
+        // Beri jeda singkat agar firmware sempat memproses perintah ini sebelum
+        // layer berikutnya dikirim. Jeda ini jauh lebih pendek dari
+        // markBatchSettling(4000) — device hanya perlu menulis ke memory,
+        // bukan menunggu response DUMP.
+        await new Promise(r => setTimeout(r, 200));
+        hooks.showPresetUploadProgress?.(preset.name, li + 1, preset.layers.length);
+      }
+      hooks.hidePresetUploadProgress?.();
+      // Setelah semua layer ter-upload, baru kirim INFO + DUMPENC untuk
+      // trigger refresh layer di parser.
+      await sendBatch(['LAYER:0', 'INFO', 'DUMPENC']);
+      markBatchSettling(6000);
+    }
+    // Reset currentLayer di app state ke layer 0 karena kita mengirim LAYER:0
+    // ke device di atas. Tanpa ini, loadActiveLayerDump() akan memakai nilai
+    // currentLayer lama (dari app sebelumnya) yang mungkin berbeda.
+    setCurrentLayer(0);
+    slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
+    currentActivePresetId = preset.id;
+    updateActivePresetLabel();
+    log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
+    hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
+    // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
+    // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
+    // sebelumnya sampai user menekan Refresh secara manual.
+    await loadActiveLayerDump();
+    markBatchSettling(6000);
+  } catch (e) {
+    // Restore slot state: jika upload gagal, slot lama mungkin masih valid.
+    slotTable[slot] = savedSlot;
+    hooks.hidePresetUploadProgress?.();
+    log(t('adaptive.presetUploadError', { name: preset.name, err: String(e) }), 'err');
+    hooks.notify(t('adaptive.presetUploadErrorNotif', { name: preset.name }), 'error');
+  }
 }
 
 // Minta dump layer aktif dari device supaya grid ikut berubah saat preset
@@ -611,12 +661,26 @@ async function pollFocusedApp() {
         await activatePresetRuntime(matched, exe);
       } else {
         quietOkUntil = Date.now() + 500;
-        await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
+        // Back to Default — ini persis seperti slot cache: device sudah
+        // menyimpan default config permanen di flash, jadi kita hanya
+        // butuh token CONTEXT:DEFAULT, bukan re-upload seluruh keymap.
+        // LAYER:0 diperlukan karena device mungkin masih di layer lama
+        // (dari preset app sebelumnya) yang tidak valid di default config.
+        await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO', 'DUMPENC']);
         markBatchSettling(4000);
+        // Sync app state: currentLayer harus 0 untuk konsisten dengan
+        // LAYER:0 di atas, agar hooks.loadLayer dipanggil di INFO handler
+        // meminta DUMP layer yang benar.
+        setCurrentLayer(0);
         currentActivePresetId = null;
         updateActivePresetLabel();
         log(t('adaptive.backDefaultLog'), null);
         hooks.notify(t('adaptive.defaultNotif'), 'preset');
+        // Tidak perlu panggil loadActiveLayerDump() secara manual: device
+        // akan merespon INFO (yang baru saja dikirim) dan INFO handler di
+        // protocol-parser.js sudah memanggil hooks.loadLayer(currentLayer).
+        // Ini mengurang satu roundtrip BLE dan menghindari race condition
+        // antara DUMP:0 manual dan INFO response.
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }

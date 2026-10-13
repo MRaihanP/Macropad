@@ -5,17 +5,95 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+|- Presed `activatePresetRuntime` (switch preset via polling) kini meng-upload
+| preset **per-layer** alih-alih satu batch besar. Setiap layer (~3000 byte
+| untuk 3x3 key) adalah batch terpisah yang jauh di bawah MTU BLE dan proses
+| device sebelum 4s watchdog tembak. Ini mengurangi drastis error "[BLE] DUMP
+| never closed" / "DUMPNAMES never closed" yang terjadi setelah switch preset
+| app lewat BLE.
+|- `buildPresetLines()` (deprecated wrapper) dipecah menjadi
+| `buildPresetLayerLines(preset, layerIndex, slot)` yang menghasilkan baris
+| untuk SATU layer saja, dipanggil berulang di loop untuk setiap layer.
+|- Loading screen ditambahkan saat upload preset: `showPresetUploadProgress`
+| / `hidePresetUploadProgress` di home-page.js, dipasang sebagai hook
+| di adaptive.js. Menampilkan progress per-layer dan mencegah interaksi
+| sampai semua layer selesai di-upload.
+|- `slotTable[slot]` di-invalidate (null) sebelum upload preset dan hanya
+| di-set jika semua layer berhasil — mencegah slot cache berisi data setengah
+| jadi diaktifkan oleh `SLOT:<n>:USE` di giliran berikutnya.
+
+### Changed
+|- `activatePresetRuntime` tidak lagi menggabungkan semua perintah SET,
+| INFO, DUMPENC, dan loadActiveLayerDump menjadi satu panggilan `sendBatch`.
+| Sekarang: loop per-layer upload → `sendBatch(['LAYER:0', 'INFO', 'DUMPENC'])` →
+| `loadActiveLayerDump()`. Setiap tahap memiliki jeda settling sendiri.
+|- Jeda antar-layer di-upload loop diganti dari `markBatchSettling(4000)` ke
+|  `setTimeout(200)` — device hanya perlu menulis ke memory untuk SET, bukan
+|  menunggu response DUMP. Jeda 4 detik per layer berarti upload 8 layer = 32
+|  detik, yang terlalu lama dan bisa melebihi cooldown.
+|- `activatePresetRuntime` kini mengirim `LAYER:0` sebelum `INFO`/`DUMPENC`
+|  untuk memastikan device berada di layer yang valid. Tanpa ini, device
+|  bisa tetap di layer lama (dari preset app sebelumnya) yang mungkin tidak
+|  ada di slot baru, menyebabkan DUMP mengembalikan data layer yang salah.
+|- `setCurrentLayer(0)` dipanggil di app state setelah upload selesai,
+|  agar konsisten dengan `LAYER:0` yang dikirim ke device.
+|  try/catch di `activatePresetRuntime`: jika upload gagal (mis. device putus),
+|  slot table di-restore ke state sebelumnya dan error dilog + dinotify. Sebelumnya,
+|  error tidak tertangkap — `currentActivePresetId` tidak pernah di-set dan preset
+|  "tetap di default" tanpa penjelasan apa pun.
+|
+### Fixed (Transport facade crash)
+|- `backend.poll is not a function` error konsol di `transport.js:57` ketika
+|  memakai USB (serial backend). Serial backend tidak mempunyai `poll()` —
+|  hanya `pollPorts()`. Facade kini guard dengan `backend.poll ?` sebelum panggil,
+|  dan serial-transport.js export `poll = pollPorts` sebagai alias.
+|
+### Fixed (Back to Default)
+|- Switch ke app tanpa preset (Back to Default) kini mengirim `LAYER:0` dan
+|  `setCurrentLayer(0)` untuk memastikan device dan app state konsisten.
+|  Sebelumnya, device bisa tetap di layer lama (dari preset app sebelumnya),
+|  menyebabkan DUMP mengembalikan data layer yang salah dan grid tidak berubah.
+|- Branch "Back to Default" tidak lagi memanggil `loadActiveLayerDump()`
+|  secara manual: `INFO` response dari device sudah memicu `hooks.loadLayer`
+|  di protocol-parser.js. Ini mengurang satu roundtrip BLE dan menghindari
+|  race condition antara DUMP:0 manual dan INFO response.
+
 ## [0.6.0] - 2026-10-12
 
 Checkpoint. Transport BLE sudah bisa dipilih dari app; switch USB<->BLE via
 tombol BOOT sudah ada di firmware PROTOTYPE. Git tag: `app-v0.6.0`.
 
 ### Known issues (belum selesai)
-- `[BLE] DUMP never closed (terminator lost)` masih muncul kadang. Penyebabnya
+|- `[BLE] DUMP never closed (terminator lost)` masih muncul kadang. Penyebabnya
   belum teridentifikasi - dua kemungkinan (firmware tidak mengirim DUMP_END,
   atau hilang di jalur BLE) masih belum dibedakan karena tidak ada data.
   Cara memeriksa tanpa mengubah apa pun: `[BLE] NUS RX` di Serial Monitor
   (115200) menunjukkan apakah perintah `DUMP:0` benar-benar sampai ke firmware.
+  NOTE: sebagian besar kasus ini ternyata disebabkan oleh window settling yang
+  habis sebelum DUMP response sampai - lihat perbaikan di bawah.
+
+### Fixed
+|- Watchdog dump mengeluarkan "DUMP never closed" secara palsu saat switch preset
+  app lewat BLE. Pada preset besar, device masih memproses antrean SET (>4000ms)
+  saat window settling habis, jadi watchdog temak di tengah DUMP response yang
+  tertahan di antrean device. `markBatchSettling` kini dipanggil lagi setelah
+  `loadActiveLayerDump` mengirim DUMP, memanjang window hingga response benar-benar
+  sampai.
+|- Watchdog dump yang tembak kini tidak langsung membuang lineBuffer — sisa
+  buffer parsial disimpan dan re-parse. Jika DUMP_END datang sebentar setelah
+  tembakan, `cancelDumpWatchdog` akan menghancurkan timer yang re-arm, mencegah
+  "false positive" yang sebenarnya hanya sedikit tertunak.
+|- Backoff eksponensial pada watchdog: jika watchdog sudah tembak beberapa kali
+  berturut-turut (mis. device benar-benar lambat), jeda sebelum tembak berikutnya
+  bertambah secara progresif (2000ms -> 4000ms -> 8000ms...), mencegah spam error.
+|- `loadLayer()` tidak lagi mengosongkan mapping grid sebelum DUMP_BEGIN diterima.
+  Sebelumnya, jika device lambat merespons lewat BLE, grid akan kosong sampai
+  DUMP_END — dan kalau watchdog tembak di tengah, grid tetap kosong sampai user
+  menekan tombol. Sekarang, mapping lama tetap terlihat sampai DUMP_BEGIN benar-benar
+  tiba di parser.
 
 ### Added
 - **Facade transport (`src/transport.js`).** Semua modul yang menghubungi

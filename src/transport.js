@@ -54,7 +54,7 @@ export function sendBatch(lines) { return backend.sendBatch(lines); }
 export function connect(arg) { return backend.connect(arg); }
 export function disconnect(manual) { return backend.disconnect(manual); }
 export function autoDetect() { return backend.autoDetect(); }
-export function poll() { return backend.poll(); }
+export function poll() { return backend.poll ? backend.poll() : Promise.resolve(); }
 export function enableAutoReconnect() { return backend.enableAutoReconnect(); }
 export function updateConnectButton(state) { return backend.updateConnectButton(state); }
 export function handleDeviceLost() { return backend.handleDeviceLost(); }
