@@ -4,25 +4,13 @@ Dokumen ini supaya tidak perlu menghafal komit berhex.
 
 ## Nama Versi
 
-Tag yang masih ada dan valid:
+Ada tiga tag yang perlu diingat:
 
-| Tag | Posisi | Kapan dipakai |
-|---|---|---|
-| `fw-v8` | `d141de4` | **Posisi sekarang.** Perbaikan ring buffer NUS 4 KB, `BLE:RING`, flow control di app. Sudah terverifikasi positif. |
-| `app-v0.6.0` | `0d83e55` | App versi 0.6.0 (sebelum auto-connect supervisor). |
-| `fw-v7` | `0d83e55` | Firmware versi 7. |
-| `checkpoint-app0.6.0-fw7` | `0d83e55` | Titik kembali sebelum auto-connect. |
-
-Tag yang **sudah dihapus** (menunjuk ke posisi yang sudah di-revert, jangan
-dipakai): `app-v0.7.0`, `fw-v9`, `checkpoint-app0.7.0-fw9`.
-
-Untuk kembali ke versi **tanpa BLE sama sekali** (jalur USB murni):
-
-| Tag | Posisi |
+| Tag | Arti |
 |---|---|
-| `master` | `3793820` — `main.js`/`index.html` sudah dikembalikan ke sebelum `fe311f5` |
-
-Cek posisi sekarang kapan saja: `git describe --tags --abbrev=0`.
+| `app-v0.6.0` | Companion app versi 0.6.0 |
+| `fw-v7` | Firmware versi 7 (untuk board PROTOTYPE / FINAL) |
+| `checkpoint-app0.6.0-fw7` | Titik kembali yang stabil, keduanya sekaligus |
 
 Cara cek versi yang sedang dipakai:
 
@@ -61,14 +49,6 @@ ketiganya tidak berbeda.
 
 ## Cara Kembali ke Checkpoint
 
-Posisi sekarang:
-
-```bash
-git checkout fw-v8
-```
-
-Sebelum auto-connect supervisor:
-
 ```bash
 git checkout checkpoint-app0.6.0-fw7
 ```
@@ -89,8 +69,7 @@ satu tempat:
 |---|---|
 | `[BLE] NUS RX` | Perintah dari app **sampai** ke firmware |
 | `[BLE] Connect` / `[BLE] Putus` | Status koneksi BLE |
-| `[BLE] ring PENUH` | Byte perintah dari app terpotong (lihat `BLE:RING`) |
-| `RING:used=..,dipped=..` | Status ring buffer - `dipped=0` berarti tidak ada yang terpotong |
+| `[DUMP] ...` | Masih ada di firmware ini (dihapus di checkpoint ini) |
 
 Kalau baris `[BLE] NUS RX` **tidak muncul** padahal app sudah mengirim
 perintah, masalahnya di jalur app → BLE → firmware, bukan di pengiriman
