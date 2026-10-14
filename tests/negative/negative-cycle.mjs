@@ -9,10 +9,17 @@ const CHECK = suite('import-cycle-check.mjs');
 const target = `${REPO}/src/adaptive.js`;
 const orig = fs.readFileSync(target, 'utf8');
 
-const broken = orig.replace(
-  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';`,
-  `import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';\nimport { handleLine } from './protocol-parser.js';`
-);
+// Sisipkan import siklus di baris import YANG ADA, bukan mencocokkan
+// isi baris itu persis. Matching teks rapuh: daftar import di adaptive.js
+// berubah berkali-kali (transportId, CAP_LAYERS, setter device-state),
+// dan setiap perubahan seperti itu membuat uji ini gagal tanpa_reason -
+// padahal tidak ada yang rusak. Yang diuji adalah kemampuan CHECKER
+// menangkap siklus, bukan ejaan baris import.
+const importRe = /^import \{[^}]*\} from '\.\/transport\.js';$/m;
+const m = orig.match(importRe);
+if (!m) { console.log('GAGAL: baris import transport.js tidak ditemukan'); process.exit(2); }
+const broken = orig.replace(importRe,
+  `${m[0]}\nimport { handleLine } from './protocol-parser.js';`);
 if (broken === orig) { console.log('GAGAL: pola tidak ditemukan'); process.exit(2); }
 
 fs.writeFileSync(target, broken, 'utf8');
