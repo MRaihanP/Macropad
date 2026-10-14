@@ -20,6 +20,8 @@ import {
   ROWS, COLS, NUM_ENCODERS, TYPE_NAMES, CAP_LAYERS,
   mapping, encConfig, layerNames, layerCount, currentLayer,
   setCurrentLayer, reorderLayer, setMapping, setLayerNames, setEncConfig,
+  captureDefaultSnapshot, hasDefaultSnapshot, applyDefaultSnapshot,
+  clearDefaultSnapshot,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress, transportId } from './transport.js';
@@ -493,6 +495,12 @@ export function updateActivePresetLabel() {
   label.textContent = currentActivePresetId ? (activePresetName() || t('adaptive.appPreset')) : t('common.default');
 }
 
+// True kalau tidak ada App Preset aktif, artinya device sedang di
+// CONTEXT:DEFAULT. Dipakai main.js supaya snapshot Default hanya di-invalidasi
+// saat edit memang mengubah Default - kalau preset aktif, yang berubah isi
+// slot, bukan Default.
+export function isDefaultContext() { return !currentActivePresetId; }
+
 // ---- Runtime: unggah preset ke slot firmware ----
 // Replay layer demi layer - dipakai SAMA baik saat edit (openPresetEditor) maupun
 // runtime auto-switch, biar tidak ada dua jalur yang bisa berbeda.
@@ -584,6 +592,11 @@ async function activatePresetRuntime(preset, exe) {
   // mengirim INFO, dan INFO-lah yang memicu pemuatan layer di protocol-parser.
   // Kalau device sudah menjalankan preset ini dan app sudah tahu isinya,
   // tidak ada alasan menunggu apa pun.
+  // Snapshot Default diambil SEBELUM renderPresetLocally(), karena fungsi itu
+  // menimpa state dengan isi preset. Ambil setelahnya = cache berisi keymap
+  // preset, dan user melihat preset yang salah saat kembali ke Default.
+  // Hanya perlu saat app memang sedang di Default (currentActivePresetId null).
+  captureDefaultIfActive();
   renderPresetLocally(preset);
 }
 
@@ -623,8 +636,60 @@ function renderPresetLocally(preset) {
   hooks.renderGrid();
   hooks.renderEncoderList();
 }
+
+// Snapshot isi Default diambil tepat SEBELUM preset menimpa state, karena
+// setelah renderPresetLocally() state sudah berisi isi preset - bukan Default
+// lagi. Salah waktu ambil, cache akan berisi keymap preset dan user melihat
+// preset yang salah saat kembali ke Default.
+function captureDefaultIfActive() {
+  if (!currentActivePresetId) captureDefaultSnapshot();
+}
 const pick = (a) => (a && a.type ? { type: a.type, value: a.value || '' } : null);
 
+// Kembali ke Default Preset.
+//
+// Default hanya hidup di device, jadi app HARUS memindahkan device ke sana -
+// tapi TIDAK perlu membaca ulang isinya kalau sudah pernah diketahui.
+//
+// Jalur LAMA mengirim CONTEXT:DEFAULT + INFO + DUMPENC lalu menunggu INFO
+// memicu DUMP:0. Itu beberapa frame penuh keluar-masuk device, dan itu
+// sebabnya perpindahan ke Default terasa ~2x lebih lambat dari perpindahan
+// ke preset - padahal preset justru mengirim lebih banyak perintah.
+//
+// Jalur BARU: snapshot isi Default diambil setiap kali app berada di Default.
+// Saat kembali, snapshot langsung dipasang ke state dan grid digambar tanpa
+// satu pun read-back.
+//
+// Kalau snapshot tidak ada (pertama kali connect, atau Default baru diubah),
+// jatuh ke jalur baca penuh - lebih lambat sekali, bukan salah. Snapshot
+// diambil dari state SETELAH baca selesai, jadi perpindahan berikutnya
+// otomatis cepat.
+async function switchToDefault() {
+  quietOkUntil = Date.now() + 500;
+  markPresetSwitch();
+  await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0']);
+  currentActivePresetId = null;
+  setCurrentLayer(0);
+  updateActivePresetLabel();
+
+  if (hasDefaultSnapshot() && applyDefaultSnapshot()) {
+    hooks.renderTabs();
+    hooks.renderGrid();
+    hooks.renderEncoderList();
+  } else {
+    await sendBatch(['INFO', 'DUMPENC', 'DUMPNAMES']);
+    // Default bisa punya lebih dari satu layer; yang tampil selalu layer 0
+    // karena device baru saja dipaksa ke sana.
+    await hooks.loadLayer(0);
+    // Snapshot diambil setelah baca selesai, jadi isinya benar-benar isi
+    // Default dari device - bukan sisa state preset sebelumnya. Ini yang
+    // membuat perpindahan Default berikutnya instan.
+    captureDefaultSnapshot();
+  }
+
+  log(t('adaptive.backDefaultLog'), null);
+  hooks.notify(t('adaptive.defaultNotif'), 'preset');
+}
 let pollInFlight = false;
 async function pollFocusedApp() {
   if (pollInFlight) return;
@@ -668,13 +733,7 @@ async function pollFocusedApp() {
       if (matched) {
         await activatePresetRuntime(matched, exe);
       } else {
-        quietOkUntil = Date.now() + 500;
-        await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
-        markBatchSettling(4000);
-        currentActivePresetId = null;
-        updateActivePresetLabel();
-        log(t('adaptive.backDefaultLog'), null);
-        hooks.notify(t('adaptive.defaultNotif'), 'preset');
+        await switchToDefault();
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }
@@ -688,6 +747,10 @@ export function resetAdaptiveRuntimeState() {
   lastLayerByPreset = new Map();
   slotTable = Array(APP_SLOTS).fill(null);
   currentActivePresetId = null; focusedExeLast = null; escapeFrozenForExe = null; pendingFocusSince = 0;
+  // Snapshot Default TIDAK boleh bertahan lintas koneksi. Device bisa sudah
+  // punya Default yang berbeda - misalnya user mengganti flash lewat aplikasi
+  // lain, atau device di-reset. Snapshot dari sesi lalu tidak bisa dipercaya.
+  clearDefaultSnapshot();
   updateActivePresetLabel();
 }
 

@@ -71,6 +71,74 @@ export function ensureEncConfigSize() {
 // Parser juga butuh index knob yang sedang dibaca (DUMPENC), diekspor agar bisa di-reset.
 export function resetEncParse() { encParseIdx = 0; }
 
+// ==================== CACHE DEFAULT PRESET ====================
+//
+// Default Preset hanya ada di device (flash/NVS). Setiap kali user kembali
+// ke Default, tanpa cache ini app harus meminta ulang: INFO + DUMPNAMES +
+// DUMPENC + DUMP:0 - ribuan byte keluar-masuk. Itu yang membuat perpindahan
+// ke Default terasa dua kali lebih lambat dari perpindahan ke preset, padahal
+// preset justru butuh LEBIH banyak perintah.
+//
+// Solusinya: snapshot isi Default saat app sedang berada di Default, lalu
+// dipakai lagi saat kembali. Preset yang aktif tidak menyentuh cache ini -
+// keduanya terpisah.
+//
+// Cache di-invalidasi setiap kali Default berubah (SET:, SETENC:, RESET,
+// ADDLAYER, DELLAYER, RENAMELAYER, LOAD, SAVE). Kalau tidak, user melihat
+// isi LAMA padahal device sudah punya isi baru.
+//
+// Invalidation memakai "menyimpan ulang" bukan "hapus": snapshot diambil
+// ulang pada perpindahan Default berikutnya, satu langkah baca penuh -
+// lambat sekali, bukan salah.
+let defaultSnapshot = null;
+
+function cloneAction(a) { return (a && a.type) ? { type: a.type, value: a.value } : null; }
+function cloneGrid(g) {
+  return (g || []).map(row => (row || []).map(cloneAction));
+}
+function cloneEnc(e) {
+  return { CW: cloneAction(e?.CW), CCW: cloneAction(e?.CCW), BTN: cloneAction(e?.BTN) };
+}
+
+// Ambil snapshot state saat ini. Dipanggil hanya saat app SEDANG berada di
+// Default, jadi isinya memang isi Default.
+export function captureDefaultSnapshot() {
+  defaultSnapshot = {
+    mapping: mapping.map(cloneGrid),
+    names: layerNames.slice(),
+    enc: encConfig.map(cloneEnc),
+    layerCount,
+    currentLayer,
+    rows: ROWS, cols: COLS, numEncoders: NUM_ENCODERS,
+  };
+}
+
+export function hasDefaultSnapshot() { return defaultSnapshot !== null; }
+
+// Terapkan snapshot ke state aktif. Grid langsung berubah tanpa satu pun
+// byte yang dikirim ke device.
+export function applyDefaultSnapshot() {
+  const s = defaultSnapshot;
+  if (!s) return false;
+  // Ukuran matriks harus cocok - kalau device berubah (mis. reset firmware
+  // dengan hardware lain), snapshot tidak boleh dipakai karena indeksnya beda.
+  if (s.rows !== ROWS || s.cols !== COLS || s.numEncoders !== NUM_ENCODERS) return false;
+  setMapping(s.mapping);
+  setLayerNames(s.names);
+  setEncConfig(s.enc);
+  setLayerCount(s.layerCount);
+  setCurrentLayer(Math.min(s.currentLayer, s.layerCount - 1));
+  return true;
+}
+
+// Default berubah di device -> snapshot basi. Bukan dihapus, tapi ditandai
+// supaya snapshot baru diambil saat perpindahan Default berikutnya.
+export function invalidateDefaultSnapshot() { defaultSnapshot = null; }
+
+// Dipanggil saat disconnect/connect: device bisa punya Default yang berbeda
+// (user bisa saja mengganti flash lewat aplikasi lain).
+export function clearDefaultSnapshot() { defaultSnapshot = null; }
+
 // ---- Helper tampilan ----
 export function emptyLayer() {
   return Array.from({ length: ROWS }, () => Array(COLS).fill(null));

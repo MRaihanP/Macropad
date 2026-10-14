@@ -9,6 +9,7 @@ import {
   mapping, layerNames, encConfig,
   setCurrentLayer, setMapping, setLayerNames, resetEncParse,
   ensureEncConfigSize, emptyLayer, reorderLayer, TYPE_NAMES,
+  invalidateDefaultSnapshot,
 } from "./device-state.js";
 // Helper DOM dan seluruh logika halaman RGB dipisah ke modul sendiri. Halaman RGB
 // membaca state dari device (RGB_DUMP/RGB_KEY), bukan dari default app.
@@ -28,7 +29,7 @@ import {
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
-  resetAdaptiveRuntimeState, confirmLeavePresetEditor,
+  resetAdaptiveRuntimeState, confirmLeavePresetEditor, isDefaultContext,
 } from "./adaptive.js";
 // Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
 import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
@@ -280,18 +281,30 @@ if (btnRefreshBle) {
   };
 }
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
-el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
+// Snapshot Default Preset jadi basi setiap kali isi Default berubah di
+// device. Tanpa ini, perpindahan ke Default berikutnya memasang isi LAMA ke
+// grid padahal device sudah punya isi baru - user melihat keymap yang tidak
+// sama dengan yang benar-benar ada di device.
+//
+// Edit per-key/knob hanya mengubah Default kalau tidak ada App Preset aktif;
+// kalau preset aktif, device menunjuk ke slot dan yang berubah isi slot itu.
+function defaultMayHaveChanged() {
+  if (isDefaultContext()) invalidateDefaultSnapshot();
+}
+el('btnSave').onclick = () => { defaultMayHaveChanged(); dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
   if (await showConfirmModal(t('main.resetTitle'), t('main.resetMsg'), t('main.resetConfirm'))) {
     dirty = true;
+    defaultMayHaveChanged();
     sendLine('RESET').then(() => sendLine('INFO'));
   }
 };
-el('btnAddLayer').onclick = async () => { dirty = true; await sendLine('ADDLAYER'); setTimeout(() => sendLine('INFO'), 200); };
+el('btnAddLayer').onclick = async () => { dirty = true; defaultMayHaveChanged(); await sendLine('ADDLAYER'); setTimeout(() => sendLine('INFO'), 200); };
 el('btnDelLayer').onclick = async () => {
   const name = layerNames[currentLayer] || ('Layer ' + currentLayer);
   if (!(await showConfirmModal(t('main.deleteLayerTitle'), t('main.deleteLayerMsg', { name }), t('main.deleteConfirm')))) return;
   dirty = true;
+  defaultMayHaveChanged();
   await sendLine('DELLAYER'); setTimeout(() => sendLine('INFO'), 200);
 };
 el('btnRenameLayer').onclick = async () => {
@@ -299,6 +312,7 @@ el('btnRenameLayer').onclick = async () => {
   const name = await showPromptModal(t('main.renameTitle'), t('main.renameLabel'), current);
   if (name !== null && name.trim() !== '') {
     dirty = true;
+    defaultMayHaveChanged();
     sendLine(`RENAMELAYER:${currentLayer}:${name.trim()}`).then(() => setTimeout(() => sendLine('DUMPNAMES'), 200));
   }
 };
@@ -307,6 +321,7 @@ el('btnApply').onclick = async () => {
   if (!selected) return;
   stopRecordingContinuous();
   dirty = true;
+  defaultMayHaveChanged();
   const type = TYPE_NAMES[parseInt(el('editType').value)];
   const value = el('editValue').value;
   if (selected.kind === 'key') {
