@@ -428,6 +428,12 @@ export async function pollPorts() {
   } finally { pollBusy = false; }
 }
 
+// Poll untuk serial: memanggil pollPorts() yang memeriksa port baru/hilang
+// dan auto-reconnect. Dipanggil oleh facade transport.poll() setiap 2 detik.
+export async function poll() {
+  return pollPorts();
+}
+
 export function startPing() {
   stopPing();
   pingTimer = setInterval(() => { if (port) sendLine('PING'); }, 1500);
