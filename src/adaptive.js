@@ -94,6 +94,24 @@ const FOCUS_POLL_MS = 120;
 const SWITCH_COOLDOWN_MS = 4000;
 let lastSwitchAt = 0;
 
+// Nama file exe companion app sendiri, dibaca sekali dari Rust. Dipakai untuk
+// mengenali "user pindah ke companion app" - kasus yang perilakunya berbeda
+// dari "user pindah ke aplikasi lain": companion app berarti kembali ke
+// Default dan HOLD (tidak_posts switch lain selama beberapa detik), supaya
+// user bisa melihat grid tanpa device ikut berbolak-balik.
+let ownExeName = null;
+export async function loadOwnExeName() {
+  try { ownExeName = await invoke('get_own_exe_name'); }
+  catch (e) { ownExeName = null; }
+}
+
+// Companion app dianggap "baru saja ditinggalkan" selama beberapa detik
+// setelah terakhir kali fokus. Selama itu, perpindahan ke companion app
+// diabaikan - jadi user bisa alt+tab ke app, lihat grid, dan kembali tanpa
+// memicu Default lalu preset lagi.
+const OWN_APP_COOLDOWN_MS = 8000;
+let lastOwnAppSeenAt = 0;
+
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
 let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
 let slotTick = 0;
@@ -109,6 +127,20 @@ export function suppressDeviceEcho() { return Date.now() < quietOkUntil; }
 // dipisah dari adaptive.js supaya backend BLE bisa memakainya tanpa mengimpor
 // modul ini (adaptive -> transport <- BLE transport = siklus import).
 import { markBatchSettling } from './upload-state.js';
+
+// Jendela waktu di mana notifikasi "pergantian layer ke layer 0" yang
+// DISEBABKAN switch preset harus disembunyikan.
+//
+// Switch preset mengirim LAYER:0 untuk memaksa device ke layer 0, dan device
+// membalas "[LAYER] Pindah manual ke layer 0". Tanpa penapis ini, notifikasi
+// itu muncul tepat di atas notifikasi "preset aktif" dan keduanya saling
+// menutupi - user melihat dua notifikasi yang sebenarnya satu peristiwa.
+//
+// Hanya berlaku sebentar (1,5 detik) dan hanya untuk layer 0. Kalau user
+// memutar knob ke layer lain, notifikasinya tetap harus tampil.
+let layerNotifSuppressedUntil = 0;
+export function suppressLayerNotif() { return Date.now() < layerNotifSuppressedUntil; }
+function markPresetSwitch() { layerNotifSuppressedUntil = Date.now() + 1500; }
 
 // Dipanggil handleLine untuk notifikasi [LAYER] yang harus menyebut nama preset.
 export function activePresetName() {
@@ -586,6 +618,7 @@ async function activatePresetRuntime(preset, exe) {
     slotTable.forEach((s, i) => { const u = s ? s.used : -1; if (u < best) { best = u; slot = i; } });
   }
   quietOkUntil = Date.now() + 500;
+  markPresetSwitch();
   // Simpan state lama untuk restore bila gagal.
   const savedSlot = slotTable[slot];
   // Anggap slot tidak valid sampai semua layer berhasil di-upload.
@@ -670,6 +703,7 @@ async function pollFocusedApp() {
       contextSwitchPending = true;
       quietOkUntil = Date.now() + 500;
       await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO']);
+      markPresetSwitch();
       setCurrentLayer(0);
       updateActivePresetLabel();
       log(t('adaptive.backDefaultLog'), null);
@@ -680,18 +714,20 @@ async function pollFocusedApp() {
 
     let exe;
     try { exe = await invoke('get_foreground_exe'); } catch (e) { return; }
-    // exe null = window yang aktif adalah companion app sendiri (Rust
-    // menyaringnya lewat PID), atau tidak ada window foreground sama sekali.
-    //
-    // Ini BUKAN "user pindah ke aplikasi tanpa preset". Companion app tidak
-    // punya preset, jadi kalau null diperlakukan sebagai "tidak ada yang
-    // cocok", setiap alt+tab ke app untuk melihat grid akan memaksa preset
-    // balik ke Default - dan alt+tab balik ke aplikasi target mengaktifkannya
-    // lagi. Log user menunjukkan pola bolak-balik persis itu.
-    //
-    // Yang benar: tidak ada perubahan. Preset yang aktif TETAP aktif selama
-    // user berada di companion app.
+    // exe null = tidak ada window foreground (mis. layar terkunci). Bukan
+    // permintaan perpindahan, jadi jangan apa-apakan.
     if (!exe) return;
+    // Companion app punya perilaku KHUSUS: preset KEMBALI ke Default. Ini
+    // permintaan user - ketika user pindah ke companion app untuk melihat
+    // grid, device harus ikut kembali ke Default.
+    //
+    // Tanpa jeda, ini justru menjadi sumber osilasi: alt+tab ke companion app
+    // -> Default, alt+tab balik -> preset aktif lagi, bolak-balik. Jeda di
+    // sini memakai OWN_APP_COOLDOWN_MS yang lebih panjang, karena perpindahan
+    // ke companion app hampir selalu sementara - user hanya mau melihat grid
+    // sebentar lalu kembali ke aplikasinya.
+    const isOwnApp = !!ownExeName && exe === ownExeName;
+    const holdMs = isOwnApp ? OWN_APP_COOLDOWN_MS : SWITCH_COOLDOWN_MS;
 
     if (exe !== focusedExeLast) {
       focusedExeLast = exe;
@@ -718,8 +754,12 @@ async function pollFocusedApp() {
     //
     // Jeda ini bukan penalti: switch yang sah tetap terjadi, hanya tidak
     // menumpuk dengan switch berikutnya yang belum sempat selesai.
-    if (Date.now() - lastSwitchAt < SWITCH_COOLDOWN_MS) return;
+    if (Date.now() - lastSwitchAt < holdMs) return;
     lastSwitchAt = Date.now();
+    // Companion app baru saja dipakai. Catat waktunya supaya perpindahan
+    // BALIK dari companion app (user kembali ke aplikasinya) tidak langsung
+    // memicu upload preset - user biasanya cuma mau lihat grid sebentar.
+    if (isOwnApp) lastOwnAppSeenAt = Date.now();
 
     autoSwitchBusy = true;
     try {
@@ -727,6 +767,7 @@ async function pollFocusedApp() {
         await activatePresetRuntime(matched, exe);
       } else {
         quietOkUntil = Date.now() + 500;
+        markPresetSwitch();
         // Back to Default — ini persis seperti slot cache: device sudah
         // menyimpan default config permanen di flash, jadi kita hanya
         // butuh token CONTEXT:DEFAULT, bukan re-upload seluruh keymap.
@@ -794,6 +835,7 @@ export function resetAdaptiveRuntimeState() {
   switchPendingOnConnect = true;
   contextSwitchPending = false;
   lastSwitchAt = Date.now();
+  lastOwnAppSeenAt = 0;
   updateActivePresetLabel();
 }
 

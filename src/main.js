@@ -28,7 +28,7 @@ import {
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
-  resetAdaptiveRuntimeState, confirmLeavePresetEditor,
+  resetAdaptiveRuntimeState, confirmLeavePresetEditor, loadOwnExeName,
 } from "./adaptive.js";
 // Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
 import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
@@ -331,6 +331,10 @@ autoDetect();
 // tetap tampil tapi tidak pernah auto-switch.
 initAdaptivePage();
 loadPresets();
+// Nama exe companion app sendiri, dipakai adaptive.js untuk mengenali
+// "user sedang pindah ke companion app" (perilaku: preset kembali ke Default).
+// Harus dimuat sebelum polling pertama berjalan.
+loadOwnExeName();
 
 // ==================== PAGE SETTING ====================
 el('notifyBasicToggle').checked = settings.notifyBasic;

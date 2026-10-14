@@ -638,7 +638,11 @@ ok(!/from '\.\/home-page\.js'/.test(adaptiveSrc),
 // Cooldown: companion app sendiri yang sedang fokus memicu "Back to Default",
 // lalu target memicu switch balik - dua-duanya upload penuh.
 ok(/SWITCH_COOLDOWN_MS/.test(adaptiveSrc), 'ada cooldown antar perpindahan preset');
-ok(/Date\.now\(\) - lastSwitchAt < SWITCH_COOLDOWN_MS/.test(adaptiveSrc),
+// Companion app punya cooldown sendiri yang lebih panjang, jadi nilai yang
+// dicek adalah holdMs (hasil выбор antara keduanya), bukan konstanta langsung.
+ok(/const holdMs = isOwnApp \? OWN_APP_COOLDOWN_MS : SWITCH_COOLDOWN_MS;/.test(adaptiveSrc),
+  'cooldown companion app (jeda lebih panjang) dipilih terpisah dari cooldown app biasa');
+ok(/Date\.now\(\) - lastSwitchAt < holdMs/.test(adaptiveSrc),
   'cooldown dicek sebelum switch baru');
 ok(/lastSwitchAt = Date\.now\(\)/.test(adaptiveSrc),
   'lastSwitchAt diperbarui saat switch terjadi');

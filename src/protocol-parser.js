@@ -41,7 +41,7 @@ import {
 import { handleRgbLine } from './rgb-page.js';
 import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from './battery-ui.js';
 import {
-  suppressDeviceEcho, activePresetName, activePresetLayers,
+  suppressDeviceEcho, activePresetName, activePresetLayers, suppressLayerNotif,
   resolveDumpWaiters, handleEscapeGesture, noteDeviceLayerEvent,
 } from './adaptive.js';
 
@@ -198,6 +198,17 @@ function handleRealtimeLine(line) {
   // layer yang muncul saat preset berganti tidak pernah tampil sama sekali.
   if ((mm = line.match(/^\[LAYER\] Pindah (?:manual )?ke layer (\d+)/))) {
     const n = parseInt(mm[1]);
+    // Sembunyikan notifikasi perpindahan layer yang DISEBABKAN switch preset.
+    // Switch preset selalu mengirim "LAYER:0" untuk memaksa device ke layer 0,
+    // jadi device membalas "[LAYER] Pindah manual ke layer 0". Itu bukan user
+    // yang memilih layer - itu konsekuensi switch yang barusan diumumkan lewat
+    // notifikasi "preset aktif". Dua notifikasi itu muncul berturut-turut dan
+    // saling menutupi.
+    //
+    // Hanya LAYER 0 yang ditekan: user yang memutar knob ke layer lain tetap
+    // harus melihat notifikasinya. Dan hanya dalam jendela waktu switch, supaya
+    // pilihan layer milik user tidak ikut tersembunyi.
+    if (n === 0 && suppressLayerNotif()) return;
     // Saat preset aktif, nama layer diambil dari preset itu - device hanya tahu
     // layer sebagai nomor, dan nomor itu milik preset aktif, bukan preset default.
     const ap = activePresetName();
@@ -332,6 +343,25 @@ function handleFrameLine(line) {
     flushPendingNames();
     return;
   }
+  // Frame NAMES punya penanda sendiri, dan keduanya harus diperiksa SEBELUM
+  // jebakan dumpInProgress di bawah.
+  //
+  // Urutan lama menempatkan NAMES_BEGIN/NAMES_END setelah branch dump, jadi
+  // kalau NAMES_BEGIN datang saat dump sedang berjalan, baris itu tertelan
+  // sebagai "isi dump" dan setNamesInProgress(true) tidak pernah terjadi.
+  // Akibatnya NAMES_END berikutnya ikut tertelan, dan yang tersisa hanyalah
+  // watchdog yang eventually melaporkan "DUMPNAMES never closed".
+  //
+  // worsened lagi oleh requestNames(): DUMPNAMES yang tertunda dikirim tepat
+  // setelah DUMP_END, jadi device sering kali sudah mulai frame NAMES baru
+  // sementara dump sebelumnya belum sepenuhnya selesai di sisi app - dua
+  // penanda itu tumpang tindih.
+  //
+  // Penanda frame (BEGIN/END) SELALU menang atas isi frame, apa pun frame lain
+  // yang sedang berjalan. Isi baris DUMP/NAMES tidak pernah diawali
+  // "NAMES_BEGIN"/"NAMES_END", jadi tidak ada risiko salah baca.
+  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); namesErrorLogged = false; return; }
+  if (line === 'NAMES_END') { setNamesInProgress(false); namesErrorLogged = false; processDeferredLines(); hooks.renderTabs(); return; }
   if (dumpInProgress()) {
     const p = line.split(',');
     // Lihat aturan 1 di header modul ini. Validasi ada di applyDumpRow().
@@ -380,8 +410,8 @@ function handleFrameLine(line) {
   }
   // Baris RGB ditangani oleh modul halaman RGB (state-nya dibaca dari device).
   if (handleRgbLine(line, log)) return;
-  if (line === 'NAMES_BEGIN') { setNamesInProgress(true); namesErrorLogged = false; return; }
-  if (line === 'NAMES_END') { setNamesInProgress(false); namesErrorLogged = false; processDeferredLines(); hooks.renderTabs(); return; }
+  // NAMES_BEGIN / NAMES_END sudah ditangani di atas, SEBELUM jebakan
+  // dumpInProgress. Yang tersisa di sini hanya isi frame NAMES.
   if (namesInProgress()) {
     // Baris status yang BUKAN isi frame harus DITUNDA, bukan dibuang.
     //

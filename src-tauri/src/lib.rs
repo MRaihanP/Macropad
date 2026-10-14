@@ -273,22 +273,10 @@ fn launch_impl(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
 // ==================== DETEKSI WINDOW AKTIF ====================
 // async: dipoll sering oleh frontend; jangan jalan di main thread
 //
-// PENTING: window companion app sendiri DIABAIKAN (dikembalikan None).
-//
-// Companion app tidak punya preset, jadi kalau window-nya ikut dibaca
-// sebagai "window aplikasi lain", setiap kali user alt+tab ke app untuk
-// melihat grid, companion app dianggap "aplikasi lain" ->
-// preset balik ke Default. Alt+tab balik ke aplikasi target ->
-// preset aktif lagi. Dan seterusnya tanpa henti.
-//
-// Log user menunjukkan persis pola itu: "Brave" -> "Kembali ke Default" ->
-// "Brave" -> "Kembali ke Default" berulang. Tiap putaran membanjiri device
-// dengan perintah baru, jadi device tidak pernah selesai dan frame DUMP
-// yang sedang jalan tidak pernah tertutup - dan itu sumber pesan
-// "DUMP never closed".
-//
-// Dicek lewat PID, bukan nama file: nama bisa berubah (namaBinaries) dan
-// macropad-configurator.exe bisa dipakai exe lain. PID tidak pernah salah.
+// companion app SENGAJA ikut dikembalikan di sini. Frontend membutuhkannya:
+// ketika user pindah ke companion app, preset harus kembali ke Default. Kalau
+// companion app disembunyikan di sini, app tidak tahu window-nya sedang aktif
+// dan preset tidak pernah kembali ke Default - yang justru dikeluhkan user.
 #[tauri::command]
 async fn get_foreground_exe() -> Option<String> {
     unsafe {
@@ -297,8 +285,6 @@ async fn get_foreground_exe() -> Option<String> {
         let mut pid: u32 = 0;
         windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 { return None; }
-        // Window milik proses kita sendiri = companion app, bukan target.
-        if pid == std::process::id() { return None; }
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 512];
         let mut len: u32 = buf.len() as u32;
@@ -309,6 +295,20 @@ async fn get_foreground_exe() -> Option<String> {
         let path = String::from_utf16_lossy(&buf[..len as usize]);
         Path::new(&path).file_name().map(|f| f.to_string_lossy().to_string())
     }
+}
+
+// Nama file exe companion app ini sendiri.
+//
+// Frontend memakainya untuk MEMBEDAKAN dua kasus yang tadinya tercampur:
+// companion app yang sedang difokuskan (harus kembali ke Default, sesuai
+// permintaan user) vs proses lain yang tidak punya preset (juga Default).
+// Keduanya berakhir sama, tapi log-nya perlu jujur supaya user bisa lihat
+// apa yang sebenarnya terjadi.
+#[tauri::command]
+fn get_own_exe_name() -> Option<String> {
+    std::env::current_exe().ok().and_then(|p| {
+        p.file_name().map(|f| f.to_string_lossy().to_string())
+    })
 }
 
 // ==================== RESOLVE .lnk -> NAMA EXE ASLI ====================
@@ -1229,6 +1229,7 @@ pub fn run() {
             autostart_set,
             system_locale,
             get_foreground_exe,
+            get_own_exe_name,
             scan_bindable_apps,
             presets_get,
             presets_save,
