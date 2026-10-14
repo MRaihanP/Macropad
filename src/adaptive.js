@@ -17,11 +17,12 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import {
-  ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
+  ROWS, COLS, NUM_ENCODERS, TYPE_NAMES, CAP_LAYERS,
   mapping, encConfig, layerNames, layerCount, currentLayer,
+  setCurrentLayer, reorderLayer, setMapping, setLayerNames, setEncConfig,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
-import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';
+import { sendLine, sendBatch, isConnected, dumpInProgress, transportId } from './transport.js';
 import { t } from './i18n.js';
 
 // ---- State ----
@@ -55,17 +56,33 @@ let escapeFrozenForExe = null;
 let autoSwitchBusy = false;
 let bindableAppsCache = null;
 
-const FOCUS_DEBOUNCE_MS = 150;
+const FOCUS_DEBOUNCE_MS = 80;
 const FOCUS_POLL_MS = 120;
-// Jeda minimal antar dua perpindahan preset.
+
+// Jeda minimal antar dua perpindahan preset - BEDA untuk USB dan BLE.
 //
-// Upload preset itu mahal: ratusan perintah SET yang harus device proses satu
-// per satu, dan switch berikutnya tidak boleh menumpuk di belakang yang
-// sedang jalan. Tanpa jeda ini, companion app (yang sedang difokuskan) memicu
-// "Back to Default" dan target memicu switch balik - menghasilkan bolak-balik
-// tanpa henti yang membanjiri antrean device.
-const SWITCH_COOLDOWN_MS = 2500;
+// Kenapa harus dibedakan: cooldown ini ada karena masalah yang NYATA di BLE.
+// Upload preset = ratusan perintah SET yang device proses satu per satu,
+// dan device sedang membalas lewat notify yang bisa gagal. Tanpa jeda,
+// companion app memicu "Back to Default", target memicu switch balik, dan
+// dua-duanya menumpuk di antrean yang tidak pernah kosong.
+//
+// Di USB masalah itu TIDAK ADA. await port.write() menunggu sampai selesai,
+// port.listen() mendorong data apa adanya, tidak ada watchdog, tidak ada
+// antrean notify. Device selalu bebas. Jadi 2500 ms di sini bukan
+// perlindungan - itu penalti murni yang bikin perpindahan terasa lambat.
+//
+// Angka USB 400 ms: cukup untuk看不见 satu batch terakhir masih ditulis,
+// tanpa memaksa user menunggu saat device sebenarnya sudah siap.
+const SWITCH_COOLDOWN_USB_MS = 400;
+const SWITCH_COOLDOWN_BLE_MS = 2500;
 let lastSwitchAt = 0;
+
+// Dipanggil sekali di poll. USB/BLE dipilih lewat facade yang sudah ada
+// (transportId()), jadi adaptive.js tidak perlu tahu detail backend.
+function switchCooldownMs() {
+  return transportId() === 'ble' ? SWITCH_COOLDOWN_BLE_MS : SWITCH_COOLDOWN_USB_MS;
+}
 
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
 let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
@@ -103,6 +120,11 @@ let hooks = {
   resetEditorState: () => { },
   isDirty: () => false,
   setDirty: () => { },
+  // Dipakai renderPresetLocally(): grid digambar dari isi preset yang ada
+  // di app, tanpa menunggu DUMP_END dari device.
+  renderTabs: () => { },
+  renderGrid: () => { },
+  renderEncoderList: () => { },
   // Dipasang main.js. adaptive TIDAK mengimpor home-page.js: aturan proyeknya
   // modul ini tidak boleh memanggil fungsi halaman secara langsung, supaya arah
   // ketergantungan tetap satu arah dan tidak muncul siklus import.
@@ -526,16 +548,16 @@ async function activatePresetRuntime(preset, exe) {
     slotTable.forEach((s, i) => { const u = s ? s.used : -1; if (u < best) { best = u; slot = i; } });
   }
   quietOkUntil = Date.now() + 500;
-  const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
-  // SLOT:n:USE TIDAK mengirim INFO ke device, dan INFO pun tidak cukup:
-  // INFO memicu muat ulang layer dari protocol-parser, tapi pemanggilan itu
-  // ditunda kalau ada frame lain yang sedang berjalan (DUMP/DUMPNAMES).
-  // Akibatnya grid di app tetap menampilkan isi preset LAMA setelah preset
-  // berganti - persis gejala "matrix tombol tidak berubah".
+  // Tidak ada lagi INFO / DUMPENC di akhir batch. Keduanya cuma ada untuk
+  // memicu read-back DUMP:0 supaya grid ikut berubah - dan read-back itu
+  // sudah tidak dibutuhkan karena grid sekarang digambar dari preset.layers
+  // yang ada di app (lihat renderPresetLocally di bawah).
   //
-  // Jadi minta dump layer secara eksplisit, terpisah dari batch upload, dan
-  // baru setelah jeda singkat supaya device selesai消化 antrean preset dulu.
-  lines.push('INFO', 'DUMPENC');
+  // Untuk slot cache, ini juga menghapus satu sumber balak-balik: DUMPENC
+  // membuka frame ENC yang harus dijaga watchdog, dan di Device dengan
+  // upload baru saja selesai, frame ENC itu bisa menimpa DUMP yang lain.
+  const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
+  if (!cached) lines.push('LAYER:0');
   // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di tengah
   // (kabel dicabut), device punya keymap setengah jadi sementara tabel app
   // mengira slot itu utuh - berikutnya SLOT:<n>:USE akan mengaktifkan konten rusak.
@@ -550,22 +572,58 @@ async function activatePresetRuntime(preset, exe) {
   updateActivePresetLabel();
   log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
   hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
-  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
-  // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
-  // sebelumnya sampai user menekan Refresh secara manual.
-  await loadActiveLayerDump();
+  // Grid digambar dari isi preset yang sudah ada di app, bukan dari read-back
+  // DUMP:0 dari device.
+  //
+  // App JUSTRU baru saja mengirim isi preset ini ke device (upload penuh),
+  // atau baru mengaktifkan slot yang isinya sudah sama (cache). Jadi isinya
+  // sudah diketahui - membacanya kembali menambah satu round-trip penuh
+  // (11 baris keluar-masuk) tanpa menambah informasi apa pun.
+  //
+  // Untuk slot cache, ini juga menutup celah nyata: SLOT:<n>:USE tidak
+  // mengirim INFO, dan INFO-lah yang memicu pemuatan layer di protocol-parser.
+  // Kalau device sudah menjalankan preset ini dan app sudah tahu isinya,
+  // tidak ada alasan menunggu apa pun.
+  renderPresetLocally(preset);
 }
 
-// Minta dump layer aktif dari device supaya grid ikut berubah saat preset
-// berganti.
+// Terapkan isi preset ke state UI supaya grid langsung ikut berubah.
 //
-// Dipisah dari activatePresetRuntime karena harus dikirim SETELAH batch upload
-// selesai, bukan di baris yang sama. Kalau dikirim bersamaan, DUMP:0 masuk ke
-// antrean device di belakang ratusan perintah SET dan jawabannya tertahan lama
-// - dan kalau ada frame lain yang sedang berjalan, parser menundanya.
-async function loadActiveLayerDump() {
-  await hooks.loadLayer(currentLayer);
+// Bentuk preset.layers sudah sama dengan yang dipakai modul home-page:
+// keys[r][c] = { type, value }, name, encCw/encCcw/encBtn.
+function renderPresetLocally(preset) {
+  const layers = preset.layers || [];
+  if (!layers.length) return;
+  const grid = Array.from({ length: CAP_LAYERS }, () => Array.from({ length: ROWS }, () => Array(COLS).fill(null)));
+  const names = Array(CAP_LAYERS).fill(null);
+  for (let li = 0; li < layers.length && li < CAP_LAYERS; li++) {
+    const L = layers[li];
+    names[li] = L.name || null;
+    for (let r = 0; r < ROWS; r++) {
+      const row = L.keys?.[r];
+      if (!row) continue;
+      for (let c = 0; c < COLS; c++) {
+        const k = row[c];
+        grid[li][r][c] = (k && k.type) ? { type: k.type, value: k.value || '' } : null;
+      }
+    }
+  }
+  // Knob: preset menyimpan encCw/encCcw/encBtn per layer, tapi device hanya
+  // punya satu set knob untuk layer yang sedang aktif.
+  const cur = layers[Math.min(currentLayer, layers.length - 1)] || layers[0];
+  const enc = Array.from({ length: NUM_ENCODERS }, (_, i) => ({
+    CW:  pick(cur?.encCw?.[i]),
+    CCW: pick(cur?.encCcw?.[i]),
+    BTN: pick(cur?.encBtn?.[i]),
+  }));
+  setMapping(grid);
+  setLayerNames(names);
+  setEncConfig(enc);
+  hooks.renderTabs();
+  hooks.renderGrid();
+  hooks.renderEncoderList();
 }
+const pick = (a) => (a && a.type ? { type: a.type, value: a.value || '' } : null);
 
 let pollInFlight = false;
 async function pollFocusedApp() {
@@ -602,7 +660,7 @@ async function pollFocusedApp() {
     //
     // Jeda ini bukan penalti: switch yang sah tetap terjadi, hanya tidak
     // menumpuk dengan switch berikutnya yang belum sempat selesai.
-    if (Date.now() - lastSwitchAt < SWITCH_COOLDOWN_MS) return;
+    if (Date.now() - lastSwitchAt < switchCooldownMs()) return;
     lastSwitchAt = Date.now();
 
     autoSwitchBusy = true;

@@ -618,16 +618,35 @@ const isNamesRowBody = psrc2.match(/function isNamesRow[\s\S]*?\n\}/);
 ok(isNamesRowBody && /\^\\d\+\$/.test(isNamesRowBody[0]),
   'isNamesRow() memeriksa head "<idx>" adalah angka');
 
-// Preset switch harus minta dump ulang layer.
+// Preset switch harus membuat grid ikut berubah. Sekarang itu lewat
+// renderPresetLocally() - app menggambar dari preset.layers yang ada di
+// app, bukan dari read-back DUMP. Alasannya: app baru saja mengirim isi
+// preset itu ke device, jadi membacanya kembali tidak menambah informasi
+// dan hanya menambah satu round-trip penuh.
 const adaptiveSrc = fs.readFileSync(`${SRC}/adaptive.js`, 'utf8');
-ok(/hooks\.loadLayer\(currentLayer\)/.test(adaptiveSrc),
-  'activatePresetRuntime meminta dump layer lewat hooks.loadLayer (grid ikut berubah)');
+ok(/function renderPresetLocally\(preset\)/.test(adaptiveSrc),
+  'activatePresetRuntime menggambar grid lewat renderPresetLocally (grid ikut berubah)');
+ok(/renderPresetLocally\(preset\);/.test(adaptiveSrc),
+  'renderPresetLocally dipanggil setelah preset aktif');
+ok(!/hooks\.loadLayer\(currentLayer\)/.test(
+  adaptiveSrc.match(/async function activatePresetRuntime[\s\S]*?\n\}/)[0]),
+  'tidak ada lagi read-back DUMP di jalur aktivasi preset');
 ok(!/from '\.\/home-page\.js'/.test(adaptiveSrc),
   'adaptive.js tetap tidak mengimpor home-page.js (aturan kontrak)');
 // Cooldown: companion app sendiri yang sedang fokus memicu "Back to Default",
 // lalu target memicu switch balik - dua-duanya upload penuh.
-ok(/SWITCH_COOLDOWN_MS/.test(adaptiveSrc), 'ada cooldown antar perpindahan preset');
-ok(/Date\.now\(\) - lastSwitchAt < SWITCH_COOLDOWN_MS/.test(adaptiveSrc),
+// Cooldown dipisah USB vs BLE: BLE butuh jeda panjang (antrean notify bisa
+// menumpuk), USB tidak (port.write() menunggu, port.listen() mendorong).
+// Yang dijaga di sini adalah VALUE BLE-nya, karena file ini masuknya BLE.
+ok(/const SWITCH_COOLDOWN_BLE_MS = 2500;/.test(adaptiveSrc),
+  'cooldown BLE tetap 2500 ms (antrean notify butuh jeda)');
+ok(/const SWITCH_COOLDOWN_USB_MS = \d+;/.test(adaptiveSrc),
+  'cooldown USB punya nilai sendiri (lebih pendek)');
+ok(/function switchCooldownMs\(\)/.test(adaptiveSrc),
+  'pemilihan cooldown berdasarkan transport ada di satu tempat');
+ok(/transportId\(\) === 'ble' \? SWITCH_COOLDOWN_BLE_MS : SWITCH_COOLDOWN_USB_MS/.test(adaptiveSrc),
+  'BLE pakai cooldown panjang, USB pakai yang pendek');
+ok(/Date\.now\(\) - lastSwitchAt < switchCooldownMs\(\)/.test(adaptiveSrc),
   'cooldown dicek sebelum switch baru');
 ok(/lastSwitchAt = Date\.now\(\)/.test(adaptiveSrc),
   'lastSwitchAt diperbarui saat switch terjadi');

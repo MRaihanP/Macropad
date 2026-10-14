@@ -61,7 +61,7 @@ ok(lost.length === 0, `semua ${uniqueT.length} perintah bertemplate ada persis s
 for (const t of uniqueT) console.log(`  ${newMod.includes('`' + t + '`') ? 'OK  ' : 'FAIL'} ${t}`);
 
 console.log('\n--- 3. Konstanta runtime tidak berubah ---');
-ok(/FOCUS_DEBOUNCE_MS = 150/.test(newMod), 'FOCUS_DEBOUNCE_MS masih 150 ms');
+ok(/FOCUS_DEBOUNCE_MS = 80/.test(newMod), 'FOCUS_DEBOUNCE_MS = 80 ms (diturunkan dari 150)');
 ok(/FOCUS_POLL_MS = 120/.test(newMod), 'FOCUS_POLL_MS masih 120 ms');
 ok(/const APP_SLOTS = 6/.test(newMod), 'APP_SLOTS masih 6 (harus sama dengan firmware)');
 ok(/quietOkUntil = Date\.now\(\) \+ 500/.test(newMod), 'jendela sunyi quietOkUntil masih 500 ms');
@@ -100,6 +100,10 @@ for (const g of globals) {
   const uses = new RegExp('(?<![\\w.])' + g + '\\(').test(newMod);
   ok(!uses, `adaptive.js tidak memanggil ${g}() secara langsung`);
 }
+// renderPresetLocally() memanggil hooks.renderGrid() dan sejenisnya - itu
+// lewat facade, sama seperti loadLayer, jadi tetap diizinkan. Yang dilarang
+// adalah memanggil fungsi global langsung tanpa prefix hooks.
+ok(/hooks\.renderGrid\(\)/.test(newMod), 'renderPresetLocally menggambar lewat hooks.renderGrid()');
 const bareNotify = new RegExp('(?<![\\w.])notify\\(').test(newMod);
 ok(!bareNotify, 'adaptive.js tidak memanggil notify() secara langsung');
 ok(/hooks\.showConfirmModal/.test(newMod), 'modal lewat hooks.showConfirmModal');

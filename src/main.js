@@ -113,6 +113,11 @@ initAdaptive({
   // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya -
   // preset sudah aktif di device, tapi layarnya belum.
   loadLayer,
+  // Perpindahan preset menggambar grid dari isi preset yang ada di app
+  // (renderPresetLocally), bukan dari read-back DUMP dari device.
+  renderTabs,
+  renderGrid,
+  renderEncoderList,
 });
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);

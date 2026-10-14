@@ -106,11 +106,20 @@ export async function sendLine(str) {
 }
 
 // Kirim banyak baris dalam sedikit write (bukan 1 write per baris).
+//
+// Batas 4000 byte, bukan 900. Alasannya transport-spesifik: USB CDC punya
+// flow control dan await port.write() menunggu sampai selesai, jadi	write
+// sebesar ini aman dan tidak perlu dipecah. Batas 900 yang lama
+// adalah warisan era BLE, di mana MTU-limited jadi memecah wajib.
+//
+// Preset besar (8 layer × 9 tombol + knob) bisa ~1,7 KB: sebelumnya 2
+// write, sekarang 1.
+const USB_WRITE_CHUNK_MAX = 4000;
 export async function sendBatch(lines) {
   if (!port) return;
   let chunk = '';
   for (const ln of lines) {
-    if (chunk.length + ln.length + 1 > 900) { await writeRaw(chunk); chunk = ''; }
+    if (chunk.length + ln.length + 1 > USB_WRITE_CHUNK_MAX) { await writeRaw(chunk); chunk = ''; }
     chunk += ln + '\n';
   }
   if (chunk) await writeRaw(chunk);
