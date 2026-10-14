@@ -165,13 +165,15 @@ const written = I.calls.map(c => Buffer.from(c.args.data).toString()).join('');
 ok(written.includes('SET:0:0:0:1'), 'isi baris utuh sampai ke device');
 ok(written.endsWith('\n'), 'batch diakhiri newline');
 
-console.log('\n--- 6. Batas write BLE (NUS ~512 byte) ---');
+console.log('\n--- 6. Batas write BLE (NUS ~512 byte) + antrean tunggal ---');
 I.calls = [];
 const long = 'A'.repeat(300);
 await BLE.sendBatch([long, long, long]);
-// Hanya panggilan write yang punya payload. sendBatch() kini memberi jeda, jadi
-// selama jeda itu loop baca (ble_read) juga jalan dan tercatat di I.calls
-// tanpa args.data - iterate semuanya akan meledak.
+// sendBatch() sekarang MASUKKAN ke antrean dan kembali; pengiriman sebenarnya
+// dilakukan oleh drainQueue(). Jadi tunggu antrean kosong dulu sebelum menghitung.
+await new Promise(r => setTimeout(r, 150));
+// Hanya panggilan write yang punya payload. Loop baca (ble_read) juga jalan
+// dan tercatat di I.calls tanpa args.data - iterate semuanya akan meledak.
 for (const c of I.calls.filter(c => c.cmd === 'ble_write')) {
   ok(c.args.data.length <= 512, `write ${c.args.data.length} byte <= 512 (batas NUS)`);
 }
@@ -536,8 +538,8 @@ ok(!/from '\.\/adaptive\.js'/.test(bleSrc2),
 ok(/import \{ markBatchSettling \} from '\.\/upload-state\.js'/.test(
     fs.readFileSync(`${SRC}/adaptive.js`, 'utf8')),
   'adaptive.js menandai batch lewat upload-state.js');
-ok(/batchUploadInFlight\(\)\) continue;/.test(bleSrc2),
-  'watchdog DITAHAN saat batch upload sedang jalan');
+ok(!/batchUploadInFlight\(\)\) continue;/.test(bleSrc2),
+  'watchdog TIDAK lagi ditahan saat batch upload jalan (antrean tunggal, device tidak menumpuk)');
 // resetParserState() SENGAJA tidak mereset flag batch. Watchdog memanggilnya
 // dari dalam callback-nya sendiri saat memaksa membuka dump yang macet - dan
 // pada saat itu device mungkin sedang dikejar antrean upload. Kalau flag di
@@ -576,6 +578,21 @@ BLE.initTransport({ onLine() { }, onDumpStuck() { stuckWarned = true; },
 // Section 9g berakhir dengan stuckWarned = true (kasus "menggantung" yang
 // memang harus terdeteksi). Reset di sini, kalau tidak assertion di bawah
 // selalu gagal bukan karena bug, tapi karena sisa section sebelumnya.
+//
+// PERUBAHAN PERILAKU: dulu test ini menuntut bahwa watchdog HARUS ditahan
+// selama batch upload jalan, dengan alasan "device sibuk, DUMP_END belum
+// keluar itu wajar".
+//
+// Itulah yang membuat watchdog tidak bisa dipercaya: kalau penutup frame
+// yang sedang berjalan hilang TEPAT saat batch mulai, penahanan itu
+// menghilangkan kejadian tanpa jejak - dumpInProgress tetap true, tidak ada
+// yang melapor, dan error baru muncul belasan detik lalu saat dump
+// berikutnya. Jadi pesan yang user baca sebenarnya melapor kejadian yang
+// SUDAH LEWAT.
+//
+// Dengan antrean tunggal, device tidak menumpuk pekerjaan, jadi "belum
+// keluar" tidak lagi berarti "sibuk". Watchdog boleh bicara apa adanya -
+// dan BLE:STAT sekarang memberi tahu apakah byte benar-benar hilang.
 stuckWarned = false;
 markBatchSettling(6000);
 ok(batchUploadInFlight(), 'flag batch aktif sebelum test');
@@ -585,7 +602,8 @@ const pulledH = await BLE.readIncoming();
 ok(pulledH > 0, `readIncoming menarik ${pulledH} byte (batch aktif)`);
 await new Promise(r => setTimeout(r, 2400));
 ok(batchUploadInFlight(), 'flag batch masih aktif selama tunggu (dasar test)');
-eq(stuckWarned, false, 'batch upload aktif -> watchdog tidak salah melapor');
+eq(stuckWarned, true,
+  'batch upload tidak lagi menahan watchdog (penutup hilang = masalah, bukan "sibuk")');
 
 // Setelah jeda settling habis, deteksi harus hidup kembali.
 BLE.setDumpInProgress(false);

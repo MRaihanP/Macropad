@@ -70,10 +70,19 @@ public:
       if (n > chunkMax) n = chunkMax;
 
       if (!bleNusRx->notify(data + sent, n, h)) {
+        // Gagal sekali. Byte BELUM hilang - masih dicoba ulang di bawah.
+        bleNotifyFailCount++;
         delay(6);
         h = bleHidConnHandle;
-        if (h == BLE_HID_NO_HANDLE) break;
-        if (!bleNusRx->notify(data + sent, n, h)) break;
+        if (h == BLE_HID_NO_HANDLE) { bleNotifyTruncCount += (len - sent); break; }
+        if (!bleNusRx->notify(data + sent, n, h)) {
+          // Gagal dua kali -> menyerah. SISA payload ini TIDAK pernah sampai
+          // ke companion app, dan tanpa counter ini kejadiannya tidak terlihat
+          // dari mana pun. Offset yang dikembalikan (bukan len) juga diabaikan
+          // oleh pemanggil, jadi pemanggil mengira semua byte terkirim.
+          bleNotifyTruncCount += (len - sent);
+          break;
+        }
       }
       sent += n;
     }

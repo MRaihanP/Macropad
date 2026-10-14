@@ -449,6 +449,7 @@ export const en = {
 'ble.scanError': 'BLE scan failed: {err}',
 'ble.connectError': 'BLE connect failed: {err}',
 'ble.disconnectError': 'BLE disconnect failed: {err}',
+'ble.queueOverflow': 'BLE send queue full ({n}) - oldest commands dropped',
 'ble.writeError': 'BLE write failed: {err}',
 'ble.noDevices': 'No BLE devices found',
 'ble.autoPausedLog': '[LOG] BLE auto-reconnect paused. Click Connect or ↻ to re-enable.',

@@ -49,6 +49,8 @@ extern volatile uint16_t bleHidConnHandle;
 // stream protokol.
 extern uint32_t bleNusDroppedBytes;
 extern uint32_t bleNusPushOverflows;
+extern volatile uint32_t bleNotifyFailCount;
+extern volatile uint32_t bleNotifyTruncCount;
 // BLE_NUS_MAX_CHUNK dihapus. Batas chunk sekarang dihitung dari MTU hasil
 // negosiasi (lihat ble_shared.h: bleNusChunkLimit()). Hardcode 244 akan
 // gagal diam-diam kalau Windows menawar MTU < 247.
@@ -144,6 +146,26 @@ uint32_t bleNusDroppedBytes  = 0;
 uint32_t bleNusPushOverflows = 0;
 volatile uint32_t bleNusWriteCount = 0;
 char bleNusLastWrite[64] = {0};
+
+// =================== KEGAGALAN NOTIFY (DIAM-DIAM SEBELUMNYA) ===================
+//
+// write() di transport_ble.h mencoba notify dua kali, lalu menyerah kalau
+// tetap gagal - dan byte yang gagal itu hilang TANPA JEJAK. Inilah penyebab
+// paling mungkin dari "DUMP_END hilang" yang Complaint user, tapi tidak pernah
+// bisa dibuktikan karena tidak ada yang mengukurnya.
+//
+// Dua counter di bawah menutup lubang itu. Keduanya Read-only, nol biaya
+// (satu increment), dan tidak menyentuh jalur eksekusi:
+//
+//   bleNotifyFailCount  - notify() mengembalikan false (gagal sekali, lalu
+//                         berhasil pada retry). Jawaban masih utuh.
+//   bleNotifyTruncCount - notify() gagal DUA kali, write() menyerah, dan
+//                         byte benar-benar tidak terkirim. Ini yang merusak.
+//
+// Dibaca lewat perintah BLE:STAT. Kalau ntrunc naik bersamaan dengan
+// "DUMP_END hilang", penyebabnya terbukti - bukan lagi tebakan.
+volatile uint32_t bleNotifyFailCount  = 0;
+volatile uint32_t bleNotifyTruncCount = 0;
 
 // ---- NUS characteristic pointers ----
 NimBLECharacteristic* bleNusTx = nullptr;

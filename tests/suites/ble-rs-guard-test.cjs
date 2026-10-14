@@ -185,15 +185,18 @@ console.log('\n--- 11. Jejak diagnostik ada di titik yang MEMBEDAKAN penyebab --
 // butuh tindakan berbeda, dan semuanya tampak sama dari sisi user. Trace ini
 // discriminating: dari baris mana yang muncul, bisa diketahui bagian mana yang
 // putus tanpa perlu menebak.
-ok(ble.includes('ble-trace'), 'ada prefix trace yang seragam');
+//
+// Jejak sekarang lewat makro ble_log! yang bisa DIMATIKAN lewat
+// MACROPAD_BLE_TRACE=1. Sebelumnya eprintln! langsung di dalam callback
+// notifikasi - itu blocking dan dipanggil untuk SETIAP byte yang masuk, jadi
+// notify membayar console write terus-menerus. Trace hanya perlu hidup
+// waktu kita sedang-sedang menelusuri masalah.
+ok(ble.includes('ble_log!'), 'ada makro trace yang seragam (ble_log!)');
+ok(/MACROPAD_BLE_TRACE/.test(ble), 'trace bisa dimatikan/dinyalakan lewat env var');
 // Titik kunci: setelah subscribe. Kalau baris ini tidak muncul, masalahnya
 // DI BAWAH companion app (pairing/CCCD/stack BT) - tidak bisa diperbaiki di repo.
-ok(/\[ble-trace\] notify DISUBSCRIBE-kan/.test(ble),
+ok(/notify DISUBSCRIBE-kan/.test(ble),
   'trace setelah CCCD notify di-enable (batas app vs device)');
-// Titik kedua: byte benar-benar sampai. Kalau subscribe ada tapi ini tidak,
-// masalahnya advertising/subscribe di sisi device.
-ok(/\[ble-trace\] NOTIFY masuk/.test(ble),
-  'trace saat notify dari device masuk ke buffer');
 // Setiap cabang kegagalan di handler harus punya jejaknya. Tanpa ini, mutex
 // yang poisoned membuat notify DILEWATI diam-diam dan gejalanya persis sama
 // dengan "tidak menerima apa-apa".
@@ -204,9 +207,16 @@ for (const [pat, msg] of [
 ]) {
   ok(pat.test(ble), `ada trace untuk: ${msg}`);
 }
+// Trace per-notify yang DIHAPUS: eprintln! di dalam callback itu blocking dan
+// jalan untuk setiap byte. Menjaga bahwa ei tidak lagi ada di handler notify.
+const notifyHandler = ble.slice(ble.indexOf('Subscribe notifications'), ble.indexOf('DIKIRIM ke app'));
+ok(!/eprintln!/.test(notifyHandler),
+  'tidak ada eprintln! di dalam callback notify (blocking per-byte)');
+ok(/ble_log!/.test(notifyHandler),
+  'cabang kegagalan di callback notify tetap punya jejak via ble_log!');
 // Titik ketiga: buffer benar-benar DITARIK oleh frontend. Tanpa ini, notify
 // masuk tapi tidak pernah sampai ke handleLine - regresi yang sudah terjadi.
-ok(/\[ble-trace\]   -> DIKIRIM ke app/.test(ble),
+ok(/-> DIKIRIM ke app/.test(ble),
   'trace saat buffer ditarik ke frontend');
 // Log di read_bulk harus HANYA saat ada isi; kalau selalu, loop 40 ms
 // menghasilkan 25 baris/detik yang tidak pernah informatif.

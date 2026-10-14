@@ -1,5 +1,5 @@
 /*
-  ESP32-S3 Macro Pad - Firmware v8 - SKETCH PROTOTYPE
+  ESP32-S3 Macro Pad - Firmware v9 - SKETCH PROTOTYPE
   (nomor resmi ada di FW_VERSION, firmware/common/limits.h - jangan diubah
    di sini; nilai header ini hanya catatan, yang dikirim ke app adalah FW_VERSION)
   ==================================================
@@ -126,30 +126,15 @@ void protoTransportSwitch() {
 //  - Pindah ke USB: hidLinkSet(USB) memutus peer BLE dan mematikan advertising
 //    (lihat hid_link.h). Kalau protokol diletakkan lebih dulu, jawaban app akan
 //    hilang di NUS yang tidak lagi diiklankan.
+// Satu tekan = pindah ke mode lain. SELURUH logika ada di ifaceGo()
+// (switch_iface.h) - fungsi ini cuma menentukan mau ke mana.
+//
+// Kenapa tidak ada kodenya di sini lagi: sebelumnya tombol punya implementasinya
+// sendiri DAN IFACE:USB/BLE punya implementasi terpisah di ble_diag.h, dan
+// keduanya BERBEDA - command hanya memindahkan satu sumbu. Sekarang hanya ada
+// satu implementasi, jadi command dan tombol tidak mungkin lagi berbeda.
 void ifaceToggleFromButton() {
-#if HID_BLE_SUPPORT
-  const bool goBle = (g_hidLink != HidLink::BLE);
-  if (goBle) {
-    hidLinkSet(HidLink::BLE);
-    g_protoLink = ProtoLink::NUS;
-  } else {
-    hidLinkSet(HidLink::USB);
-    g_protoLink = ProtoLink::CDC;
-  }
-  protoTransportSwitch();
-  // Indikator: berkedip = BLE, menyala = USB. SELALU lewat LOGS (USB CDC),
-  // yang tidak pernah berubah - kalau lewat SERIAL, pesan ini sendiri akan
-  // ikut terkirim ke companion app setelah g_transport dipindah ke NUS dan
-  // muncul sebagai baris protocol yang tidak dikenal.
-  LOGS->printf("[BOOT] pindah ke %s (hid=%s proto=%s)\n",
-               goBle ? "BLE" : "USB", hidLinkName(g_hidLink), protoLinkName(g_protoLink));
-  switchLedStart(goBle ? SwitchLedPattern::SW_BLINK : SwitchLedPattern::SW_SOLID);
-#else
-  // Tanpa BLE, tombol tidak boleh diam-diam tidak berpengaruh. Tetap gerakkan
-  // LED supaya pengguna tahu tombolnya hidup, dan beri tahu lewat log.
-  LOGS->println("[BOOT] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
-  switchLedStart(SwitchLedPattern::SW_SOLID);
-#endif
+  ifaceGo(g_hidLink != HidLink::BLE);
 }
 
 // =================== PROFIL: PROTOTYPE ===================

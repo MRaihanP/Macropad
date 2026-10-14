@@ -65,6 +65,11 @@ static void bleDiagSelfTest(const String& spec) {
 extern ProtoLink g_protoLink;
 void protoTransportSwitch();
 
+// Dideklarasikan di switch_iface.h, tapi diekstern di sini supaya header ini
+// tetap bisa dipakai profil yang tidak menyertakan switch_iface.h (mis. sketsh
+// tes). Definisi ifaceGo() ada di switch_iface.h - hanya deklarasi.
+void ifaceGo(bool toBle);
+
 static bool bleDiagCommand(const String& cmd) {
   if (cmd == "IFACE") {
 #if HID_BLE_SUPPORT
@@ -81,19 +86,23 @@ static bool bleDiagCommand(const String& cmd) {
     return true;
   }
 
+  // IFACE:USB / IFACE:BLE memindahkan KEDUA sumbu lewat ifaceGo() - sama
+  // persis dengan yang dilakukan tombol GPIO0. Sebelumnya command ini hanya
+  // memanggil hidLinkSet(), jadi PROTO_LINK tidak ikut berubah dan jawaban
+  // protokol tetap lewat medium yang salah.
+  //
+  // Catatan untuk pemanggil dari companion app: jawaban "[OK]" TIDAK bisa
+  // diandreikan lewat SERIAL kalau perintah ini coming dari BLE, karena
+  // transport-nya baru saja dipindah. Semua pesan ifaceGo() ditulis lewat
+  // LOGS (USB CDC) yang tidak pernah berubah - itu sebabnya pesan di sini
+  // tidak "[OK] ..." lewat SERIAL seperti perintah lain.
   if (cmd == "IFACE:USB") {
-    hidLinkSet(HidLink::USB);
-    LOGS->println("[OK] Input USB HID");
+    ifaceGo(false);
     return true;
   }
 
   if (cmd == "IFACE:BLE") {
-#if HID_BLE_SUPPORT
-    hidLinkSet(HidLink::BLE);
-    LOGS->println("[OK] Input BLE HID");
-#else
-    LOGS->println("[ERROR] BLE HID tidak dikompilasi (HID_BLE_SUPPORT=0)");
-#endif
+    ifaceGo(true);
     return true;
   }
 
@@ -151,6 +160,36 @@ static bool bleDiagCommand(const String& cmd) {
     return true;
   }
   if (cmd.startsWith("HID:SELF:")) { bleDiagSelfTest(cmd.substring(9)); return true; }
+
+  // BLE:STAT - laporan kegagalan notify, satu baris.
+  //
+  // Inilah data yang tidak pernah ada sebelumnya. "DUMP_END hilang" bisa
+  // disebabkan notify yang gagal DAN diabaikan write() - dan tanpa
+  // penghitung itu, penyebabnya tidak bisa dibedakan dari dugaan lain
+  // (antrean, frame tumpang tindih, parser).
+  //
+  // Cara membaca:
+  //   ntrunc naik  = byte BENAR-BENAR hilang saat notify. Ini penyebabnya.
+  //   ntrunc = 0   = tidak ada byte hilang di device. Kalau "DUMP_END hilang"
+  //                  tetap muncul, masalahnya ada di sisi app/Rust, bukan
+  //                  di device - dan itu kesimpulan, bukan tebakan.
+  //
+  // Ditulis lewat LOGS (USB CDC) supaya selalu terlihat di Serial Monitor,
+  // cukup dengan satu perintah tanpa mengubah medium apa pun.
+  if (cmd == "BLE:STAT") {
+#if HID_BLE_SUPPORT
+    LOGS->printf("STAT:nfail=%u,ntrunc=%u,mtu=%u,ring=%u/%u,drops=%u\n",
+                 (unsigned)bleNotifyFailCount,
+                 (unsigned)bleNotifyTruncCount,
+                 (unsigned)bleNusChunkLimit(),
+                 (unsigned)bleNusAvail(),
+                 (unsigned)BLE_NUS_RING_SIZE,
+                 (unsigned)bleNusDroppedBytes);
+#else
+    LOGS->println("STAT:ble_support=0");
+#endif
+    return true;
+  }
 
   if (cmd == "BLE:ADV") {
 #if HID_BLE_SUPPORT

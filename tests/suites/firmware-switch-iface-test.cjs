@@ -27,23 +27,29 @@ const proto = read('firmware/HID_Keypad_Prototype/HID_Keypad_Prototype.ino');
 const sw = read('firmware/common/switch_iface.h');
 const hid = read('firmware/common/hid_link.h');
 
-console.log('--- A. Tombol switch harus benar-benar membalik DUA sumbu ---');
+console.log('--- A. Switch harus benar-benar membalik DUA sumbu ---');
 // Satu sumbu saja menghasilkan keadaan setengah-setengah: tombol ke USB tapi
 // jawaban perintah lewat NUS, atau sebaliknya.
-const fn = proto.match(/void ifaceToggleFromButton\(\)\s*\{([\s\S]*?)\n\}/);
-ok(!!fn, 'ifaceToggleFromButton() ada di sketsh PROTOTYPE');
-if (fn) {
-  const body = fn[1];
-  ok(/hidLinkSet\(HidLink::BLE\)/.test(body), 'memindahkan HID_LINK ke BLE');
-  ok(/hidLinkSet\(HidLink::USB\)/.test(body), 'memindahkan HID_LINK ke USB');
-  ok(/g_protoLink\s*=\s*ProtoLink::NUS/.test(body), 'memindahkan PROTO_LINK ke NUS');
-  ok(/g_protoLink\s*=\s*ProtoLink::CDC/.test(body), 'memindahkan PROTO_LINK ke CDC');
+//
+// PERBAIKAN: logika pindah ada di SATU fungsi (ifaceGo di switch_iface.h),
+// dipakai oleh command IFACE:USB/IFACE:BLE DAN tombol GPIO0. Sebelumnya
+// keduanya punya implementasi sendiri yang BERBEDA - command hanya memanggil
+// hidLinkSet(), jadi PROTO_LINK tidak ikut berubah. Sekarang tidak mungkin
+// lagi berbeda karena hanya ada satu implementasi.
+const go = sw.match(/inline void ifaceGo\(bool toBle\)\s*\{([\s\S]*?)\n\}/);
+ok(!!go, 'ifaceGo() ada di switch_iface.h');
+const diag = read('firmware/common/ble_diag.h');
+if (go) {
+  const body = go[1];
+  ok(/hidLinkSet\(toBle \? HidLink::BLE : HidLink::USB\)/.test(body), 'memindahkan HID_LINK');
+  ok(/g_protoLink\s*=\s*toBle \? ProtoLink::NUS : ProtoLink::CDC/.test(body),
+    'memindahkan PROTO_LINK');
   // Pointo paling penting: hidLinkSet harus dipanggil SEBELUM g_protoLink
   // ditulis, supaya advertising menyala sebelum app mencari NUS.
-  const hidAt = body.indexOf('hidLinkSet(HidLink::BLE)');
-  const protoAt = body.indexOf('g_protoLink = ProtoLink::NUS');
+  const hidAt = body.indexOf('hidLinkSet(');
+  const protoAt = body.indexOf('g_protoLink =');
   ok(hidAt >= 0 && protoAt > hidAt,
-    'hidLinkSet(BLE) dijalankan SEBELUM g_protoLink = NUS (advertising dulu)');
+    'hidLinkSet() dijalankan SEBELUM g_protoLink ditulis (advertising dulu)');
   ok(/protoTransportSwitch\(\)/.test(body), 'protoTransportSwitch() dipanggil');
   // Pesan log harus lewat LOGS, bukan SERIAL. Kalau lewat SERIAL, pesan ini
   // sendiri terkirim ke companion app setelah g_transport pindah ke NUS dan
@@ -51,10 +57,28 @@ if (fn) {
   ok(/LOGS->printf/.test(body), 'log lewat LOGS (USB CDC), bukan SERIAL');
   ok(!/SERIAL->/.test(body), 'tidak ada SERIAL-> di dalam switch');
 }
+// Tombol dan command WAJIB memakai implementasi yang sama.
+const fn = proto.match(/void ifaceToggleFromButton\(\)\s*\{([\s\S]*?)\n\}/);
+ok(!!fn, 'ifaceToggleFromButton() ada di sketsh PROTOTYPE');
+if (fn) {
+  ok(/ifaceGo\(/.test(fn[1]), 'tombol memanggil ifaceGo(), bukan logika sendiri');
+  ok(!/hidLinkSet/.test(fn[1]), 'tombol tidak punya implementasi sendiri');
+}
+ok(/if \(cmd == "IFACE:USB"\) \{\s*ifaceGo\(false\);/.test(diag),
+  'IFACE:USB memanggil ifaceGo(false)');
+ok(/if \(cmd == "IFACE:BLE"\) \{\s*ifaceGo\(true\);/.test(diag),
+  'IFACE:BLE memanggil ifaceGo(true)');
+// Bug lama yang harus tidak balik: command hanya mengubah SATU sumbu.
+const usbBlock = diag.match(/if \(cmd == "IFACE:USB"\) \{([\s\S]*?)\n  \}/);
+ok(usbBlock && !/hidLinkSet/.test(usbBlock[1]),
+  'IFACE:USB tidak lagi hanya mengubah HID_LINK (bug lama)');
+const bleBlock = diag.match(/if \(cmd == "IFACE:BLE"\) \{([\s\S]*?)\n  \}/);
+ok(bleBlock && !/g_protoLink/.test(bleBlock[1]),
+  'IFACE:BLE tidak lagi menyentuh PROTO_LINK sendiri (sudah di ifaceGo)');
 
 console.log('\n--- B. Pola LED: BLE berkedip, USB menyala, keduanya 1 detik ---');
-ok(/switchLedStart\(goBle \? SwitchLedPattern::SW_BLINK : SwitchLedPattern::SW_SOLID\)/.test(proto),
-  'pola dipilih dari mode tujuan: blink=BLE, solid=USB');
+ok(/switchLedStart\(toBle \? SwitchLedPattern::SW_BLINK : SwitchLedPattern::SW_SOLID\)/.test(sw),
+  'pola dipilih dari mode tujuan: blink=BLE, solid=USB (di ifaceGo)');
 ok(/SWITCH_LED_BLINK_MS\s+200/.test(sw), 'interval kedip 200 ms');
 ok(/SWITCH_LED_TOTAL_MS\s+1000/.test(sw), 'durasi total 1000 ms');
 // Animasi WAJIB non-blocking. delay(1000) membekukan scan matrix + encoder

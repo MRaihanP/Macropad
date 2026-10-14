@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "node tests/runner/run-all.mjs",
     "test:negative": "node tests/runner/run-negative.mjs",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib"
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
+    "test:fw": "arduino-cli compile --fqbn esp32:esp32:esp32s3 --no-color firmware/HID_Keypad_Prototype && arduino-cli compile --fqbn esp32:esp32:esp32s3 --no-color firmware/HID_Keypad_Final"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

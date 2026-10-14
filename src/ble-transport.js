@@ -27,7 +27,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
-import { batchUploadInFlight, resetBatchUploadState, registerOnBatchStart } from './upload-state.js';
+import { resetBatchUploadState } from './upload-state.js';
 
 const LAST_DEVICE_KEY = 'macropad.lastBleDevice';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -84,28 +84,28 @@ function cancelDumpWatchdog() {
   dumpWatchdogTimer = null;
 }
 
+// Watchdog disederhanakan: SATU timer, SATU kondisi.
+//
+// Sebelumnya ada backoff pangkat dua, counters, dan syarat berlapis
+// (batchUploadInFlight). Semuanya muncul karena DUHALU tidak ada antrean:
+// device bisa menumpuk pekerjaan, dan "belum dapat DUMP_END" bisa berarti
+// "sibuk" - bukan "penutup hilang". Keduanya tidak bisa dibedakan, jadi
+// ditambahkan pengecualian yang saling meniadakan dan mengaburkan laporan.
+//
+// Sekarang ada antrean tunggal, jadi device hanya mengerjakan satu perintah
+// pada satu waktu. Kalau penutup belum datang setelah DUMP_STUCK_MS, itu
+// memang masalah - dan BLE:STAT memberi tahu apakah byte benar-benar hilang di
+// device (ntrunc) atau tidak.
+//
+// resetParserState() TIDAK lagi dipanggil di sini. State di-reset di
+// disconnect(), satu-satunya tempat yang boleh melakukannya.
 function armDumpWatchdog() {
   // Jangan arm ulang berkali-kali: setiap baris isi dump akan memicu
   // handleIncomingChunk, dan timer yang di-reset terus tidak akan pernah
-  //cemic tembak walau penutupnya benar-benar hilang.
+  // tembak walau penutupnya benar-benar hilang.
   if (dumpWatchdogTimer) return;
   dumpWatchdogTimer = setTimeout(() => {
     dumpWatchdogTimer = null;
-    // Pengecualian HARUS diulang di sini, bukan hanya saat arming.
-    //
-    // Watchdog bisa ter-arm sebelum batch upload dimulai (mis. dump dari
-    // handshake masih berjalan). Batch yang menyusul lalu menahan frame, jadi
-    // saat timer ini matured device sedang sibuk dan DUMP_END memang belum
-    // keluar. Melempar error di titik itu akan melapor frame yang sehat
-    // sebagai hilang - persis gejala yang muncul saat user alt+tab cepat
-    // antar aplikasi.
-    //
-    // Perpanjang timer selama batch masih jalan - dump yang dump yang
-    // ditunda hanya butuh lebih waktu, bukan perlu diperbaiki.
-    if (batchUploadInFlight()) {
-      armDumpWatchdog();
-      return;
-    }
     // Kondisi ini SANGAT sulit ditandai dari log biasa: app connect, GATT
     // sehat, notify jalan - tapi tidak satu baris pun ter-render karena
     // parser menganggap semua respons sebagai isi dump.
@@ -113,7 +113,6 @@ function armDumpWatchdog() {
     // Buka diri supaya baris berikutnya bisa diparse lagi. Tanpa ini parser
     // akan menolak HWINFO/BATT/EVT selamanya sampai app ditutup.
     resetParserState();
-    lineBuffer = '';
     hooks.onDumpStuck();
   }, DUMP_STUCK_MS);
 }
@@ -198,13 +197,10 @@ export function handleIncomingChunk(data) {
     // bergantung pada pemenggalan chunk: baris isi bisa terbagi dua chunk,
     // dan pola \d,\d,\d bisa terpotong di tengah.
     //
-    // TAPI jangan saat ada batch upload yang sedang jalan. Mengunggah preset
-    // = ratusan perintah SET yang device harus proses satu per satu; jawaban
-    // DUMP:0 yang menyusul benar-benar tertahan di antrean dan baru keluar
-    // belasan detik kemudian pada preset besar. Tanpa pengecualian ini,
-    // watchdog menyimpulkan dump hilang padahal device masih sibuk - persis
-    // gejala yang muncul saat user alt+tab cepat antar aplikasi.
-    if (batchUploadInFlight()) continue;
+    // Pengecualian "jangan arm saat batch upload jalan" DIHAPUS. Itu ada
+    // karena device bisa menumpuk pekerjaan; sekarang antrean tunggal
+    // membuatnya tidak bisa menumpuk, jadi satu-satunya alasan frame belum
+    // tertutup adalah penutupnya benar-benar hilang.
     if ((dumpInProgress && /\d,\d,\d/.test(line)) ||
         (namesInProgress && line.indexOf(',') > 0)) {
       armDumpWatchdog();
@@ -223,54 +219,80 @@ async function writeRaw(str) {
   }
 }
 
-export async function sendLine(str) {
-  if (!connected) return;
+// ==================== ANTREAN TUNGGAL ====================
+//
+// BLE punya Empat cara gagal, dan dua di antaranya hilang kalau app tidak
+// pernah mengirim dua perintah yang tumpang tindih:
+//
+//   1. Ring buffer NUS penuh  -> byte terpotong di tengah baris perintah
+//   2. notify() gagal        -> byte jawaban hilang tanpa jejak (sekarang
+//                               TERUKUR lewat BLE:STAT - counter baru)
+//   3. Antrean menumpuk      -> device sibuk, DUMP:0 tertahan belasan detik
+//   4. Frame tumpang tindih  -> NAMES_BEGIN masuk saat DUMP jalan, penutup
+//                               yang salah membatalkan watchdog
+//
+// (3) dan (4) adalah EFEK dari tidak adanya antrean: dua panggilan
+// sendBatch() yang berjalan bersamaan mengirim dua batch ke device tanpa
+// urutan, dan jawabannya pun keluar tumpang tindih. Dengan satu antrean,
+// device hanya menerima satu perintah pada satu waktu dan notifikasi keluar
+// berurutan - jadi kedua penyebab itu hilang tanpa perlu heuristik apa pun.
+//
+// Batas 400 byte per write tetap (itu batas MTU, bukan pilihan).
+// Jeda 25 ms antar potongan DIHAPUS: pacing sekarang ditangani antrean
+// sendirinya, dan jeda hanya memperlambat tanpa menambah keamanan.
+let writeQueue = [];
+let writeBusy = false;
+const MAX_QUEUE = 512;   // cukup untuk beberapa preset penuh sekaligus
+
+async function drainQueue() {
+  if (writeBusy) return;
+  writeBusy = true;
   try {
-    await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str + '\n')) });
-  } catch (e) {
-    log(t('ble.writeError', { err: e }), 'err');
-    // Tulis gagal = koneksi sudah putus; jangan tunggu polling 2 detik.
-    await handleDeviceLost();
-  }
+    while (writeQueue.length) {
+      const item = writeQueue.shift();
+      try {
+        await invoke('ble_write', { data: Array.from(new TextEncoder().encode(item)) });
+      } catch (e) {
+        log(t('ble.writeError', { err: e }), 'err');
+        // Tulis gagal = koneksi sudah putus. Sisa antrean tidak berguna lagi;
+        // membiarkan them menumpuk hanya menambah GDPR.
+        writeQueue.length = 0;
+        await handleDeviceLost();
+        return;
+      }
+    }
+  } finally { writeBusy = false; }
 }
 
-// Kirim banyak baris dalam sedikit write, dipecah agar tidak melewati batas
-// characteristic NUS. Versi pertama file ini memanggil writeRaw() dengan
-// payload yang sudah dipotong ke 900 byte - angka itu untuk port serial dan
-// melewati batas NUS.
-//
-// FLOW CONTROL: jeda di antara potongan.
-//
-// Firmware menampung perintah di ring buffer 4 KB, dan loop utamanya juga
-// harus menguras ring itu SAMBIL mengirim jawaban. Kalau app melempar satu
-// batch preset (>1,5 KB) tanpa jeda, firmware bisa kewalahan: byte dipotong
-// di tengah perintah, perintah jadi korup, dan device masuk state yang
-// tidak sesuai - lalu tidak bisa jalan sampai perintah kecil berikutnya
-// kebetulan muat.
-//
-// Mengirim lebih kecil dan beri jeda membuat firmware sempat menguras ring
-// di antara potongan. Jeda hanya berlaku untuk sendBatch (upload besar);
-// sendLine untuk perintah tunggal tidak waited, supaya respons PING/INFO
-// tetap terasa seketika.
-const BATCH_CHUNK_MS = 25;
+function enqueue(str) {
+  // Batas keras: kalau app disconnect lalu connect ulang dalam waktu sedetik,
+  // antrean lama bisa masih ada. Membuang yang paling tua lebih baik daripada
+  // mengirim perintah basi ke device yang baru saja connect.
+  if (writeQueue.length >= MAX_QUEUE) {
+    writeQueue.shift();
+    log(t('ble.queueOverflow', { n: MAX_QUEUE }), 'err');
+  }
+  writeQueue.push(str);
+  drainQueue();
+}
+
+// Dipanggil saat disconnect: perintah yang belum terkirim tidak boleh
+// dikirim ke device berikutnya (mis. SLOT:n:USE untuk device yang berbeda).
+export function clearWriteQueue() { writeQueue.length = 0; writeBusy = false; }
+
+export async function sendLine(str) {
+  if (!connected) return;
+  enqueue(str + '\n');
+}
 
 export async function sendBatch(lines) {
   if (!connected) return;
   let chunk = '';
-  let chunks = 0;
-  const flush = async () => {
-    if (!chunk) return;
-    await writeRaw(chunk);
-    chunk = '';
-    // Jeda hanya setelah potongan pertama: potongan pertama dikirim saat
-    // buffer masih kosong, jadi tidak perlu menunggu.
-    if (++chunks > 1) await new Promise(r => setTimeout(r, BATCH_CHUNK_MS));
-  };
   for (const ln of lines) {
-    if (chunk.length + ln.length + 1 > WRITE_CHUNK_MAX) await flush();
+    if (chunk.length + ln.length + 1 > WRITE_CHUNK_MAX) { enqueue(chunk); chunk = ''; }
     chunk += ln + '\n';
   }
-  await flush();
+  if (chunk) enqueue(chunk);
 }
 
 // ---- Scan ----
@@ -407,6 +429,10 @@ export async function disconnect(manual) {
     hooks.notify(t('ble.notifDisconnected'), 'disconnect');
     log(t('ble.autoPausedLog'));
   }
+  // Perintah yang belum terkirim harus dibuang. Kalau tidak, connect ke device
+  // BERIKUTNYA menerima sisa antrean sesi lama - termasuk SLOT:n:USE yang
+  // sudah tidak relevan untuk device yang sekarang.
+  clearWriteQueue();
   stopPing();
   // Loop pembacaan WAJIB ikut dimatikan di setiap jalur keluar. Kalau tidak,
   // interval tetap berjalan dan menarik buffer dari koneksi yang sudah tutup -
@@ -583,10 +609,19 @@ function stopReadLoop() {
   readTimer = null;
 }
 
-// Batch upload baru dimulai: watchdog yang sudah ter-arm tidak relevan lagi.
-// Device akan sibuk memproses antrean, jadi "DUMP_END belum keluar" itu
-// wajar, bukan tanda frame hilang.
-registerOnBatchStart(() => { cancelDumpWatchdog(); });
+// registerOnBatchStart() DIHAPUS. Hook ini membatalkan watchdog setiap kali
+// batch upload dimulai, dengan alasan "device akan sibuk, jadi DUMP_END belum
+// keluar itu wajar".
+//
+// Itu benar waktu dulu, tapi justru membuat watchdog tidak terpakai: kalau penutup
+// frame yang sedang berjalan hilang TEPAT saat batch mulai, pembatalan itu
+// membuat kejadian hilang tanpa jejak - dumpInProgress tetap true dan tidak ada
+// yang melaporkannya. Error baru muncul belasan detik lalu, saat dump
+// berikutnya, jadi pesan yang user baca sebenarnya melapor kejadian yang SUDAH
+// LEWAT.
+//
+// Dengan antrean tunggal, device tidak menumpuk pekerjaan, jadi "belum keluar"
+// tidak lagi berarti "sibuk". Watchdog boleh bilang apa adanya.
 
 // Ekspor untuk test; dipakai juga oleh disconnect().
 export function stopAllBleTimers() { stopPing(); stopReadLoop(); }

@@ -446,6 +446,7 @@ export const id = {
 'ble.scanError': 'Pindai BLE gagal: {err}',
 'ble.connectError': 'Sambung BLE gagal: {err}',
 'ble.disconnectError': 'Putus BLE gagal: {err}',
+'ble.queueOverflow': 'Antrean kirim BLE penuh ({n}) - perintah terlama dibuang',
 'ble.writeError': 'Tulis BLE gagal: {err}',
 'ble.noDevices': 'Tidak ada device BLE ditemukan',
 'ble.autoPausedLog': '[LOG] Reconek BLE otomatis dijeda. Klik Sambung atau ↻ untuk aktifkan.',

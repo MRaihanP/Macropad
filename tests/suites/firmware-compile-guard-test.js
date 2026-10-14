@@ -234,18 +234,46 @@ if (ringBlock) {
   ok(!/SERIAL->/.test(ringBlock[1]), 'BLE:RING tidak memakai SERIAL');
 }
 
-console.log('\n--- K. Flow control di sisi app: jangan kirim lebih cepat dari firmware ---');
+console.log('\n--- K. Flow control di sisi app: ANTREAN TUNGGAL, bukan jeda ---');
+// SEBELUMNYA: jeda 25 ms antar potongan (BATCH_CHUNK_MS).
+//
+// Jeda itu EXISTS karena tidak ada antrean - app melempar seluruh batch ke
+// device sekaligus, dan jeda adalah satu-satunya cara mencegah firmware
+// kewalahan. Tapi jeda tidak mencegah hal yang lebih buruk: dua panggilan
+// sendBatch() yang berjalan BERBARENGAN tetap mengirim dua batch tanpa urutan
+// apa pun, dan jawabannya keluar tumpang tindih. Itu sumber frame yang
+// saling menimpa penutupnya.
+//
+// SEKARANG: satu antrean. Device hanya menerima satu perintah pada satu waktu,
+// jadi tidak ada lagi yang perlu dijeda - pacing ditangani antrean itu sendiri.
 const bleT2 = read('src/ble-transport.js');
-ok(/const BATCH_CHUNK_MS = \d+/.test(bleT2), 'ada jeda antar potongan batch');
+ok(/let writeQueue = \[\]/.test(bleT2), 'ada antrean tunggal untuk write');
+ok(/async function drainQueue\(\)/.test(bleT2), 'ada pengosong antrean');
+ok(/while \(writeQueue\.length\)/.test(bleT2),
+  'antrean dikosong satu per satu (satu perintah pada satu waktu)');
+ok(!/BATCH_CHUNK_MS/.test(bleT2),
+  'jeda antar-potongan dihapus (antrean yang menghandle pacing)');
+// Kode, bukan komentar: yang penting tidak ada lagi PANGGILAN ke hook/flag itu.
+ok(!/^registerOnBatchStart\(/m.test(bleT2),
+  'watchdog tidak lagi dibatalkan tiap batch dimulai (menyembunyikan kegagalan)');
+ok(!/^import \{[^}]*batchUploadInFlight/m.test(bleT2),
+  'tidak ada syarat berlapis di watchdog dump');
 const sbatch = bleT2.match(/export async function sendBatch[\s\S]*?\n\}/);
 ok(!!sbatch, 'sendBatch() terambil');
 if (sbatch) {
-  ok(/setTimeout/.test(sbatch[0]), 'sendBatch() memberi jeda antar potongan');
-  // Jeda hanya untuk batch. sendLine (perintah tunggal) tidak boleh waited,
-  // supaya respons PING/INFO tetap seketika.
-  const sl = bleT2.match(/export async function sendLine[\s\S]*?\n\}/);
-  ok(sl && !/setTimeout/.test(sl[0]), 'sendLine() TIDAK diberi jeda (respons cepat tetap cepat)');
+  ok(/enqueue\(/.test(sbatch[0]), 'sendBatch() masuk lewat antrean');
+  ok(!/setTimeout/.test(sbatch[0]), 'sendBatch() tidak memberi jeda antar potongan');
 }
+const sl = bleT2.match(/export async function sendLine[\s\S]*?\n\}/);
+ok(sl && /enqueue\(/.test(sl[0]), 'sendLine() juga lewat antrean yang sama');
+// Antrean harus dibuang saat disconnect, kalau tidak perintah basi terkirim ke
+// device BERIKUTNYA (mis. SLOT:n:USE untuk device yang tidak ada di sana).
+ok(/export function clearWriteQueue\(\)/.test(bleT2), 'ada clearWriteQueue()');
+ok(/disconnect[\s\S]{0,1400}clearWriteQueue\(\)/.test(bleT2),
+  'clearWriteQueue() dipanggil di disconnect()');
+// Batas keras: kalau app connect ulang dalam 1 detik, antrean lama bisa masih
+// ada dan menumpuk tanpa akhir.
+ok(/const MAX_QUEUE = \d+/.test(bleT2), 'antrean punya batas keras');
 
 // PERINGATAN REGRESI: perubahan di sini HARUS BLE-only. Round lalu user melaporkan
 // "perubahan mempengaruhi USB" - karena diagnostic pernah pakai SERIAL (= USB CDC).

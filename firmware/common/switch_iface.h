@@ -51,6 +51,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include "limits.h"
 
 #ifndef BOOT_SWITCH_PIN
 #define BOOT_SWITCH_PIN 0
@@ -77,6 +78,9 @@
 #endif
 
 enum class SwitchLedPattern : uint8_t { SW_NONE = 0, SW_BLINK = 1, SW_SOLID = 2 };
+
+// Catatan: ifaceGo() DITEMPATKAN di bawah switchLedStart(), bukan di sini -
+// ia memanggil fungsi itu, jadi harus lihat definisinya dulu.
 
 // ---- State LED indikator ----
 // Nol berarti "profil ini tidak punya LED status"; semua fungsi di bawah
@@ -121,6 +125,47 @@ inline void switchLedStart(SwitchLedPattern pattern) {
   if (g_switchLedUsable) {
     digitalWrite(g_switchLedPin, (g_switchLedActiveHigh == g_switchLedLevel) ? HIGH : LOW);
   }
+}
+
+// =================== PINDAH USB <-> BLE (SATU-SATUNYA IMPLEMENTASI) ===================
+//
+// Fungsi INI yang dipakai command IFACE:USB/IFACE:BLE (ble_diag.h) DAN tombol
+// GPIO0 (profileLoopHook). Sebelumnya keduanya punya kode sendiri dan hasilnya
+// BERBEDA:
+//
+//   command  -> hidLinkSet() saja. PROTO_LINK tidak disentuh dan transport
+//               protokol tidak dipindah. Jadi "pindah ke BLE" lewat command
+//               hanya memindahkan report TOMBOL ke BLE; jawaban protokol masih
+//               lewat USB CDC. Setengah jalan - keadaan yang membingungkan.
+//   tombol   -> dua sumbu + transport + LED. Benar.
+//
+// Sekarang hanya ada satu implementasi, jadi command dan tombol tidak mungkin
+// lagi berbeda.
+//
+// URUTAN WAJIB. g_hidLink ditulis LEBIH DAHULU dari g_protoLink:
+//   - ke BLE: hidLinkSet(BLE) menyalakan advertising + server GATT. Kalau
+//     protokol diletakkan ke NUS lebih dulu, companion app bisa menemukan
+//     device sebelum keyboard siap.
+//   - ke USB: hidLinkSet(USB) memutus peer BLE dan mematikan advertising. Kalau
+//     protokol diletakkan lebih dulu, jawaban app hilang di NUS yang sudah
+//     tidak diiklankan.
+//
+// PESAN SELALU lewat LOGS (USB CDC) yang tidak pernah berubah. Kalau lewat
+// SERIAL, pesan ini ikut terkirim ke companion app setelah g_transport dipindah
+// ke NUS, dan muncul sebagai baris protokol yang tidak dikenal.
+inline void ifaceGo(bool toBle) {
+#if HID_BLE_SUPPORT
+  hidLinkSet(toBle ? HidLink::BLE : HidLink::USB);
+  g_protoLink = toBle ? ProtoLink::NUS : ProtoLink::CDC;
+  protoTransportSwitch();
+  LOGS->printf("[IFACE] pindah ke %s (hid=%s proto=%s)\n",
+               toBle ? "BLE" : "USB", hidLinkName(g_hidLink), protoLinkName(g_protoLink));
+  switchLedStart(toBle ? SwitchLedPattern::SW_BLINK : SwitchLedPattern::SW_SOLID);
+#else
+  (void)toBle;
+  LOGS->println("[IFACE] BLE tidak dikompilasi (HID_BLE_SUPPORT=0)");
+  switchLedStart(SwitchLedPattern::SW_SOLID);
+#endif
 }
 
 // Panggil dari loop profil tiap iterasi. Non-blocking.

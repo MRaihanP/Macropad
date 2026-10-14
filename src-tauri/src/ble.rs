@@ -35,9 +35,20 @@ use windows::Storage::Streams::{DataReader, DataWriter};
 use windows::Foundation::TypedEventHandler;
 use windows::core::{GUID, IInspectable};
 
-// Logging helper
+// Logging helper.
+//
+// BISA DIMATIKAN lewat environment variable MACROPAD_BLE_TRACE=1.
+//
+// Ini penting karena eprintln! itu blocking dan dipanggil dari DALAM callback
+// notifikasi WinRT. Setiap byte yang masuk dari device membayar console write.
+// Di build normal (trace mati) notify jadi hampir gratis - dan user tidak
+// kehilangan apa pun, karena stderr tidak pernah tampil di app GUI.
 macro_rules! ble_log {
-    ($($arg:tt)*) => { eprintln!("[BLE] {}", format!($($arg)*)) };
+    ($($arg:tt)*) => {
+        if std::env::var("MACROPAD_BLE_TRACE").is_ok() {
+            eprintln!("[BLE] {}", format!($($arg)*));
+        }
+    };
 }
 
 // Type alias untuk mempermudah generic parameters (nama singkat agar tidak konflik dengan parser)
@@ -153,14 +164,14 @@ impl BleTransport {
             .Stopped(&stopped_handler)
             .map_err(|e| format!("Gagal stop handler: {}", e))?;
 
-        eprintln!(
-            "[ble-trace] scan mulai: AQS selector={:?}",
+        ble_log!(
+        "scan mulai: AQS selector={:?}",
             selector
         );
         watcher
             .Start()
             .map_err(|e| format!("Gagal start watcher: {}", e))?;
-        eprintln!("[ble-trace] watcher berjalan, menunggu 5 detik");
+        ble_log!("watcher berjalan, menunggu 5 detik");
 
         // Biarkan watcher berjalan 5 detik untuk menemukan device BLE di sekitar.
         thread::sleep(Duration::from_secs(5));
@@ -190,13 +201,13 @@ impl BleTransport {
         // bisa dibedakan dari "device tidak ada di ruangan". Dua kemungkinan
         // yang butuh tindakan BERBEDA, dan salah satunya akan membuat user
         // mengantar-mendekatkan device tanpaLB解决问题.
-        eprintln!(
-            "[ble-trace] scan selesai: {} device ditemukan",
+        ble_log!(
+        "scan selesai: {} device ditemukan",
             devices.len()
         );
         for d in &devices {
-            eprintln!(
-                "[ble-trace]   - id={} nama={:?} paired={}",
+            ble_log!(
+        "- id={} nama={:?} paired={}",
                 d.Id().map(|s| s.to_string()).unwrap_or_default(),
                 d.Name().map(|s| s.to_string()).unwrap_or_default(),
                 // Pairing().IsPaired() - d.Paired() tidak ada di DeviceInformation
@@ -216,10 +227,10 @@ impl BleTransport {
         let id = device_info
             .Id()
             .map_err(|e| format!("Gagal get device id: {}", e))?;
-        eprintln!("[ble-trace] connect ke id={}", id.to_string());
+        ble_log!("connect ke id={}", id.to_string());
         let device = block_on_winrt(BluetoothLEDevice::FromIdAsync(&id))
             .map_err(|e| format!("Gagal connect BLE: {}", e))?;
-        eprintln!("[ble-trace] FromIdAsync OK, status={:?}", device.ConnectionStatus());
+        ble_log!("FromIdAsync OK, status={:?}", device.ConnectionStatus());
 
         // Dapatkan service
         let services = block_on_winrt(device.GetGattServicesForUuidAsync(MACROPAD_SERVICE_UUID))
@@ -273,7 +284,7 @@ impl BleTransport {
         let rx_char = rx_list
             .GetAt(0)
             .map_err(|e| format!("Gagal ambil RX characteristic: {}", e))?;
-        eprintln!("[ble-trace] characteristic NUS TX + RX ditemukan");
+        ble_log!("characteristic NUS TX + RX ditemukan");
 
         // Subscribe notifications
         let buffer = self.rx_buffer.clone();
@@ -297,43 +308,30 @@ impl BleTransport {
                                         {
                                             buf.pop_front();
                                         }
-                                        let preview: String = bytes
-                                            .iter()
-                                            .take(48)
-                                            .map(|&b| {
-                                                if (0x20..0x7f).contains(&b) { b as char } else { '.' }
-                                            })
-                                            .collect();
-                                        eprintln!(
-                                            "[ble-trace] NOTIFY masuk: {} byte \"{}\" (buffer={} byte)",
-                                            bytes.len(),
-                                            preview,
-                                            buf.len()
-                                        );
                                         for b in bytes {
                                             buf.push_back(b);
                                         }
                                     } else {
-                                        // Log ini penting: mutex yang dipoison
-                                        // membuat notify DILEWATI tanpa error ke
-                                        // frontend, dan gejalanya persis sama
-                                        // dengan "tidak menerima apa-apa".
-                                        eprintln!("[ble-trace] NOTIFY masuk tapi GAGAL lock buffer (poisoned)");
+                                        // Mutex yang dipoison membuat notify DILEWATI
+                                        // tanpa error ke frontend, dan gejalanya
+                                        // persis sama dengan "tidak menerima
+                                        // apa-apa" - jadi harus tetap tercatat.
+                                        ble_log!("NOTIFY masuk tapi GAGAL lock buffer (poisoned)");
                                     }
                                 } else {
-                                    eprintln!("[ble-trace] NOTIFY masuk tapi GAGAL baca byte");
+                                    ble_log!("NOTIFY masuk tapi GAGAL baca byte");
                                 }
                             } else {
-                                eprintln!("[ble-trace] NOTIFY masuk tapi GAGAL ambil panjang");
+                                ble_log!("NOTIFY masuk tapi GAGAL ambil panjang");
                             }
                         } else {
-                            eprintln!("[ble-trace] NOTIFY masuk tapi GAGAL buat DataReader");
+                            ble_log!("NOTIFY masuk tapi GAGAL buat DataReader");
                         }
                     } else {
-                        eprintln!("[ble-trace] NOTIFY masuk tapi GAGAL ambil CharacteristicValue");
+                        ble_log!("NOTIFY masuk tapi GAGAL ambil CharacteristicValue");
                     }
                 } else {
-                    eprintln!("[ble-trace] NOTIFY event tanpa args");
+                    ble_log!("NOTIFY event tanpa args");
                 }
                 Ok(())
             },
@@ -353,7 +351,7 @@ impl BleTransport {
         // masalahnya DI BAWAH companion app (pairing/CCCD/stack BT), dan tidak
         // ada yang bisa diperbaiki di repo ini. Kalau muncul tapi baris NOTIFY
         // di bawah tidak pernah datang, masalahnya advertising/subscribe.
-        eprintln!("[ble-trace] notify DISUBSCRIBE-kan, siap menerima data dari device");
+        ble_log!("notify DISUBSCRIBE-kan, siap menerima data dari device");
 
         self.device = Some(device);
         self.service = Some(service);
@@ -439,7 +437,7 @@ impl BleTransport {
                 .take(48)
                 .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
                 .collect();
-            eprintln!("[ble-trace]   -> DIKIRIM ke app: {} byte \"{}\"", out.len(), preview);
+            ble_log!("-> DIKIRIM ke app: {} byte \"{}\"", out.len(), preview);
         }
         out
     }
