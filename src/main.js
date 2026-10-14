@@ -169,6 +169,12 @@ setPendingTransportHooks({
   onConnected: () => {
     // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
     // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
+    //
+    // RESET STATE tiap kali terhubung. Slot cache device (SLOT:n:NEW) hanya ada
+    // di RAM, hilang saat device putus/reboot. Jika kita tidak reset, app
+    // mengira slot masih valid dan akan kirim SLOT:<n>:USE yang tidak pernah
+    // di-upload lagi — device akan memakai keymap kosong/default di slot itu.
+    resetAdaptiveRuntimeState();
     notify(deviceWasLost() ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
     switchPage('home');   // Home selalu tampil saat pertama kali connect
   },

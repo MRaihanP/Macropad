@@ -129,6 +129,32 @@ let hooks = {
 };
 export function initProtocolParser(h) { hooks = Object.assign({}, hooks, h); }
 
+// ---- Antre DUMPNAMES ----
+//
+// Satu flag, bukan antrean. Tujuannya bukan mencatat setiap permintaan, tapi
+// memastikan hanya SATU frame NAMES yang boleh berjalan pada satu waktu.
+// Kalau INFO datang tiga kali berturut-turut, cukup ada satu permintaan
+// tertunda - tiga frame NAMES berurutan tidak menambah informasi apa pun, dan
+// justru memperbesar peluang NAMES_END saling menutupi.
+let namesPending = false;
+
+// Dipanggil saat nama layer dibutuhkan. Langsung kirim kalau tidak ada frame
+// yang sedang berjalan; kalau ada, tandai saja dan biarkan flushPendingNames()
+// yang mengirimnya begitu frame selesai.
+function requestNames() {
+  if (namesInProgress() || dumpInProgress()) { namesPending = true; return; }
+  namesPending = false;
+  sendLine('DUMPNAMES');
+}
+
+// Dipanggil tepat setelah DUMP_END. Baru saat itu aman: device sudah selesai
+// menulis frame, jadi frame berikutnya tidak akan saling memotong.
+function flushPendingNames() {
+  if (!namesPending) return;
+  if (namesInProgress() || dumpInProgress()) return;
+  requestNames();
+}
+
 export function handleLine(line) {
   line = line.trim();
   if (!line) return;
@@ -165,7 +191,12 @@ export function handleLine(line) {
 // jalur "selalu menang" di atas, tanpa ikut masuk ke logika frame.
 function handleRealtimeLine(line) {
   let mm;
-  if ((mm = line.match(/^\[LAYER\] Pindah ke layer (\d+)/))) {
+  // Dua varian dari firmware, keduanya harus cocok:
+  //   macropad_core.h:554  "[LAYER] Pindah ke layer N"          (knob diputar)
+  //   macropad_core.h:875  "[LAYER] Pindah manual ke layer N"   (perintah LAYER:)
+  // Semula hanya varian pertama yang dicocokkan, jadi notifikasi perpindahan
+  // layer yang muncul saat preset berganti tidak pernah tampil sama sekali.
+  if ((mm = line.match(/^\[LAYER\] Pindah (?:manual )?ke layer (\d+)/))) {
     const n = parseInt(mm[1]);
     // Saat preset aktif, nama layer diambil dari preset itu - device hanya tahu
     // layer sebagai nomor, dan nomor itu milik preset aktif, bukan preset default.
@@ -292,6 +323,13 @@ function handleFrameLine(line) {
         hooks.loadLayer(pending);
       }
     }
+
+    // Frame DUMP sudah tutup, jadi baru sekarang DUMPNAMES boleh dikirim.
+    // Dikirim di sini, bukan baris demi baris di penangan INFO, karena di sana
+    // dua perintah (DUMP:0 dari loadLayer dan DUMPNAMES) dikirim berdampingan
+    // ke device - device bisa mulai NAMES di tengah frame DUMP, dan penutup
+    // yang salah membatalkan watchdog.
+    flushPendingNames();
     return;
   }
   if (dumpInProgress()) {
@@ -383,20 +421,21 @@ function handleFrameLine(line) {
     el('deviceEncLabel').textContent = String(NUM_ENCODERS);
     el('deviceMatrixLabel').textContent = ROWS + ' × ' + COLS;
     hooks.renderTabs(); hooks.loadLayer(currentLayer);
-    // DUMPNAMES hanya kalau tidak ada dump yang sedang dibaca.
+    // DUMPNAMES ditunda, bukan langsung dikirim.
     //
     // INFO sering datang BERUNTUN di sesi yang sama: handshake mengirimnya,
     // lalu setiap activatePresetRuntime() mengirim INFO lagi. Tiap INFO memicu
-    // DUMPNAMES tambahan - dan kalau satu sedang berjalan, DeviceDump yang
-    // baru menumpuk di ylab yang sama. Parser proses satu-satu, jadi NAMES_END
-    // dari dump pertama akan menutupi dump kedua (atau sebaliknya), menyisakan
+    // DUMPNAMES tambahan - dan kalau satu sedang berjalan, frame NAMES yang
+    // baru menumpuk di label yang sama. Parser proses satu-satu, jadi NAMES_END
+    // dari frame pertama akan menutupi frame kedua (atau sebaliknya), menyisakan
     // namesInProgress = true selamanya. Gejalanya: setelahnya SETIAP baris
     // (INFO, [KEY], EVT:*) ditolak sebagai "Invalid NAMES line".
     //
-    // Menunggu dump yang sedang berjalan lebih aman daripada menumpuk: dump
-    // yang jalan pasti selesai sendiri, dan loadLayer() di atas sudah meminta
-    // isi layer terbaru.
-    if (!namesInProgress() && !dumpInProgress()) sendLine('DUMPNAMES');
+    // Selain itu, loadLayer() di atas baru saja mengirim DUMP:0. Dua perintah
+    // itu berebut di device, dan device bisa mulai NAMES di tengah frame DUMP -
+    // penutup yang salah membatalkan watchdog, dan itu persis sumber pesan
+    // "DUMP never closed". Jadi DUMPNAMES dikirim setelah frame berjalan selesai.
+    requestNames();
     return;
   }
   if (line.startsWith('WHOAMI:')) {

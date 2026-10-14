@@ -616,10 +616,26 @@ function stopReadLoop() {
   readTimer = null;
 }
 
-// Batch upload baru dimulai: watchdog yang sudah ter-arm tidak relevan lagi.
-// Device akan sibuk memproses antrean, jadi "DUMP_END belum keluar" itu
-// wajar, bukan tanda frame hilang.
-registerOnBatchStart(() => { cancelDumpWatchdog(); });
+// Batch upload baru dimulai.
+//
+// SEBELUMNYA watchdog di sini selalu dibatalkan. Itu kesalahan yang halus:
+// kalau penutup frame yang sedang berjalan hilang TEPAT saat batch mulai,
+// pembatalan itu membuat kejadian hilang tanpa jejak - dumpInProgress tetap
+// true dan tidak ada yang melaporkannya. Beberapa detik kemudian dump
+// berikutnya mengirim baris isi, watchdog ter-arm, lalu meledak dengan pesan
+// "DUMP never closed". Jadi pesan yang user lihat sebenarnya melaporkan
+// kejadian yang sudah lewat, bukan yang sedang terjadi - dan itu sebabnya
+// errornya terasa acak padahal penyebabnya rutin.
+//
+// Sekarang: kalau ada frame yang SEDANG berjalan, watchdog dibiarkan hidup.
+// Callback-nya sudah memeriksa batchUploadInFlight() lalu menunda diri sendiri
+// (lihat armDumpWatchdog), jadi device yang sibuk tidak akan salah dilapor.
+// Kalau tidak ada frame berjalan, tidak ada yang perlu diawasi dan watchdog
+// boleh dibatalkan seperti sebelumnya.
+registerOnBatchStart(() => {
+  if (dumpInProgress || namesInProgress) return;   // biarkan menunda diri
+  cancelDumpWatchdog();
+});
 
 // Ekspor untuk test; dipakai juga oleh disconnect().
 export function stopAllBleTimers() { stopPing(); stopReadLoop(); }

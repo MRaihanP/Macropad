@@ -82,6 +82,9 @@ tombol BOOT sudah ada di firmware PROTOTYPE. Git tag: `app-v0.6.0`.
   tertahan di antrean device. `markBatchSettling` kini dipanggil lagi setelah
   `loadActiveLayerDump` mengirim DUMP, memanjang window hingga response benar-benar
   sampai.
+|- `back to default` branch: hapus `markBatchSettling(4000)` — sebuah call yang bukan upload batch (hanya 3 baris kecil). `markBatchSettling` akan membuat `batchUploadInFlight() = true` selama 4 detik, melewati semua response device lewat watchdog logic, sehingga watchdog tidak pernah di-arm dan DUMP response terlihat "never closed". Diganti dengan `contextSwitchPending` flag (2.5 detik, tidak memengaruhi watchdog).
+|- `back to default` branch: hapus `DUMPENC` dari batch response. Encoder config sudah dilaporkan via INFO response; DUMPENC dipisahkan untuk menghindari dua frame dump berpotongan.
+|- `onConnected` hook di main.js: panggil `resetAdaptiveRuntimeState()` setiap kali terhubung (bukan hanya di onDeviceLost). Ini memastikan `slotTable` dan `currentActivePresetId` di-reset di setiap koneksi, termasuk reconnect langsung tanpa disconnect sebelumnya. Device sudah berada di CONTEXT:DEFAULT secara otomatis (firmware boot), jadi app tidak perlu mengirim `CONTEXT:DEFAULT` di koneksi pertama — cukup reset state lokal.
 |- Watchdog dump yang tembak kini tidak langsung membuang lineBuffer — sisa
   buffer parsial disimpan dan re-parse. Jika DUMP_END datang sebentar setelah
   tembakan, `cancelDumpWatchdog` akan menghancurkan timer yang re-arm, mencegah

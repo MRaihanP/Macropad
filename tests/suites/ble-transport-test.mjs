@@ -394,9 +394,20 @@ const parserSrc = fs.readFileSync(`${SRC}/protocol-parser.js`, 'utf8');
 const infoBlock = parserSrc.match(/if \(line\.startsWith\('INFO:'\)\) \{([\s\S]*?)\n  \}/);
 ok(!!infoBlock, 'blok handler INFO ditemukan');
 if (infoBlock) {
-  ok(/if \(!namesInProgress\(\) && !dumpInProgress\(\)\) sendLine\('DUMPNAMES'\)/.test(infoBlock[1]),
-    'DUMPNAMES hanya dikirim kalau tidak ada dump/nama yang sedang berjalan');
+  // Handler INFO tidak lagi mengirim DUMPNAMES langsung. Ia cuma menandai
+  // permintaan lewat requestNames(), yang sudah sendiri mengecek
+  // namesInProgress()/dumpInProgress() sebelum menulis ke device.
+  ok(/requestNames\(\)/.test(infoBlock[1]),
+    'handler INFO menunda DUMPNAMES lewat requestNames(), tidak mengirim langsung');
+  ok(!/sendLine\('DUMPNAMES'\)/.test(infoBlock[1]),
+    'handler INFO tidak lagi menulis DUMPNAMES langsung ke device');
 }
+// Penjaga "tidak kirim saat frame berjalan" kini hidup di requestNames(),
+// dan frame yang tertunda dikirim ulang tepat setelah DUMP_END.
+ok(/function requestNames\(\) \{[\s\S]*?if \(namesInProgress\(\) \|\| dumpInProgress\(\)\) \{ namesPending = true; return; \}/.test(parserSrc),
+  'requestNames() menunda DUMPNAMES kalau ada frame yang sedang berjalan');
+ok(/line === 'DUMP_END'[\s\S]*?flushPendingNames\(\)/.test(parserSrc),
+  'DUMPNAMES yang tertunda dikirim tepat setelah DUMP_END');
 // Watchdog di backend BLE harus menutup frame NAMES juga, bukan hanya DUMP.
 ok(/namesInProgress && line\.indexOf\(','\) > 0/.test(bleSrc2),
   'watchdog juga armed saat DUMPNAMES menggantung (bukan cuma DUMP)');

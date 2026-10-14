@@ -14,10 +14,11 @@ import {
   currentLayer, layerCount, maxLayers, layerNames, mapping, encConfig,
   setCurrentLayer, reorderLayer,
 } from './device-state.js';
-import { el, escapeHtml } from './dom.js';
+import { el, escapeHtml, log } from './dom.js';
 import { sendLine } from './transport.js';
 import { openAppPicker } from './app-picker.js';
 import { t } from './i18n.js';
+import { waitForDump } from './adaptive.js';
 
 // Nilai di sini adalah KUNCI tabel i18n; diterjemahkan saat pemakaian,
 // jadi ganti bahasa langsung memperbarui label berikutnya.
@@ -362,8 +363,48 @@ export function openEditor(kind, params) {
 // baik biarkan mapping lama terlihat sampai DUMP_BEGIN diterima di
 // protocol-parser.js, baru clear di sana. Jadi renderGrid() akan menampilkan
 // isi layer lama sampai data baru benar-benar mengalir.
+//
+// Permintaan yang masih berjalan, dikunci per layer. Perpindahan preset ke
+// Default memicu loadLayer() DUA kali: sekali dari EVT:LAYER:0 dan sekali dari
+// balasan INFO (protocol-parser.js). Tanpa kunci ini keduanya menembak DUMP:0
+// hampir bersamaan, jadi device mengirim dua frame untuk satu permintaan dan
+// penutup frame pertama bisa tertimpa - gejalanya persis "dump tidak pernah
+// ditutup".
+//
+// Kuncinya hanya berlaku selama permintaan BERJALAN. Setelah selesai, permintaan
+// berikutnya (mis. user menekan Refresh) tetap dikirim normal - ini bukan
+// pembekuan tombol refresh.
+const layerDumpInFlight = new Map();
+
 export async function loadLayer(l) {
-  await sendLine('DUMP:' + l);
+  const layer = (l === undefined || l === null || Number.isNaN(l)) ? currentLayer : l;
+  const jalan = layerDumpInFlight.get(layer);
+  if (jalan) return jalan;
+
+  const kerja = (async () => {
+    // Dua percobaan. Percobaan kedua hanya jalan kalau DUMP_END benar-benar
+    // tidak sampai - inilah yang menutup sendiri alurnya, karena tanpa retry
+    // grid akan menampilkan keymap setengah jadi selamanya sampai user menekan
+    // Refresh.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const waiter = waitForDump(layer, 3000);
+      await sendLine('DUMP:' + layer);
+      if (await waiter) return true;
+      log(t('home.dumpRetry', { layer, attempt }), 'err');
+    }
+    hooksDumpFailed(layer);
+    return false;
+  })();
+
+  layerDumpInFlight.set(layer, kerja);
+  try { return await kerja; }
+  finally { if (layerDumpInFlight.get(layer) === kerja) layerDumpInFlight.delete(layer); }
+}
+
+// Dipanggil saat kedua percobaan sama-sama gagal. Grid mungkin menampilkan
+// keymap setengah jadi, jadi user perlu tahu itu isi device, bukan hasil load.
+function hooksDumpFailed(layer) {
+  log(t('home.dumpFailed', { layer }), 'err');
 }
 
 // Ganti layer aktif di device DAN muat isinya ke UI. Dipakai saat user menekan tab

@@ -41,6 +41,8 @@ export const en = {
 'home.deleteLayer': '− Delete',
 'home.renameLayer': '✎ Rename',
 'home.load': 'Load',
+'home.dumpRetry': 'Layer {layer} incomplete, retrying (attempt {attempt})',
+'home.dumpFailed': 'Layer {layer} failed to load twice. The grid below may be incomplete - press Refresh to try again.',
 'home.reset': 'Reset',
 'home.save': 'Save',
 'home.log': 'Log',

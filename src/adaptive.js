@@ -55,6 +55,12 @@ let pendingFocusSince = 0;
 let escapeFrozenForExe = null;
 let autoSwitchBusy = false;
 let bindableAppsCache = null;
+// Flag untuk menahan polling selama device sedang beralih konteks
+// (CONTEXT:DEFAULT / SLOT:USE). Ini seperti autoSwitchBusy tapi lebih spesifik:
+// polling tidak boleh mengirim perintah baru sampai device selesai memproses
+// konteks yang sedang berjalan. Tanpa ini, app bisa mengirim DUMP:0 sebelum
+// device selesai CONTEXT:DEFAULT, menyebabkan response tumpang tindih.
+let contextSwitchPending = false;
 
 const FOCUS_DEBOUNCE_MS = 150;
 const FOCUS_POLL_MS = 120;
@@ -157,7 +163,19 @@ function autoSwitchBlockedByLayerChoice() {
 // [ERROR] alih-alih DUMP_END (mis. layerCount UI basi setelah RESET di luar app).
 const dumpWaiters = new Map();   // layer -> Set<{resolve, timer}>
 
-function waitForDump(layer, timeoutMs) {
+// Diekspor supaya home-page.js bisa memakainya di jalur muat layer.
+//
+// Kenapa diekspor, bukan sebaliknya? Arahnya satu: home-page -> adaptive.
+// Adaptive tidak pernah mengimpor home-page (ia memakai hooks), jadi tidak
+// muncul siklus import - import-cycle-check.mjs yang menjaganya.
+//
+// Tanpa waiter ini, jalur muat layer cuma "kirim DAN LUPA": kalau DUMP_END
+// hilang di tengah jalan, mapping[layer] sudah dikosongkan di protocol-parser.js
+// (emptyLayer) lalu hanya terisi sebagian baris yang sempat sampai. Tidak ada
+// apa pun yang memintanya ulang, jadi grid menampilkan keymap setengah jadi
+// sampai user menekan Refresh. Waiter inilah yang membuat alurnya menutup diri
+// sendiri.
+export function waitForDump(layer, timeoutMs) {
   const key = (layer === undefined || layer === null || Number.isNaN(layer)) ? currentLayer : layer;
   return new Promise((resolve) => {
     const entry = { resolve: null, timer: null };
@@ -620,7 +638,7 @@ async function loadActiveLayerDump() {
 let pollInFlight = false;
 async function pollFocusedApp() {
   if (pollInFlight) return;
-  if (!presetsData.masterEnabled || !isConnected() || editingPresetId || autoSwitchBusy) return;
+  if (!presetsData.masterEnabled || !isConnected() || editingPresetId || autoSwitchBusy || contextSwitchPending) return;
   pollInFlight = true;
   try {
     let exe;
@@ -664,23 +682,42 @@ async function pollFocusedApp() {
         // Back to Default — ini persis seperti slot cache: device sudah
         // menyimpan default config permanen di flash, jadi kita hanya
         // butuh token CONTEXT:DEFAULT, bukan re-upload seluruh keymap.
+        //
         // LAYER:0 diperlukan karena device mungkin masih di layer lama
         // (dari preset app sebelumnya) yang tidak valid di default config.
-        await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO', 'DUMPENC']);
-        markBatchSettling(4000);
-        // Sync app state: currentLayer harus 0 untuk konsisten dengan
-        // LAYER:0 di atas, agar hooks.loadLayer dipanggil di INFO handler
-        // meminta DUMP layer yang benar.
+        //
+        // PENTING: tidak memakai markBatchSettling() di sini — ini BUKAN
+        // upload batch (hanya 3 baris kecil). markBatchSettling akan membuat
+        // batchUploadInFlight() = true selama 4 detik, dan handleIncomingChunk
+        // akan MELEWATI semua response (CONTEXT:DEFAULT, INFO, DUMP) lewat
+        // watchdog logic. Akibatnya watchdog tidak pernah armed, DUMP_END
+        // datang tanpa ada yang cancel, dan jika device lambat sempat saja
+        // dump terlihat macam "never closed".
+        //
+        // DUMPENC tidak dikirim di sini: encoder config sudah dilaporkan
+        // lewat INFO response. DUMPENC dipisahkan ke sendLine tunggal setelah
+        // DUMP layer selesai, untuk menghindari dua frame dump berpotongan.
+        await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO']);
+        // Set flag untuk menahan polling: device butuh waktu untuk memproses
+        // konteks + INFO + DUMP. Polling tidak boleh interleave selama ini.
+        contextSwitchPending = true;
+        // Reset currentLayer di app state ke 0 untuk konsisten dengan LAYER:0.
         setCurrentLayer(0);
         currentActivePresetId = null;
         updateActivePresetLabel();
         log(t('adaptive.backDefaultLog'), null);
         hooks.notify(t('adaptive.defaultNotif'), 'preset');
-        // Tidak perlu panggil loadActiveLayerDump() secara manual: device
-        // akan merespon INFO (yang baru saja dikirim) dan INFO handler di
-        // protocol-parser.js sudah memanggil hooks.loadLayer(currentLayer).
-        // Ini mengurang satu roundtrip BLE dan menghindari race condition
-        // antara DUMP:0 manual dan INFO response.
+        // INFO response akan trigger hooks.loadLayer(currentLayer) secara
+        // otomatis di protocol-parser.js. Tidak perlu panggil
+        // loadActiveLayerDump() manual — sudah pasti race condition dengan
+        // response INFO yang sedang berjalan.
+        //
+        // Tunggu sampai device selesai memproses (INFO + DUMP response datang
+        // lewat protocol-parser). Karena kita tidak pakai markBatchSettling
+        // (yang akan nge-skip watchdog), flag ini akan di-clear oleh timer.
+        // Durasi 2.5 detik cukup untuk device memproses 3 perintah kecil +
+        // DUMP response (9 key lines + LAYER_END).
+        setTimeout(() => { contextSwitchPending = false; }, 2500);
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }

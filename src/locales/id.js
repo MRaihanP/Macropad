@@ -38,6 +38,8 @@ export const id = {
 'home.deleteLayer': '− Hapus',
 'home.renameLayer': '✎ Ubah Nama',
 'home.load': 'Muat',
+'home.dumpRetry': 'Layer {layer} tidak lengkap, mengulang (percobaan {attempt})',
+'home.dumpFailed': 'Layer {layer} gagal dimuat 2x. Isi grid di bawah mungkin tidak lengkap - tekan Refresh untuk mencoba lagi.',
 'home.reset': 'Atur Ulang',
 'home.save': 'Simpan',
 'home.log': 'Log',
