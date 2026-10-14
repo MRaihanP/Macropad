@@ -272,6 +272,23 @@ fn launch_impl(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
 
 // ==================== DETEKSI WINDOW AKTIF ====================
 // async: dipoll sering oleh frontend; jangan jalan di main thread
+//
+// PENTING: window companion app sendiri DIABAIKAN (dikembalikan None).
+//
+// Companion app tidak punya preset, jadi kalau window-nya ikut dibaca
+// sebagai "window aplikasi lain", setiap kali user alt+tab ke app untuk
+// melihat grid, companion app dianggap "aplikasi lain" ->
+// preset balik ke Default. Alt+tab balik ke aplikasi target ->
+// preset aktif lagi. Dan seterusnya tanpa henti.
+//
+// Log user menunjukkan persis pola itu: "Brave" -> "Kembali ke Default" ->
+// "Brave" -> "Kembali ke Default" berulang. Tiap putaran membanjiri device
+// dengan perintah baru, jadi device tidak pernah selesai dan frame DUMP
+// yang sedang jalan tidak pernah tertutup - dan itu sumber pesan
+// "DUMP never closed".
+//
+// Dicek lewat PID, bukan nama file: nama bisa berubah (namaBinaries) dan
+// macropad-configurator.exe bisa dipakai exe lain. PID tidak pernah salah.
 #[tauri::command]
 async fn get_foreground_exe() -> Option<String> {
     unsafe {
@@ -280,6 +297,8 @@ async fn get_foreground_exe() -> Option<String> {
         let mut pid: u32 = 0;
         windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 { return None; }
+        // Window milik proses kita sendiri = companion app, bukan target.
+        if pid == std::process::id() { return None; }
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 512];
         let mut len: u32 = buf.len() as u32;

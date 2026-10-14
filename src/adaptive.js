@@ -62,6 +62,11 @@ let bindableAppsCache = null;
 // device selesai CONTEXT:DEFAULT, menyebabkan response tumpang tindih.
 let contextSwitchPending = false;
 
+// Default harus dikirim tepat setelah connect (lihat resetAdaptiveRuntimeState).
+// Polling auto-switchMENUNGGU flag ini turun, supaya tidak ada dua aliran
+// perintah yang tumpang tindih di device tepat setelah connect.
+let switchPendingOnConnect = false;
+
 const FOCUS_DEBOUNCE_MS = 150;
 const FOCUS_POLL_MS = 120;
 // Jeda minimal antar dua perpindahan preset.
@@ -71,7 +76,22 @@ const FOCUS_POLL_MS = 120;
 // sedang jalan. Tanpa jeda ini, companion app (yang sedang difokuskan) memicu
 // "Back to Default" dan target memicu switch balik - menghasilkan bolak-balik
 // tanpa henti yang membanjiri antrean device.
-const SWITCH_COOLDOWN_MS = 2500;
+// Jeda minimal antar dua perpindahan preset.
+//
+// Upload preset itu mahal: ratusan perintah SET yang harus device proses satu
+// per satu, dan switch berikutnya tidak boleh menumpuk di belakang yang
+// sedang jalan. Tanpa jeda ini, companion app (yang sedang difokuskan) memicu
+// "Back to Default" dan target memicu switch balik - menghasilkan bolak-balik
+// tanpa henti yang membanjiri antrean device.
+//
+// 2,5 detik ternyata BELUM cukup. activatePresetRuntime() untuk preset besar
+// (8 layer) butuh jauh lebih lama, dan selama itu device masih sibuk. Switch
+// yang masuk di tengah-tengahnya membuat device never selesai, dan frame DUMP
+// yang sedang berjalan tidak pernah tertutup - pesan "DUMP never closed".
+//
+// Jeda ini diukur dari waktu switch DIMULAI, bukan dari switch selesai, jadi
+// switch yang sah tetap terjadi - hanya tidak menumpuk.
+const SWITCH_COOLDOWN_MS = 4000;
 let lastSwitchAt = 0;
 
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
@@ -641,8 +661,36 @@ async function pollFocusedApp() {
   if (!presetsData.masterEnabled || !isConnected() || editingPresetId || autoSwitchBusy || contextSwitchPending) return;
   pollInFlight = true;
   try {
+    // Default setelah connect. Dikirim di sini, bukan di dalam blok exe di
+    // bawah, karena harus terjadi SEKALI irrespective of window mana yang
+    // kebetulan sedang fokus - termasuk kalau window itu companion app
+    // sendiri (exe null) yang akan langsung return.
+    if (switchPendingOnConnect) {
+      switchPendingOnConnect = false;
+      contextSwitchPending = true;
+      quietOkUntil = Date.now() + 500;
+      await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO']);
+      setCurrentLayer(0);
+      updateActivePresetLabel();
+      log(t('adaptive.backDefaultLog'), null);
+      hooks.notify(t('adaptive.defaultNotif'), 'preset');
+      setTimeout(() => { contextSwitchPending = false; }, 2500);
+      return;
+    }
+
     let exe;
     try { exe = await invoke('get_foreground_exe'); } catch (e) { return; }
+    // exe null = window yang aktif adalah companion app sendiri (Rust
+    // menyaringnya lewat PID), atau tidak ada window foreground sama sekali.
+    //
+    // Ini BUKAN "user pindah ke aplikasi tanpa preset". Companion app tidak
+    // punya preset, jadi kalau null diperlakukan sebagai "tidak ada yang
+    // cocok", setiap alt+tab ke app untuk melihat grid akan memaksa preset
+    // balik ke Default - dan alt+tab balik ke aplikasi target mengaktifkannya
+    // lagi. Log user menunjukkan pola bolak-balik persis itu.
+    //
+    // Yang benar: tidak ada perubahan. Preset yang aktif TETAP aktif selama
+    // user berada di companion app.
     if (!exe) return;
 
     if (exe !== focusedExeLast) {
@@ -731,6 +779,21 @@ export function resetAdaptiveRuntimeState() {
   lastLayerByPreset = new Map();
   slotTable = Array(APP_SLOTS).fill(null);
   currentActivePresetId = null; focusedExeLast = null; escapeFrozenForExe = null; pendingFocusSince = 0;
+  // Default lebih dulu setelah setiap koneksi. Permintaan user: begitu app
+  // terhubung, yang tampil adalah preset Default; baru setelah user pindah ke
+  // window aplikasi lain (mis. Brave) preset ikut pindah.
+  //
+  // Ini juga menutup celah nyata: device yang baru boot sudah di CONTEXT:DEFAULT,
+  // tapi device yang reconnect setelah app restart bisa saja masih Ingat
+  // CONTEXT:APP dari sesi sebelumnya (context hidup di RAM device, bukan di
+  // app). Tanpa perintah eksplisit, app mengira sudah Default padahal device
+  // masih menjalankan preset lama - dan grid yang tampil bukan isi device.
+  //
+  // Sengaja tidak pakai markBatchSettling: ini 3 baris kecil, bukan upload
+  // batch. Lihat catatan panjang di pollFocusedApp soal alasannya.
+  switchPendingOnConnect = true;
+  contextSwitchPending = false;
+  lastSwitchAt = Date.now();
   updateActivePresetLabel();
 }
 

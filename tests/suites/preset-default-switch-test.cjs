@@ -81,5 +81,48 @@ ok(/export function waitForDump\(/.test(adaptive),
 ok(/from '\.\/adaptive\.js'/.test(home),
   'home-page.js mengimpor dari adaptive.js');
 
+// ==================== OSILASI alt+tab ====================
+// Log user: "Brave" -> "Kembali ke Default" -> "Brave" -> "Kembali ke
+// Default" berulang, lalu "DUMP never closed".
+//
+// Akarnya: companion app sendiri terbaca sebagai "window aplikasi lain".
+// Companion app tidak punya preset, jadi tiap alt+tab ke app memaksa preset
+// balik ke Default, dan alt+tab balik ke aplikasi target mengaktifkannya
+// lagi. Tiap putaran = upload/instruksi baru ke device yang never selesai.
+console.log('\n--- G. Companion app sendiri tidak memicu perpindahan preset ---');
+const rust = R('src-tauri/src/lib.rs');
+ok(/if pid == std::process::id\(\) \{ return None; \}/.test(rust),
+  'get_foreground_exe mengabaikan window companion app sendiri (dicek via PID)');
+ok(/^\s*if \(!exe\) return;$/m.test(adaptive),
+  'exe null (companion app / tanpa window) tidak dianggap "tidak ada preset"');
+// Null harusreturnSEBELUM blok yang deciding preset, bukan sesudah.
+const nullIdx = adaptive.indexOf('if (!exe) return;');
+const matchIdx = adaptive.indexOf('presetsData.presets.find(p => p.enabled');
+ok(nullIdx > 0 && matchIdx > nullIdx,
+  'penanganan exe null ada sebelum keputusan preset (bukan sesudah)');
+
+console.log('\n--- H. Connect pertama membuka Default, baru ikut pindah ---');
+ok(/let switchPendingOnConnect = false;/.test(adaptive),
+  'ada penanda yang menunggu pengiriman Default setelah connect');
+ok(/switchPendingOnConnect = true;/.test(adaptive),
+  'resetAdaptiveRuntimeState menandai Default perlu dikirim');
+const resetBlock = adaptive.match(/export function resetAdaptiveRuntimeState\(\) \{[\s\S]*?\n\}/);
+ok(resetBlock && /switchPendingOnConnect = true;/.test(resetBlock[0]),
+  'resetAdaptiveRuntimeState (dipanggil tiap connect) menyalakan penanda itu');
+ok(/await sendBatch\(\['CONTEXT:DEFAULT', 'LAYER:0', 'INFO'\]\)/.test(adaptive),
+  'Default dikirim eksplisit ke device setelah connect');
+// Pemeriksaan ini harus DI LUAR blok yang butuh exe - kalau tidak, tidak
+// pernah terkirim saat companion app yang fokus (exe null).
+const connectBlock = adaptive.match(/if \(switchPendingOnConnect\) \{[\s\S]*?\n    \}/);
+ok(!!connectBlock, 'blok pengiriman Default setelah connect ditemukan');
+const exeLookup = adaptive.indexOf("await invoke('get_foreground_exe')");
+const connectIdx = adaptive.indexOf('if (switchPendingOnConnect) {');
+ok(connectIdx > 0 && connectIdx < exeLookup,
+  'Default dikirim SEBELUM membaca window foreground (jadi jalan walau exe null)');
+
+console.log('\n--- I. Jeda antar switch cukup untuk device selesai ---');
+ok(/const SWITCH_COOLDOWN_MS = 4000;/.test(adaptive),
+  'cooldown dinaikkan ke 4000 ms (2500 ms tidak cukup untuk preset besar)');
+
 console.log(fail === 0 ? '\nOK: semua pemeriksaan hijau.' : `\n${fail} pemeriksaan gagal.`);
 process.exit(fail === 0 ? 0 : 1);
