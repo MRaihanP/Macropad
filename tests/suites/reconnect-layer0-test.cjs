@@ -39,8 +39,10 @@ ok(/parseIntRange\(cmd\.substring\(6\), 0, activeCfg->layerCount - 1/.test(core)
 
 console.log('\n--- C. Akar masalah di firmware terdokumentasi & tidak diubah ---');
 // currentLayer ikut tersimpan karena ada di struct cfg yang sama dengan flash.
-ok(/if \(cmd == "SAVE"\) \{ saveConfigToFlash\(\); return; \}/.test(core),
+ok(/saveConfigToFlash\(\);\s*\n\s*return;/.test(core),
   'firmware SAVE menuliskan seluruh struct cfg (berisi currentLayer) ke flash');
+ok(/if \(activeCfg != &cfg\)/.test(core),
+  'SAVE ditolak saat context bukan Default (mencegah edit Default hilang diam-diam)');
 // Kita TIDAK mengubah firmware: pixel/byte yang sama, hanya app yang meminta
 // layer 0 saat connect. Test ini mengunci keputusan itu.
 ok(!/LAYER:0/.test(core.replace(/\/\/.*$/gm, '')),

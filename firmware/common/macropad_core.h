@@ -50,6 +50,26 @@ MacroConfig* activeCfg = &cfg; // Semua command & eksekusi matrix/encoder lewat 
 #define APP_SLOTS 6
 MacroConfig slotCfg[APP_SLOTS];
 
+// =================== IDENTITAS CACHE SLOT ===================
+//
+// Cache App Preset hidup di RAM: hilang saat device mati/reset (lihat
+// resetCfgStruct di setup()). App punya tabel slot sendiri yang TIDAK tahu
+// device sudah restart - kalau device reboot lalu BLE reconnect tanpa app
+// restart, app masih mengira slot 0 valid dan akan mengirim SLOT:0:USE ke
+// slot yang sudah kosong. Keymap hilang tanpa jejak.
+//
+// Dua penanda berikut supaya app bisa mendeteksi itu tanpa menebak:
+//
+//  bootId  - naik tiap boot. App menyimpannya; beda = semua cache app
+//            dicurigai basi (device pernah restart di Compostapan app).
+//  slotUsed[APP_SLOTS] - true kalau slot itu pernah menerima SLOT:<n>:NEW.
+//            MASK yang dikirim lewat perintah SLOTS memberi tahu app slot mana
+//            yang benar-benar terisi, jadi app tidak perlu menebak.
+//
+// Keduanya murni RAM dan nol biaya: satu uint32 + satu array bool.
+uint32_t bootId = 0;
+bool slotUsed[APP_SLOTS] = { false };
+
 // =================== STATE MATRIX ===================
 const unsigned long KEY_DEBOUNCE_MS = 30;
 bool keyRawState[ROWS][COLS];
@@ -720,8 +740,21 @@ void handleSerialCommand(const String& cmd) {
     return;
   }
 
-  // SAVE/LOAD SELALU ke Default Preset (cfg), TIDAK PERNAH ke appCfg — terlepas context aktif
-  if (cmd == "SAVE") { saveConfigToFlash(); return; }
+  // SAVE/LOAD SELALU ke Default Preset (cfg), TIDAK PERNAH ke appCfg - terlepas context aktif
+  //
+  // SAVE ditolak saat context bukan Default. Alasannya: SAVE diam-diam menulis
+  // `cfg`, jadi kalau user mengedit Default lalu app berpindah ke App Preset
+  // (activeCfg = slot) lalu dia menekan Save, yang tersimpan ke flash adalah
+  // isi Default yang LAMA - bukan editannya. Edit user hilang tanpa jejak dan
+  // tidak ada error apa pun. Menolak lebih jujur daripada diam-diam menimpa.
+  if (cmd == "SAVE") {
+    if (activeCfg != &cfg) {
+      SERIAL->println("[ERROR] SAVE hanya berlaku di Default Preset - kembali ke Default dulu");
+      return;
+    }
+    saveConfigToFlash();
+    return;
+  }
   if (cmd == "LOAD") { loadConfigFromFlash(); SERIAL->println("[OK] Config dimuat ulang"); return; }
 
   if (cmd == "RESET") {
@@ -734,6 +767,38 @@ void handleSerialCommand(const String& cmd) {
   if (cmd == "CONTEXT:DEFAULT") {
     activeCfg = &cfg;
     SERIAL->println("[OK] Context: DEFAULT");
+    return;
+  }
+
+  // ---- Laporan status cache slot (read-only, tanpa efek samping) ----
+  //
+  // SLOTS: lebih murah daripada DUMP semua layer + DUMPNAMES. App memakainya
+  // sekali setelah connect untuk tahu slot mana yang masih hidup, alih-alih
+  // menebak dari tabel slotnya sendiri yang bisa basi setelah device restart.
+  //
+  // Format: SLOTS:<mask6>,boot=<n>
+  //   mask6 - 6 digit, urutan slot 0..5, '1' = terisi, '0' = kosong
+  //   boot  - naik tiap boot; beda berarti cache app dicurigai basi
+  //
+  // CTX?: konteks + layer aktif sekarang, satu baris. Ini menggantikan
+  // baca mahal (INFO + DUMP + DUMPNAMES ~= 490 byte, 4 frame) yang dulu
+  // dipakai app setiap kali pindah konteks.
+  if (cmd == "SLOTS") {
+    char mask[APP_SLOTS + 1];
+    for (uint8_t i = 0; i < APP_SLOTS; i++) mask[i] = slotUsed[i] ? '1' : '0';
+    mask[APP_SLOTS] = '\0';
+    SERIAL->printf("SLOTS:%s,boot=%u\n", mask, (unsigned)bootId);
+    return;
+  }
+  if (cmd == "CTX?") {
+    if (activeCfg == &cfg) {
+      SERIAL->printf("CTX:DEFAULT,l=%d\n", cfg.currentLayer);
+    } else {
+      int8_t si = -1;
+      for (uint8_t i = 0; i < APP_SLOTS; i++) if (activeCfg == &slotCfg[i]) { si = i; break; }
+      if (si >= 0) SERIAL->printf("CTX:SLOT%d,l=%d\n", si, activeCfg->currentLayer);
+      else         SERIAL->printf("CTX:APP,l=%d\n", activeCfg->currentLayer);
+    }
     return;
   }
   if (cmd == "CONTEXT:APP:NEW") {
@@ -751,7 +816,7 @@ void handleSerialCommand(const String& cmd) {
     if (!parseIntRange(cmd.substring(5, c2), 0, APP_SLOTS - 1, nL)) { SERIAL->println("[ERROR] Slot di luar batas"); return; }
     int n = (int)nL;
     String op = cmd.substring(c2 + 1);
-    if (op == "NEW") resetCfgStruct(slotCfg[n]);
+    if (op == "NEW") { resetCfgStruct(slotCfg[n]); slotUsed[n] = true; }
     else if (op != "USE") { SERIAL->println("[ERROR] Op SLOT harus NEW/USE"); return; }
     slotCfg[n].currentLayer = 0;
     activeCfg = &slotCfg[n];
@@ -1116,7 +1181,11 @@ void setup() {
   SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
   SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
   loadConfigFromFlash();
-  for (uint8_t i = 0; i < APP_SLOTS; i++) resetCfgStruct(slotCfg[i]);
+  for (uint8_t i = 0; i < APP_SLOTS; i++) { resetCfgStruct(slotCfg[i]); slotUsed[i] = false; }
+  // Cache App Preset barusan disegarkan karena RAM kosong. Naikkan bootId
+  // supaya app tahu tabel slotnya tidak boleh dipercaya lagi (lihat catatan
+  // di deklarasi bootId).
+  bootId++;
   resetAppCfg(); // siapkan appCfg kosong dari awal (belum dipakai sampai ada CONTEXT:APP:NEW)
 
   for (uint8_t i = 0; i < ROWS; i++) { pinMode(ROW_PINS[i], OUTPUT); digitalWrite(ROW_PINS[i], HIGH); }

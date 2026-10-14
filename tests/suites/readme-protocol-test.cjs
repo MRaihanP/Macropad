@@ -87,8 +87,10 @@ ok(/64 byte/.test(readme), 'README menyebut batas buffer stack vprintf (64)');
 ok(longest <= 64, `${longest} <= 64 byte, jadi tidak kena alokasi malloc di vprintf`);
 
 console.log('\n--- F. Klaim "currentLayer ikut tersimpan ke flash" ---');
-ok(/cmd == "SAVE"\) \{ saveConfigToFlash\(\); return; \}/.test(core),
+ok(/saveConfigToFlash\(\);\s*\n\s*return;/.test(core),
   'firmware SAVE menuliskan seluruh struct cfg (berisi currentLayer)');
+ok(/if \(activeCfg != &cfg\)/.test(core),
+  'SAVE ditolak saat bukan Default - tanpa itu SAVE diam-diam menulis isi Default yang LAMA');
 ok(/uint8_t currentLayer;/.test(core), 'currentLayer memang anggota struct cfg');
 ok(/LAYER:0/.test(readme), 'README menyebut solusi app-side (LAYER:0 setelah connect)');
 

@@ -166,8 +166,47 @@ ok(/switchPendingOnConnect = true;/.test(adaptive),
 const resetBlock = adaptive.match(/export function resetAdaptiveRuntimeState\(\) \{[\s\S]*?\n\}/);
 ok(resetBlock && /switchPendingOnConnect = true;/.test(resetBlock[0]),
   'resetAdaptiveRuntimeState (dipanggil tiap connect) menyalakan penanda itu');
-ok(/await sendBatch\(\['CONTEXT:DEFAULT', 'LAYER:0', 'INFO'\]\)/.test(adaptive),
-  'Default dikirim eksplisit ke device setelah connect');
+ok(/await sendBatch\(\['CONTEXT:DEFAULT', 'LAYER:0'\]\)/.test(adaptive),
+  'Default dikirim eksplisit ke device setelah connect (tanpa INFO - token switch)');
+// Token switch: perpindahan Default tidak boleh lagi memicu frame DUMP /
+// DUMPNAMES. Frame itulah yang bikin watchdog melapor "never closed".
+const swFn = adaptive.match(/async function switchToDefault\(\) \{[\s\S]*?\n\}/);
+ok(!!swFn, 'fungsi switchToDefault() ada');
+if (swFn) {
+  const b = swFn[0];
+  ok(/CONTEXT:DEFAULT/.test(b) && /LAYER:0/.test(b), 'perintah Default dikirim');
+  ok(!/\bINFO\b/.test(b), 'tidak ada lagi INFO di jalur switch Default');
+  ok(/applyDefaultCache\(\)/.test(b), 'grid digambar dari cache lokal, bukan read-back');
+  ok(!/sendLine\('DUMP:/.test(b), 'tidak ada DUMP langsung di jalur switch');
+}
+ok(!/loadActiveLayerDump\(\)/.test(
+  adaptive.match(/async function activatePresetRuntime[\s\S]*?\n\}/)[0]),
+  'aktivasi preset juga tidak lagi read-back DUMP - render dari cache lokal');
+ok(/function renderPresetLocally\(preset\)/.test(adaptive),
+  'preset dirender dari isi preset yang ada di app (presetsData)');
+// Cache Default di-persist ke localStorage supaya tetap instan setelah restart.
+const ds = R('src/device-state.js');
+ok(/localStorage\.setItem/.test(ds) && /localStorage\.getItem/.test(ds),
+  'cache Default di-persist ke localStorage');
+ok(/if \(!c \|\| c\.fw !== currentFw\) return;/.test(ds),
+  'cache dengan jejak firmware berbeda dibuang (isi device bisa berbeda)');
+ok(/export function invalidateDefaultCache\(\)/.test(ds),
+  'ada pembatalan cache saat Default diubah dari app');
+ok(/invalidateDefaultCache/.test(R('src/main.js')),
+  'main.js membatalkan cache saat Default bisa berubah');
+// SLOTS / CTX? - token status dari device (point 6: cache hilang saat mati).
+ok(/if \(cmd == "SLOTS"\)/.test(R('firmware/common/macropad_core.h')),
+  'firmware menjawab SLOTS (mask slot terisi + boot id)');
+ok(/if \(cmd == "CTX\?"\)/.test(R('firmware/common/macropad_core.h')),
+  'firmware menjawab CTX? (konteks + layer aktif, satu baris)');
+ok(/bootId\+\+/.test(R('firmware/common/macropad_core.h')),
+  'boot id naik tiap boot sehingga app tahu cache device hilang');
+ok(/slotUsed\[n\] = true/.test(R('firmware/common/macropad_core.h')),
+  'slot ditandai terisi saat SLOT:<n>:NEW diterima');
+ok(/export async function syncSlotStatus\(\)/.test(adaptive),
+  'app menanyakan status slot device setelah connect');
+ok(/deviceSlotOccupied\(slot\)/.test(adaptive),
+  'app memakai jawaban device sebagai acuan, bukan cuma tabelnya sendiri');
 // Pemeriksaan ini harus DI LUAR blok yang butuh exe - kalau tidak, tidak
 // pernah terkirim saat companion app yang fokus (exe null).
 const connectBlock = adaptive.match(/if \(switchPendingOnConnect\) \{[\s\S]*?\n    \}/);

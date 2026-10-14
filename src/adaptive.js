@@ -17,9 +17,11 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import {
-  ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
+  ROWS, COLS, NUM_ENCODERS, TYPE_NAMES, CAP_LAYERS,
   mapping, encConfig, layerNames, layerCount, currentLayer,
-  setCurrentLayer, reorderLayer,
+  setCurrentLayer, reorderLayer, setMapping, setLayerNames, setEncConfig,
+  getLayer, applyDefaultCache, setDefaultCache,
+  clearDefaultCache, loadDefaultCacheFromStorage,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';
@@ -162,6 +164,11 @@ let hooks = {
   resetEditorState: () => { },
   isDirty: () => false,
   setDirty: () => { },
+  // Digantar renderPresetLocally() & switchToDefault(): grid digambar dari
+  // cache lokal, jadi tidak ada yang perlu menunggu DUMP_END dari device.
+  renderGrid: () => { },
+  renderTabs: () => { },
+  renderEncoderList: () => { },
   // Dipasang main.js. adaptive TIDAK mengimpor home-page.js: aturan proyeknya
   // modul ini tidak boleh memanggil fungsi halaman secara langsung, supaya arah
   // ketergantungan tetap satu arah dan tidak muncul siklus import.
@@ -539,8 +546,14 @@ export async function confirmLeavePresetEditor() {
   // 'cancel'/Escape: tidak melakukan apa pun, tetap di editor
 }
 
-export function updateActivePresetLabel() {
-  const label = el('deviceActivePresetLabel');
+// True kalau tidak ada App Preset yang aktif, artinya device sedang di
+// CONTEXT:DEFAULT. Edit per-key/knob hanya mengubah Default Preset dalam kasus
+// ini - kalau App Preset aktif, device menunjuk ke slot dan yang berubah isi
+// slot itu, bukan Default. Dipakai main.js supaya cache Default hanya
+// dibatalkan saat memang perlu.
+export function isDefaultContext() { return !currentActivePresetId; }
+
+export function updateActivePresetLabel() {  const label = el('deviceActivePresetLabel');
   if (!label) return;
   label.textContent = currentActivePresetId ? (activePresetName() || t('adaptive.appPreset')) : t('common.default');
 }
@@ -627,11 +640,16 @@ async function activatePresetRuntime(preset, exe) {
   // mengaktifkan konten rusak.
   slotTable[slot] = null;
   try {
-    if (cached) {
+    // Cache app Says slot ini valid, tapi device bisa menyatakan otherwise
+    // (device restart, atau upload sebelumnya gagal di tengah). Device yang
+    // jadi acuan - kalau device bilang kosong, cache app tidak dipercaya.
+    const useCache = cached && deviceSlotOccupied(slot);
+    if (useCache) {
       // Preset sudah pernah di-upload ke slot ini dan signature-nya masih sama:
-      // cukup kirim SLOT:<n>:USE (satu baris).
-      await sendBatch([`SLOT:${slot}:USE`, 'LAYER:0', 'INFO', 'DUMPENC']);
-      markBatchSettling(4000);
+      // cukup kirim SLOT:<n>:USE (satu baris). TIDAK ada INFO/DUMP/DUMPENC
+      // karena app sudah punya isi preset ini di presetsData - render dari
+      // sana, bukan baca ulang dari device.
+      await sendBatch([`SLOT:${slot}:USE`, 'LAYER:0']);
     } else {
       // Upload per layer. Setiap layer adalah batch kecil (~3000 byte), jauh
       // di bawah MTU BLE dan cukup kecil untuk device memprosesnya dalam
@@ -649,25 +667,22 @@ async function activatePresetRuntime(preset, exe) {
         hooks.showPresetUploadProgress?.(preset.name, li + 1, preset.layers.length);
       }
       hooks.hidePresetUploadProgress?.();
-      // Setelah semua layer ter-upload, baru kirim INFO + DUMPENC untuk
-      // trigger refresh layer di parser.
-      await sendBatch(['LAYER:0', 'INFO', 'DUMPENC']);
-      markBatchSettling(6000);
+      // Setelah semua layer ter-upload, kunci ke layer 0. TIDAK requesting
+      // INFO/DUMP/DUMPENC: app sudah tahu isi preset ini (baru saja dikirim),
+      // jadi read-back hanya menambah frame yang harus dijaga watchdog.
+      await sendBatch(['LAYER:0']);
+      markBatchSettling(4000);
     }
     // Reset currentLayer di app state ke layer 0 karena kita mengirim LAYER:0
-    // ke device di atas. Tanpa ini, loadActiveLayerDump() akan memakai nilai
-    // currentLayer lama (dari app sebelumnya) yang mungkin berbeda.
+    // ke device di atas.
     setCurrentLayer(0);
     slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
     currentActivePresetId = preset.id;
     updateActivePresetLabel();
     log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
     hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
-    // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
-    // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
-    // sebelumnya sampai user menekan Refresh secara manual.
-    await loadActiveLayerDump();
-    markBatchSettling(6000);
+    // Grid digambar dari preset yang ada di app, bukan dari read-back device.
+    renderPresetLocally(preset);
   } catch (e) {
     // Restore slot state: jika upload gagal, slot lama mungkin masih valid.
     slotTable[slot] = savedSlot;
@@ -688,6 +703,196 @@ async function loadActiveLayerDump() {
   await hooks.loadLayer(currentLayer);
 }
 
+// Gambar grid dari isi preset yang sudah ada di app (presetsData).
+//
+// Ini menggantikan read-back DUMP:0 setelah preset aktif. Alasannya:
+// app JUSTRU baru saja mengirim isi preset ini ke device, jadi isinya sudah
+// diketahui app. Membacanya kembali dari device menambah ~200 byte dalam 11
+// baris dan satu frame DUMP yang harus dijaga watchdog - tanpa menambah
+// informasi apa pun.
+//
+// Bentuk preset.layers sudah sama dengan yang dipakai modul home-page:
+// keys[r][c] = { type, value }, name, encCw/encCcw/encBtn.
+function renderPresetLocally(preset) {
+  const layers = preset.layers || [];
+  if (!layers.length) return;
+  const grid = Array.from({ length: CAP_LAYERS }, () => Array.from({ length: ROWS }, () => Array(COLS).fill(null)));
+  const names = Array(CAP_LAYERS).fill(null);
+  for (let li = 0; li < layers.length && li < CAP_LAYERS; li++) {
+    const L = layers[li];
+    names[li] = L.name || null;
+    for (let r = 0; r < ROWS; r++) {
+      const row = L.keys?.[r];
+      if (!row) continue;
+      for (let c = 0; c < COLS; c++) {
+        const k = row[c];
+        grid[li][r][c] = (k && k.type) ? { type: k.type, value: k.value || '' } : null;
+      }
+    }
+  }
+  // Knob: preset menyimpan encCw/encCcw/encBtn per layer, tapi device hanya
+  // punya satu set knob untuk layer aktif. Ambil dari layer yang sedang
+  // ditampilkan.
+  const cur = layers[Math.min(currentLayer, layers.length - 1)] || layers[0];
+  const enc = Array.from({ length: NUM_ENCODERS }, (_, i) => ({
+    CW:  pick(cur?.encCw?.[i]),
+    CCW: pick(cur?.encCcw?.[i]),
+    BTN: pick(cur?.encBtn?.[i]),
+  }));
+  setMapping(grid);
+  setLayerNames(names);
+  setEncConfig(enc);
+  hooks.renderTabs();
+  hooks.renderGrid();
+  hooks.renderEncoderList();
+}
+const pick = (a) => (a && a.type ? { type: a.type, value: a.value || '' } : null);
+
+// ==================== TOKEN SWITCH ====================
+//
+// Default Preset ada di flash device, jadi Device TIDAK perluan mengirimi
+// ulang isinya. Yang perlu Device lakukan cuma memindahkan activeCfg.
+//
+// Versi lama mengirim CONTEXT:DEFAULT + LAYER:0 + INFO dan lalu menunggu
+// INFO -> DUMP:0 -> DUMPNAMES. Itu ~490 byte dalam 4 frame, dan tiap frame
+// punya BEGIN/END yang harus dijaga watchdog. "DUMPNAMES never closed" dan
+// "DUMP never closed" datang dari kelas bug ini - bukan dari satu baris
+// yang hilang di jalan.
+//
+// Sekarang: 1 write, 0 frame. Grid langsung dirender dari cache, tanpa
+// menunggu device sama sekali. Kalau cache belum ada (pertama kali, atau
+// Default baru diubah), jatuh ke full read - lebih lambat sekali, bukan
+// error.
+async function switchToDefault() {
+  quietOkUntil = Date.now() + 500;
+  markPresetSwitch();
+  await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0']);
+  contextSwitchPending = true;
+  setCurrentLayer(0);
+  currentActivePresetId = null;
+  updateActivePresetLabel();
+
+  if (applyDefaultCache()) {
+    // Cache memuat seluruh Default Preset, jadi tidak ada yang perlu dibaca
+    // dari device. Tinggal gambar ulang.
+    hooks.renderTabs();
+    hooks.renderGrid();
+    hooks.renderEncoderList();
+  } else {
+    // Cache belum ada / sudah basi. Baca sekali dari device, lalu simpan
+    // supaya perpindahan berikutnya instan.
+    await readDefaultFromDevice();
+  }
+
+  log(t('adaptive.backDefaultLog'), null);
+  hooks.notify(t('adaptive.defaultNotif'), 'preset');
+  setTimeout(() => { contextSwitchPending = false; }, 1200);
+}
+
+// Full read Default: semua layer + nama layer + knob. Ini satu-satunya
+// jalur yang memakai frame DUMP/NAMES, dan hanya jalan saat cache belum ada.
+async function readDefaultFromDevice() {
+  const layers = [];
+  for (let l = 0; l < layerCount; l++) {
+    const waiter = waitForDump(l, 3000);
+    await sendLine('DUMP:' + l);
+    await waiter;
+    layers.push(cloneLayer(getLayer(l)));
+  }
+  const names = layerNames.slice();
+  const enc = encConfig.map(e => ({ CW: cloneAction(e.CW), CCW: cloneAction(e.CCW), BTN: cloneAction(e.BTN) }));
+  setDefaultCache(fwVersion, layers, names, enc);
+  hooks.renderTabs(); hooks.renderGrid(); hooks.renderEncoderList();
+}
+
+const cloneAction = (a) => (a && a.type ? { type: a.type, value: a.value } : null);
+const cloneLayer = (g) => (g || []).map(row => (row || []).map(c => cloneAction(c)));
+
+// Versi firmware device, dibaca dari WHOAMI. Dipakai sebagai jejak cache
+// Default: cache yang dibuat firmware berbeda tidak boleh dipakai.
+let fwVersion = 0;
+export function setDeviceFwVersion(v) {
+  if (!Number.isInteger(v) || v <= 0) return;
+  if (fwVersion === v) return;
+  fwVersion = v;
+  // Firmware berubah -> cache lama bisa tidak cocok dengan isi device.
+  clearDefaultCache();
+  loadDefaultCacheFromStorage(v);
+}
+
+// ---- Status cache slot di device (point 6 user) ----
+//
+// Cache App Preset hidup di RAM device: hilang saat device mati/reset.
+// Tabel slot di app tidak tahu itu, jadi tanpa pengecekan di sini app bisa
+// mengirim SLOT:<n>:USE ke slot yang sudah kosong - keymap hilang tanpa jejak.
+//
+// Perintah SLOTS membalas "SLOTS:<mask6>,boot=<n>". boot id naik tiap boot
+// device; kalau beda, semua cache app dianggap basi karena device pernah
+// restart di luar app.
+let deviceBootId = null;
+let deviceSlotMask = 0;
+
+export async function syncSlotStatus() {
+  try {
+    const line = await requestOneLine('SLOTS', 2000);
+    if (!line) return;
+    const m = line.match(/^SLOTS:([01]{6}),boot=(\d+)/);
+    if (!m) return;
+    const mask = parseInt(m[1], 2);
+    const boot = parseInt(m[2], 10);
+    // boot id berubah = device restart = semua slot kosong di device.
+    if (deviceBootId !== null && boot !== deviceBootId) {
+      slotTable = Array(APP_SLOTS).fill(null);
+    }
+    deviceBootId = boot;
+    deviceSlotMask = mask;
+    // Slot yang device nyatakan kosong tapi app think-nya terisi = app salah,
+    // entah karena device restart atau karena upload pernah gagal di tengah.
+    for (let i = 0; i < APP_SLOTS; i++) {
+      if (!slotTable[i]) continue;
+      if (!((mask >> i) & 1)) slotTable[i] = null;
+    }
+  } catch (e) { /* device tidak menjawab: pakai tabel apa adanya */ }
+}
+
+export function deviceSlotOccupied(i) { return ((deviceSlotMask >> i) & 1) === 1; }
+
+// Kirim satu perintah dan tunggu satu baris jawaban, dengan batas waktu.
+//
+// Sengaja TIDAK memakai flag frame milik transport (dumpInProgress dll):
+// SLOTS/CTX? adalah perintah sekali-pakai, bukan frame panjang. Kalau
+// ikut memakai flag itu, satu baris jawaban singkat bisa ikut teranjak
+// watchdog sebagai "isi frame yang tidak pernah ditutup" - persis kelas bug
+// yang sedang kita hilangkan.
+function requestOneLine(cmd, timeoutMs) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const handler = (line) => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (pendingOneLine === handler) pendingOneLine = null;
+      resolve(line);
+      return true;                       // baris sudah dikonsumsi
+    };
+    pendingOneLine = handler;
+    timer = setTimeout(() => {
+      if (pendingOneLine === handler) pendingOneLine = null;
+      resolve(null);                     // tidak dijawab - bukan error fatal
+    }, timeoutMs || 2000);
+    sendLine(cmd).catch(() => { });
+  });
+}
+
+let pendingOneLine = null;
+
+// Dipanggil protocol-parser untuk setiap baris device. Kalau ada perintah
+// sekali-pakai yang sedang menunggu jawaban, baris itu diserahkan ke sana
+// supaya tidak sampai dibaca sebagai frame/command lain.
+export function offerOneLine(line) {
+  const f = pendingOneLine;
+  if (!f) return false;
+  return f(line) === true;
+}
+
 let pollInFlight = false;
 async function pollFocusedApp() {
   if (pollInFlight) return;
@@ -700,15 +905,11 @@ async function pollFocusedApp() {
     // sendiri (exe null) yang akan langsung return.
     if (switchPendingOnConnect) {
       switchPendingOnConnect = false;
-      contextSwitchPending = true;
-      quietOkUntil = Date.now() + 500;
-      await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO']);
-      markPresetSwitch();
-      setCurrentLayer(0);
-      updateActivePresetLabel();
-      log(t('adaptive.backDefaultLog'), null);
-      hooks.notify(t('adaptive.defaultNotif'), 'preset');
-      setTimeout(() => { contextSwitchPending = false; }, 2500);
+      // Tanya dulu cache slot device masih hidup atau tidak (point 6 user).
+      // Device yang baru boot punya slot kosong; app yang tidak tahu itu
+      // akan mengirim SLOT:<n>:USE ke slot kosong - keymap hilang tanpa jejak.
+      await syncSlotStatus();
+      await switchToDefault();
       return;
     }
 
@@ -783,30 +984,7 @@ async function pollFocusedApp() {
         // datang tanpa ada yang cancel, dan jika device lambat sempat saja
         // dump terlihat macam "never closed".
         //
-        // DUMPENC tidak dikirim di sini: encoder config sudah dilaporkan
-        // lewat INFO response. DUMPENC dipisahkan ke sendLine tunggal setelah
-        // DUMP layer selesai, untuk menghindari dua frame dump berpotongan.
-        await sendBatch(['CONTEXT:DEFAULT', 'LAYER:0', 'INFO']);
-        // Set flag untuk menahan polling: device butuh waktu untuk memproses
-        // konteks + INFO + DUMP. Polling tidak boleh interleave selama ini.
-        contextSwitchPending = true;
-        // Reset currentLayer di app state ke 0 untuk konsisten dengan LAYER:0.
-        setCurrentLayer(0);
-        currentActivePresetId = null;
-        updateActivePresetLabel();
-        log(t('adaptive.backDefaultLog'), null);
-        hooks.notify(t('adaptive.defaultNotif'), 'preset');
-        // INFO response akan trigger hooks.loadLayer(currentLayer) secara
-        // otomatis di protocol-parser.js. Tidak perlu panggil
-        // loadActiveLayerDump() manual — sudah pasti race condition dengan
-        // response INFO yang sedang berjalan.
-        //
-        // Tunggu sampai device selesai memproses (INFO + DUMP response datang
-        // lewat protocol-parser). Karena kita tidak pakai markBatchSettling
-        // (yang akan nge-skip watchdog), flag ini akan di-clear oleh timer.
-        // Durasi 2.5 detik cukup untuk device memproses 3 perintah kecil +
-        // DUMP response (9 key lines + LAYER_END).
-        setTimeout(() => { contextSwitchPending = false; }, 2500);
+        await switchToDefault();
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }

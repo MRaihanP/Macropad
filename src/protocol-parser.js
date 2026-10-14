@@ -43,6 +43,7 @@ import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from '
 import {
   suppressDeviceEcho, activePresetName, activePresetLayers, suppressLayerNotif,
   resolveDumpWaiters, handleEscapeGesture, noteDeviceLayerEvent,
+  offerOneLine, setDeviceFwVersion,
 } from './adaptive.js';
 
 // ---- State yang hanya dimiliki parser ----
@@ -158,6 +159,12 @@ function flushPendingNames() {
 export function handleLine(line) {
   line = line.trim();
   if (!line) return;
+
+  // Jawaban perintah sekali-pakai (SLOTS, CTX?) diperiksa duluan. Baris
+  // ini bukan frame dan bukan perintah device, jadi kalau tidak diambil di
+  // sini ia akan jatuh ke parser umum dan ditampilkan sebagai baris asing
+  // di panel log.
+  if (offerOneLine(line)) return;
 
   // ---- Event real-time SELALU menang atas frame dump ----
   //
@@ -471,6 +478,11 @@ function handleFrameLine(line) {
   if (line.startsWith('WHOAMI:')) {
     const parts = line.split(':');
     el('deviceNameLabel').textContent = parts[1] || 'MacroPad';
+    // "WHOAMI:MacroPad:v1:fw=9,rows=3,..." - versi firmware dipakai sebagai
+    // jejak cache Default Preset. Kalau firmware berubah, isi device bisa
+    // berbeda, jadi cache lama tidak boleh dipakai (lihat device-state.js).
+    const m = line.match(/fw=(\d+)/);
+    if (m) setDeviceFwVersion(parseInt(m[1], 10));
     return;
   }
   if (line === 'PONG') return;   // sembunyikan PONG dari log

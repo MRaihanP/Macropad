@@ -9,6 +9,7 @@ import {
   mapping, layerNames, encConfig,
   setCurrentLayer, setMapping, setLayerNames, resetEncParse,
   ensureEncConfigSize, emptyLayer, reorderLayer, TYPE_NAMES,
+  invalidateDefaultCache,
 } from "./device-state.js";
 // Helper DOM dan seluruh logika halaman RGB dipisah ke modul sendiri. Halaman RGB
 // membaca state dari device (RGB_DUMP/RGB_KEY), bukan dari default app.
@@ -28,7 +29,7 @@ import {
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
-  resetAdaptiveRuntimeState, confirmLeavePresetEditor, loadOwnExeName,
+  resetAdaptiveRuntimeState, confirmLeavePresetEditor, loadOwnExeName, isDefaultContext,
 } from "./adaptive.js";
 // Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
 import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
@@ -111,9 +112,14 @@ initAdaptive({
   isDirty: () => dirty,
   setDirty: (v) => { dirty = !!v; },
   // Dipakai setelah preset aktif: muat ulang isi layer supaya grid ikut
-  // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya —
+  // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya -
   // preset sudah aktif di device, tapi layarnya belum.
   loadLayer,
+  // Perpindahan context sekarang menggambar grid dari cache lokal (isi preset
+  // di app / cache Default), bukan dari read-back DUMP. Hook ini dipakai Adaptive.
+  renderGrid,
+  renderTabs,
+  renderEncoderList,
   // Loading screen saat upload preset per-layer (BLE transport).
   showPresetUploadProgress,
   hidePresetUploadProgress,
@@ -285,18 +291,29 @@ if (btnRefreshBle) {
   };
 }
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
-el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
+// Setiap perintah yang bisa mengubah isi Default Preset harus membatalkan
+// cache-nya. Kalau tidak, perpindahan ke Default berikutnya akan menampilkan
+// isi LAMA dari cache padahal device sudah punya isi baru - user melihat
+// keymap yang tidak sama dengan yang benar-benar di device.
+//
+// Cache dibangun ulang otomatis di perpindahan Default berikutnya (satu
+// full read), jadi ini hanya memperlambat satu kali.
+function defaultChanged() { invalidateDefaultCache(); }
+
+el('btnSave').onclick = () => { defaultChanged(); dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
   if (await showConfirmModal(t('main.resetTitle'), t('main.resetMsg'), t('main.resetConfirm'))) {
     dirty = true;
+    defaultChanged();
     sendLine('RESET').then(() => sendLine('INFO'));
   }
 };
-el('btnAddLayer').onclick = async () => { dirty = true; await sendLine('ADDLAYER'); setTimeout(() => sendLine('INFO'), 200); };
+el('btnAddLayer').onclick = async () => { dirty = true; defaultChanged(); await sendLine('ADDLAYER'); setTimeout(() => sendLine('INFO'), 200); };
 el('btnDelLayer').onclick = async () => {
   const name = layerNames[currentLayer] || ('Layer ' + currentLayer);
   if (!(await showConfirmModal(t('main.deleteLayerTitle'), t('main.deleteLayerMsg', { name }), t('main.deleteConfirm')))) return;
   dirty = true;
+  defaultChanged();
   await sendLine('DELLAYER'); setTimeout(() => sendLine('INFO'), 200);
 };
 el('btnRenameLayer').onclick = async () => {
@@ -304,6 +321,7 @@ el('btnRenameLayer').onclick = async () => {
   const name = await showPromptModal(t('main.renameTitle'), t('main.renameLabel'), current);
   if (name !== null && name.trim() !== '') {
     dirty = true;
+    defaultChanged();
     sendLine(`RENAMELAYER:${currentLayer}:${name.trim()}`).then(() => setTimeout(() => sendLine('DUMPNAMES'), 200));
   }
 };
@@ -312,6 +330,9 @@ el('btnApply').onclick = async () => {
   if (!selected) return;
   stopRecordingContinuous();
   dirty = true;
+  // Edit per-key/knob bisa mengubah Default Preset, jadi cache Default
+  // tidak boleh dipakai lagi setelah ini.
+  if (isDefaultContext()) defaultChanged();
   const type = TYPE_NAMES[parseInt(el('editType').value)];
   const value = el('editValue').value;
   if (selected.kind === 'key') {
