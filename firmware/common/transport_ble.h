@@ -69,12 +69,31 @@ public:
       size_t n = len - sent;
       if (n > chunkMax) n = chunkMax;
 
-      if (!bleNusRx->notify(data + sent, n, h)) {
-        delay(6);
+      // Retry notify dengan backoff eksponensial. Maks 5 percobaan per chunk.
+      // Hindari break diam-diam yang membuat sisa data (termasuk DUMP_END) hilang.
+      uint8_t retries = 0;
+      bool sentOk = false;
+      while (retries < 5) {
+        if (bleNusRx->notify(data + sent, n, h)) {
+          sentOk = true;
+          break;
+        }
+        // Gagal: delay backoff eksponensial (6, 12, 24, 48, 96 ms)
+        delay(6 * (1 << retries));
+        retries++;
         h = bleHidConnHandle;
         if (h == BLE_HID_NO_HANDLE) break;
-        if (!bleNusRx->notify(data + sent, n, h)) break;
       }
+
+      if (!sentOk) {
+        // Semua retry gagal: catat log, return byte yg sudah terkirim.
+        // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
+        // tapi setidaknya caller tahu ada masalah lewat return value < len.
+        LOGS->printf("[BLE] notify gagal total setelah 5x retry, %u byte tertinggal\n",
+                     (unsigned)(len - sent));
+        return sent;  // return byte yang sukses, caller bisa cek return < len
+      }
+
       sent += n;
     }
     return sent;
