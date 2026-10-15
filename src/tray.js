@@ -122,8 +122,38 @@ export async function confirmUnsaved(quitting) {
 }
 
 // ==================== PENANGAN JENDELA & TRAY ====================
+
+// Dipanggil main.js lewat init() supaya "dibuka dari tray" bisa menghidupkan
+// kembali auto-connect tanpa main.js harus meng-import modul ini (memavoid
+// siklus import: tray.js sudah meng-import transport.js, dan main.js akan
+// meng-import tray.js).
+let onWindowRestored = null;
+export function setWindowRestoredHandler(fn) { onWindowRestored = fn; }
+
 export function initTrayHandlers() {
   const appWindow = getCurrentWindow();
+
+  // Jendela disembunyikan ke tray = app masih hidup, hanya tidak terlihat.
+  // Desktop tidak punya event "jendela tampil lagi" yang bisa didengar dari
+  // JS, jadi yang dipakai adalah focus: ketika user membuka jendela dari
+  // tray, jendela itu pasti menerima focus.
+  //
+  // Filter 'visible' mencegah resume terpicu oleh focus yang terjadi saat app
+  // baru start (jendela sudah tampil sejak awal).
+  //
+  // DIJAGA SUPAYA TIDAK MELEDAK kalau onFocusChanged tidak tersedia. API-nya
+  //_loader_ bisa berubah antar versi Tauri, dan tray.js dipanggil di
+  // startup-smoke-test dengan mock yang tidak punya method ini. Kehilangan
+  // auto-resume dari tray jauh lebih baik daripada app yang tidak bisa start.
+  if (typeof appWindow.onFocusChanged === 'function') {
+    appWindow.onFocusChanged(async ({ payload: focused }) => {
+      if (!focused || !onWindowRestored) return;
+      const win = getCurrentWindow();
+      if (typeof win.isVisible === 'function' && !(await win.isVisible())) return;
+      onWindowRestored();
+    });
+  }
+
   appWindow.onCloseRequested(async (event) => {
     event.preventDefault(); // X tidak pernah menutup app; keluar lewat menu tray
     if (!(await confirmUnsaved(false))) return;

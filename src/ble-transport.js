@@ -39,6 +39,15 @@ const WRITE_CHUNK_MAX = 400;
 // cukup besar untuk membaca buffer 256 KiB dalam beberapa iterasi poll.
 const READ_CHUNK_MAX = 4096;
 
+// Jeda minimum antar scan saat belum connect.
+//
+// Scan BLE itu mahal - Windows harus menyalakan adapter, menyiarkan, dan
+// mengumpulkan hasil, biasanya 2-4 detik. poll() dipanggil facade setiap 2
+// detik, jadi tanpa jeda tambahan, scan berikutnya akan ditumpuk di atas scan
+// yang belum selesai. 6 detik memberi jeda yang cukup tanpa membuat device
+// yang baru dinyalakan terlihat lama untuk connect.
+const IDLE_SCAN_MS = 6000;
+
 // Seberapa sering buffer BLE ditarik.
 //
 // PENTING: ini harus jauh lebih cepat dari poll koneksi serial (2 detik).
@@ -66,6 +75,19 @@ let connected = false;
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
 let autoBusy = false;
+
+// User TEKAN tombol Disconnect dengan sengaja.
+//
+// Harus terpisah dari autoReconnect, karena autoDetect() me-reset
+// autoReconnect = true setiap kali dipanggil - jadi autoReconnect saja tidak
+// bisa membedakan "belum pernah dicoba" dari "user sudah menolak".
+//
+// Yang dilakukan user saat menekan Disconnect: berhenti reconnect sampai
+// dia sendiri connect lagi manual, ATAU app masuk tray lalu dibuka lagi.
+let userStopped = false;
+
+// Kapan scan terakhir saat belum connect (lihat poll()).
+let lastIdleScanAt = 0;
 // Single-flight connect. True selama connect() berjalan. Tanpa ini beberapa
 // jalur (klik Connect, scheduleRetry, tryAutoConnect) bisa membuka link BLE
 // bersamaan dan saling menabrak. Lihat catatan lengkap di connect().
@@ -191,6 +213,12 @@ export const isConnected = () => connected;
 export const isAutoBusy = () => autoBusy;
 export const portPath = null;   // tidak ada path; device diidentifikasi lewat id
 export function enableAutoReconnect() { autoReconnect = true; }
+
+// Dipakai koordinator auto-connect di main.js (lihat isUserStopped()/
+// clearUserStopped() di serial-transport.js untuk penjelasan kenapa flag ini
+// perlu ada terpisah dari autoReconnect).
+export function isUserStopped() { return userStopped; }
+export function clearUserStopped() { userStopped = false; autoReconnect = true; }
 
 export function handleIncomingChunk(data) {
   lineBuffer += data;
@@ -442,6 +470,10 @@ export async function connect(deviceIdArg) {
   connectBusy = false;
   log(t('ble.traceConnected', { id }));
   connected = true;
+  // Connect berhasil = user tidak lagi menolak. Ini yang让自己解除
+  // "berhenti sampai connect manual" - baik dari klik Connect, baik dari
+  // auto-connect yang sedang jalan.
+  userStopped = false;
   deviceId = id;
   lastGoodDeviceId = id;
   clearTimeout(retryTimer);
@@ -478,6 +510,9 @@ export async function disconnect(manual) {
   }
   if (manual) {
     autoReconnect = false;
+    // Tandai bahwa user SENGAJA memutus. poll() berhenti scan selama flag ini
+    // menyala, jadi device tidak akandicari ulang tanpa perintah.
+    userStopped = true;
     deviceWasLost = false;
     hooks.notify(t('ble.notifDisconnected'), 'disconnect');
     log(t('ble.autoPausedLog'));
@@ -624,8 +659,44 @@ export async function readIncoming() {
 
 // Pantau status koneksi dari sisi Rust. Device bisa hilang tanpa memberi tahu
 // (jarak, device mati), jadi harus dicek berkala seperti port serial.
+//
+//amadanya ada DUA jalur di sini, dan keduanya wajib.
+//
+// Jalur 1 - sedang connect: cek ble_is_connected lalu tarik data. Sama
+// seperti sebelumnya.
+//
+// Jalur 2 - BELUM connect: SCAN dan coba connect sendiri.
+//
+// Jalur 2 inilah yang sebelumnya tidak ada. Versi lama punya
+// `if (!connected) return;` di baris pertama, jadi saat device tidak
+// tersambung, poll() berhenti total - tidak ada apa pun yang mencari.
+// Scan hanya pernah jalan dari autoDetect() (sekali saat app start, saat
+// transport masih USB) dan dari scanAndUpdateSelect() (sekali saat user
+// memilih BLE di dropdown).
+//
+// Akibatnya: pada instal baru, di mana localStorage masih kosong sehingga
+// lastGoodDeviceId null, scheduleRetry() tidak pernah dijadwalkan dan tidak
+// ada yang pernah scan lagi. User HARUS menekan Refresh lalu Connect lebih
+// dulu sebelum auto-reconnect bisa hidup. Itu persis keluhan aslinya.
+//
+// Bandingkan dengan serial-transport.js: pollPorts() tidak punya guard
+// seperti itu - dia tetap listPortPaths() setiap 2 detik, jadi port baru
+// langsung ditemukan tanpa ada intervensi user.
 export async function poll() {
-  if (!connected) return;
+  if (!connected) {
+    // User menekan Disconnect -> jangan scan, jangan connect. Ini yang
+    // membedakan "sengaja memutus" dari "device belum ada".
+    if (userStopped) return;
+    // Jangan menumpuk scan: yang sebelumnya masih jalan belum selesai.
+    if (autoBusy) return;
+    const now = Date.now();
+    if (now - lastIdleScanAt < IDLE_SCAN_MS) return;
+    lastIdleScanAt = now;
+    // verbose = false: log harus tenang. Kalau device belum ada, itu kondisi
+    // normal - bukan error yang perlu hammered ke panel log tiap 6 detik.
+    await tryAutoConnect(false);
+    return;
+  }
   try {
     const stillUp = await invoke('ble_is_connected');
     if (!stillUp) { await handleDeviceLost(); return; }

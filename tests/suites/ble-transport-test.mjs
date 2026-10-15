@@ -720,6 +720,54 @@ ok(/if \(handshakePending\(\)\) return true;/.test(blockedBodyHs),
 ok(/import \{[^}]*handshakePending[^}]*\} from '\.\/transport\.js'/.test(adaptiveHsSrc),
   'adaptive.js mengimpor handshakePending dari facade (bukan backend langsung)');
 
+// ---- Auto-connect berkala ----
+//
+// VERSI LAMA poll() punya `if (!connected) return;` di baris pertama, jadi
+// saat device tidak tersambung, TIDAK ADA apa pun yang mencari. Scan hanya
+// pernah jalan dari autoDetect() (sekali saat app start, saat transport masih
+// USB) dan dari scanAndUpdateSelect() (sekali saat user pilih BLE).
+//
+// Akibatnya: instal baru (localStorage kosong -> lastGoodDeviceId null) tidak
+// pernah_scheduleRetry(), dan tidak pernah ada yang scan lagi. User HARUS
+// Refresh -> Connect dulu - persis keluhan aslinya.
+console.log('\n--- 12. Auto-connect berkala: scan jalan walau belum connect ---');
+ok(!/export async function poll\(\)\s*\{\s*if \(!connected\) return;/.test(bleSrc2),
+  'poll() TIDAK lagi berhenti total saat !connected');
+ok(/if \(userStopped\) return;/.test(bleSrc2),
+  'poll() menghormati userStopped (user tekan Disconnect)');
+ok(/if \(autoBusy\) return;/.test(bleSrc2),
+  'poll() tidak menumpuk scan (autoBusy)');
+ok(/const IDLE_SCAN_MS = \d+/.test(bleSrc2),
+  'ada jeda minimum antar scan (IDLE_SCAN_MS) - scan BLE itu mahal');
+ok(/now - lastIdleScanAt < IDLE_SCAN_MS/.test(bleSrc2),
+  'jeda IDLE_SCAN_MS benar-benar dipakai');
+ok(/await tryAutoConnect\(false\)/.test(bleSrc2),
+  'poll() memanggil tryAutoConnect dengan verbose=false (log tenang)');
+// Flag harus diset di connect() DAN disconnect().
+ok(/userStopped = false/.test(bleSrc2), 'connect() melepas userStopped');
+ok(/userStopped = true/.test(bleSrc2), 'disconnect(manual) menyetel userStopped');
+ok(/export function isUserStopped\(\)/.test(bleSrc2),
+  'backend BLE mengekspor isUserStopped()');
+ok(/export function clearUserStopped\(\)/.test(bleSrc2),
+  'backend BLE mengekspor clearUserStopped() (dipakai resume dari tray)');
+
+// Serial harus punya kontrak yang SAMA - kalau tidak, koordinator di
+// main.js tidak bisa melepas "user sengaja memutus" di kedua backend.
+const serSrcAutoconn = fs.readFileSync(`${SRC}/../src/serial-transport.js`, 'utf8');
+ok(/let userStopped = false/.test(serSrcAutoconn),
+  'serial punya flag userStopped juga');
+ok(/export function isUserStopped\(\)/.test(serSrcAutoconn),
+  'serial mengekspor isUserStopped()');
+ok(/export function clearUserStopped\(\)/.test(serSrcAutoconn),
+  'serial mengekspor clearUserStopped()');
+
+// Facade: clearUserStoppedBoth() wajib ada supaya main.js tidak menyentuh
+// backend langsung.
+ok(/export function clearUserStoppedBoth\(\)/.test(facadeSrc),
+  'facade mengekspor clearUserStoppedBoth() untuk kedua backend');
+ok(/serialBackend\.clearUserStopped\(\)/.test(facadeSrc),
+  'clearUserStoppedBoth() menyentuh backend serial');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

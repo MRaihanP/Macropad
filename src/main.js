@@ -23,7 +23,7 @@ import {
   initTransport, sendLine, sendBatch, connect, disconnect,
   autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
-  setTransportBackend, transportId, bleBackend,
+  setTransportBackend, transportId, bleBackend, clearUserStoppedBoth,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -50,7 +50,7 @@ import {
   renderTabs, renderGrid, renderEncoderList, loadLayer,
   resetEditorState, selected, stopRecordingContinuous, cancelEditor,
 } from "./home-page.js";
-import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
+import { initTray, initAutostart, initAutostartToggle, initTrayHandlers, setWindowRestoredHandler } from "./tray.js";
 // i18n. await di level modul supaya bahasa selesai ditentukan SEBELUM init*
 // mana pun yang merender teks dijalankan - kalau tidak, user akan melihat
 // teks dalam bahasa dasar sesaat lalu otomatis berubah.
@@ -138,6 +138,9 @@ initTray({ isDirty: () => dirty, setDirty: (v) => { dirty = !!v; } });
 initAutostartToggle();
 initAutostart();
 initTrayHandlers();
+// Jendela dibuka lagi dari tray = "coba lagi", bukan "menolak". Tanpa ini,
+// user harus menekan Connect manual setiap kali app masuk ke tray.
+setWindowRestoredHandler(resumeAutoConnectFromTray);
 
 // Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
 // sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
@@ -274,6 +277,76 @@ if (btnRefreshBle) {
     } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
   };
 }
+// ==================== KOORDINATOR AUTO-CONNECT ====================
+//
+// Tujuan: companion app connect ke device TANPA interaksi user di kedua
+// transport, dan reconnect sendiri kalau device hilang - kecuali user memang
+// menekan tombol Disconnect.
+//
+// Kenapa koordinator, bukan dibiarkan tiap backend memutuskan sendiri:
+//
+// Device FINAL hanya punya SATU transport aktif. Colok USB -> BLE mati.
+// Cabut USB -> BLE nyala lagi. Artinya "mana yang hidup" ditentukan oleh
+// keberadaan USB, bukan pilihan user di dropdown.
+//
+// Kalau keduanya deciding sendiri, keduanya akan berebut: USB scan dan
+// menemukan device, sementara BLE juga scan. Dua link hidup bersamaan - itu
+// kondisi yang beberapa kali sebelumnya membuat link BLE putus (0x208).
+//
+// Jadi urutannya ditegakkan di satu tempat: coba USB dulu, kalau dalam
+// USB_FALLBACK_MS belum tersambung, baru pindah ke BLE. USB menang kalau
+// kabelnya ada - persis kondisi device FINAL.
+//
+// BUKAN await sleep: init app tidak boleh tertahan 4 detik. setTimeout
+// supaya sisanya langsung jalan.
+const USB_FALLBACK_MS = 4000;
+
+let bleFallbackTimer = null;
+let autoConnectChainStarted = false;
+
+// Dipanggil sekali saat app siap. Idempoten supaya dipanggil ulang dari tray
+// tidak menyalakan rantai timer dua kali.
+function startAutoConnectChain() {
+  if (autoConnectChainStarted) return;
+  autoConnectChainStarted = true;
+
+  const sel = el('transportSelect');
+  // Coba USB dulu kalau itu yang aktif. Kalau app dibuka ulang sementara user
+  // sedang memakai BLE, jangan dipaksa balik ke USB.
+  if (!sel || sel.value === 'usb') {
+    enableAutoReconnect();
+    autoDetect();
+  }
+
+  clearTimeout(bleFallbackTimer);
+  bleFallbackTimer = setTimeout(async () => {
+    // USB berhasil -> BLE tidak boleh ikut jalan: device hanya punya satu
+    // transport aktif, scan BLE tidak ada gunanya.
+    if (isConnected()) return;
+    const s = el('transportSelect');
+    if (s && s.value === 'ble') return;   // memang sedang memakai BLE
+    try {
+      await setTransportBackend('ble');
+      if (s) s.value = 'ble';
+      // Backend BLE sekarang aktif dan poll() dia yang akan scan + connect
+      // sendiri. Sengaja TIDAK panggil connect() di sini: connect() tidak
+      // melewati jeda IDLE_SCAN_MS, dan pemanggilan langsung akan membuat
+      // dua percobaan scan berdekatan.
+    } catch (e) {
+      log(t('main.transportSwitchError', { err: e }), 'err');
+    }
+  }, USB_FALLBACK_MS);
+}
+
+// Dipanggil saat app dibuka lagi dari tray.
+//
+// Menutup jendela lalu membukanya dari tray berarti "coba lagi", bukan
+// "menolak". Tanpa ini, user harus menekan Connect manual setiap kali app
+// masuk ke tray - itu persis keluhan yang membuat fitur ini ada.
+function resumeAutoConnectFromTray() {
+  clearUserStoppedBoth();
+  startAutoConnectChain();
+}
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
 el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
@@ -315,7 +388,10 @@ el('btnApply').onclick = async () => {
 };
 
 renderTabs(); renderGrid(); renderEncoderList();
-autoDetect();
+// Auto-connect berurutan: coba USB dulu, lalu BLE sebagai cadangan.
+// scanAndUpdateSelect/autoDetect yang telanjang tidak cukup - keduanya hanya
+// hanya menyalakan backend yang sedang aktif, dan pada app start itu USB.
+startAutoConnectChain();
 // initAdaptivePage() memasang kontrol preset (tambah/rename/hapus, tombol Done/Cancel
 // editor) DAN memulai polling window foreground. Kalau ini terlewat, daftar preset
 // tetap tampil tapi tidak pernah auto-switch.
