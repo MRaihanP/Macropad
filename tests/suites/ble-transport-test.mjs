@@ -661,6 +661,26 @@ if (connectBody) {
 ok(/await sleep\(1500\)/.test(bleSrc2),
   'jeda retry dinaikkan ke 1500 ms (400 ms tidak cukup untuk Windows)');
 
+// ---- Single-flight connect ----
+//
+// Tanpa guard ini, klik Connect + scheduleRetry() + tryAutoConnect() bisa
+// membuka link BLE bersamaan.TIAP link memasang callback notifikasi sendiri
+// yang menulis ke buffer bersama, jadi notify bercampur dan link yang
+// paling dulu hilang menghasilkan supervision timeout (0x208).
+console.log('\n--- 9. Single-flight: hanya boleh ada SATU connect hidup ---');
+ok(/let connectBusy = false/.test(bleSrc2),
+  'ada flag connectBusy yang menandai connect sedang berjalan');
+ok(/if \(connectBusy\)\s*\{[\s\S]{0,400}?return false;/.test(bleSrc2),
+  'connect() menolak (bukan menunggu) kalau ada connect lain yang jalan');
+ok(/connectBusy = true/.test(bleSrc2),
+  'connectBusy di-set sebelum menunggu Windows');
+ok(/connectBusy = false/.test(bleSrc2),
+  'connectBusy selalu dilepas supaya retry berikutnya tidak terkunci selamanya');
+// Timeout wajib: tanpa itu FromIdAsync yang menggantung menahan guard
+// selamanya dan tidak ada yang bisa mencoba lagi.
+ok(/setTimeout\(\(\) => r\(false\), 10000\)/.test(bleSrc2),
+  'connect() punya batas waktu 10 detik (FromIdAsync kadang tidak resolve)');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);

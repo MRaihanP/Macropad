@@ -66,6 +66,10 @@ let connected = false;
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
 let autoBusy = false;
+// Single-flight connect. True selama connect() berjalan. Tanpa ini beberapa
+// jalur (klik Connect, scheduleRetry, tryAutoConnect) bisa membuka link BLE
+// bersamaan dan saling menabrak. Lihat catatan lengkap di connect().
+let connectBusy = false;
 let pingTimer = null;
 let retryTimer = null;
 
@@ -322,11 +326,70 @@ export async function connect(deviceIdArg) {
   const sel = el('bleDeviceSelect');
   const id = deviceIdArg || (sel ? sel.value : null);
   if (!id) { log(t('ble.pickDevice'), 'err'); return false; }
+
+  // ---- SINGLE-FLIGHT: hanya boleh SATU connect jalan pada satu waktu ----
+  //
+  // Tanpa guard ini, beberapa jalur bisa memanggil connect() hampir bersamaan:
+  // klik tombol Connect, scheduleRetry() dari handleDeviceLost(), dan
+  // tryAutoConnect(). Semuanya mengandalkan flag `connected`, tapi flag itu
+  // baru berubah di BAWAH await invoke('ble_connect') - jadi selama Windows
+  // masihenger handshake, dua atau tiga connect bisa berjalan bareng.
+  //
+  // Akibatnya yang terlihat di log:
+  //   [BLE] Connected to ... waiting for device data
+  //   BLE connect failed: ... TX belum terdaftar
+  //   [BLE] Connected to ... waiting for device data     <- NYATA lagi
+  //   [AUTO] Device disconnected.
+  //
+  // Tiga link hidup bersamaan. Masing-masing memasang callback notifikasi
+  // yang menulis ke buffer bersama, jadi notify bercampur dan device
+  // kewalahan menerima. Link yang最早 hilang menghasilkan supervision
+  // timeout (0x208) yang Atas nama device juga hilang dari daftar Bluetooth
+  // Windows.
+  //
+  // Guard ini menutup sumbernya di sisi app. Timeout radio (0x208) sendiri
+  // tetap mungkin terjadi kalau firmware memang menahan loop - itu urusan
+  // terpisah dan belum ikut disentuh di commit ini.
+  if (connectBusy) {
+    // Percobaan yang menabrak guard ini di-drop, bukan di-antre. Menunggu
+    // connect yang sedang jalan justru menumpuk antrean saat link sedang
+    // bermasalah - justru saat paling perlu tidak menambah beban.
+    return false;
+  }
+  connectBusy = true;
+
+  let ok = false;
   try {
-    await invoke('ble_connect', { id });
+    // Timeout 10 detik. Windows kadang FromIdAsync tidak pernah resolve
+    // kalau link sedang di tengah-negosiasi, dan tanpa batas ini guard
+    // connectBusy tertahan selamanya sehingga tidak ada yang bisa mencoba
+    // lagi sama sekali.
+    //
+    // invoke() dibungkus jadi Promise dulu. Test suite (dan beberapa jalur
+    // kode) membuat invoke() mengembalikan nilai biasa, bukan Promise - kalau
+    // langsung .then() di sini, hasilnya TypeError yang tidak menjelaskan
+    // apa pun.
+    const connectOp = Promise.resolve(invoke('ble_connect', { id }));
+    ok = await Promise.race([
+      connectOp.then(
+        () => true,
+        (e) => {
+          log(t('ble.connectError', { err: e }), 'err');
+          return false;
+        },
+      ),
+      new Promise((r) => setTimeout(() => r(false), 10000)),
+    ]);
   } catch (e) {
+    // Menangkap apa pun yang lolos dari handler di atas (mis. invoke()
+    // melempar sinkron sebelum sempat jadi Promise).
     log(t('ble.connectError', { err: e }), 'err');
-    // WAJIB lepaskan link yang mungkin sudah setengah naik di sisi Rust.
+    ok = false;
+  }
+
+  if (!ok) {
+    // Timeout atau error. WAJIB lepaskan link yang mungkin sudah setengah
+    // naik di sisi Rust.
     //
     // Kalau connect gagal setelah BluetoothLEDevice berhasil dibuat tapi
     // sebelum characteristic ditemukan, handle-nya tertinggal. Windows
@@ -334,13 +397,15 @@ export async function connect(deviceIdArg) {
     // (0x800704C7 "canceled by the user") dan mengembalikan cache GATT yang
     // belum lengkap - yang membuat percobaan BERIKUTNYA gagal dengan
     // "TX characteristic not registered" (0x8000000B), dan seterusnya.
-    // Satu connect gagal jadiracun semua percobaan setelahnya.
+    // Satu connect gagal jadi racun semua percobaan setelahnya.
     //
     // Best-effort: error asli sudah dilog, jadi kegagalan di sini tidak
     // boleh menutupi pesan yang lebih berguna.
     try { await invoke('ble_disconnect'); } catch (e2) { /* sudah gagal */ }
+    connectBusy = false;
     return false;
   }
+  connectBusy = false;
   log(t('ble.traceConnected', { id }));
   connected = true;
   deviceId = id;
