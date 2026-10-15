@@ -21,7 +21,7 @@ import {
   mapping, encConfig, layerNames, layerCount, currentLayer,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
-import { sendLine, sendBatch, isConnected, dumpInProgress } from './transport.js';
+import { sendLine, sendBatch, isConnected, dumpInProgress, handshakePending } from './transport.js';
 import { t } from './i18n.js';
 
 // ---- State ----
@@ -129,6 +129,12 @@ export function noteDeviceLayerEvent() { lastDeviceLayerEventAt = Date.now(); }
 export function resetLayerChoiceHold() { lastDeviceLayerEventAt = 0; }
 
 function autoSwitchBlockedByLayerChoice() {
+  // Handshake setelah connect belum selesai. `isConnected()` sudah true
+  // selama handshake berjalan, jadi tanpa guard ini poll auto-switch akan
+  // mengirim upload preset lengkap (ratusan perintah SET) di atas 7 perintah
+  // handshake yang masih diproses device. Dua aliran perintah tumpang tindih
+  // itu yang membuat link putus tepat setelah connect.
+  if (handshakePending()) return true;
   // 0 = belum pernah ada event, jadi bukan tundaan yang masih aktif.
   if (lastDeviceLayerEventAt === 0) return false;
   if (Date.now() - lastDeviceLayerEventAt < LAYER_CHOICE_HOLD_MS) return true;

@@ -126,6 +126,30 @@ export let dumpInProgress = false, dumpEncInProgress = false, namesInProgress = 
 // sempat conscious. Waited mirror of serial-transport.js.
 let suppressEventsUntil = 0;
 
+// Handshake setelah connect belum selesai.
+//
+// Kenapa perlu: `connected` menjadi true SEBELUM handshake berjalan. Di
+// celah itu, poll auto-switch preset di adaptive.js tidak tahu bahwa device
+// sedang menerima 7 perintah handshake, dan langsung mengirim upload preset
+// lengkap (ratusan perintah SET). Dua hal rusak:
+//
+//   1. Device menerima dua aliran perintah tumpang tindih. Handshake bisa
+//      gagal, dan jawaban DUMP yang menyertainya terpotong.
+//   2. Kalau link sedang tidak sehat, write tambahan itu memperparah kondisi
+//      - device makin lama tidak menjawab, dan app makin sering reconnect.
+//
+// Gejala yang dilaporkan: user memindahkan window ke aplikasi lain tepat
+// setelah connect, preset switch terpicu, lalu link putus dengan
+// "0x800704C7" / "GattCommunicationStatus(1)" berulang.
+//
+// Berbeda dengan `eventsSuppressed()`: yang ini tidak berbasis waktu, tapi
+// berbasis apa yang benar-benar terjadi (jawaban pertama masuk, atau waktu
+// habis). Poll auto-switch yang mencoba lagi tiap 1,2 detik akan langsung
+// mencoba lagi begitu flag ini turun - tanpa intervensi user.
+let handshakeInProgress = false;
+
+export function handshakePending() { return handshakeInProgress; }
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ---- Hook ke main.js (dipasang lewat facade transport.js) ----
@@ -299,6 +323,12 @@ export async function scanAndUpdateSelect() {
 // (firmware menyimpan currentLayer di flash, jadi device bisa boot di layer 4 -
 // INFO dulu akan sempat memuat layer yang salah), lalu dump encoder, baterai, RGB.
 async function afterConnectHandshake() {
+  // Tandai handshake berjalan SEBELUM penundaan 400 ms, bukan sesudahnya.
+  // Kalau baru ditandai di dalam setTimeout, ada jendela 400 ms di mana
+  // connected sudah true tapi handshakeInProgress masih false - dan tepat di
+  // jendela itu poll auto-switch preset bisa memicu upload lengkap ke device
+  // yang handshake-nya belum selesai.
+  handshakeInProgress = true;
   setTimeout(async () => {
     log(t('ble.traceHandshake'));
     await sendLine('WHOAMI');
@@ -314,10 +344,14 @@ async function afterConnectHandshake() {
     const deadline = Date.now() + 6000;
     const before = seenResponseAt;
     const watch = setInterval(() => {
-      if (seenResponseAt !== before) { clearInterval(watch); return; }
+      if (seenResponseAt !== before) { clearInterval(watch); handshakeInProgress = false; return; }
       if (Date.now() < deadline) return;
       clearInterval(watch);
       log(t('ble.traceSilent'), 'err');
+      // Device diam. Handshake dianggap gagal supaya auto-switch tidak
+      // menumpuk perintah di atas device yang tidak menjawab - itu justru
+      // memperpanjang kondisi "tidak menjawab".
+      handshakeInProgress = false;
     }, 250);
   }, 400);
 }
@@ -458,6 +492,11 @@ export async function disconnect(manual) {
   resetParserState();
   // Disconnect = tidak ada lagi yang sedang diunggah ke device ini.
   resetBatchUploadState();
+  // Handshake yang menggantung harus ikut dibuang. Kalau tidak, flag ini tetap
+  // true dan auto-switch preset tidak akan pernah jalan lagi di sesi berikutnya
+  // - karena tidak ada handshake baru yang akan mengeset's flag ini ke false
+  // kalau device tidak pernah connect.
+  handshakeInProgress = false;
   try { await invoke('ble_disconnect'); } catch (e) { log(t('ble.disconnectError', { err: e }), 'err'); }
   connected = false;
   deviceId = null;
@@ -480,6 +519,10 @@ export async function handleDeviceLost() {
   hooks.onDeviceLost();
   stopPing();
   stopReadLoop();
+  // Device hilang di tengah handshake -> flag harus turun. Kalau tidak,
+  // reconnect berikutnya akan tetap terblokir oleh handshake yang sudah tidak
+  // ada, dan auto-switch preset tidak akan pernah jalan lagi.
+  handshakeInProgress = false;
   setConnected(false);
   if (autoReconnect && wasId) scheduleRetry([wasId]);
 }

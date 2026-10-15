@@ -79,6 +79,18 @@ export function setDumpInProgress(v) { return backend.setDumpInProgress(v); }
 export function setDumpEncInProgress(v) { return backend.setDumpEncInProgress(v); }
 export function setNamesInProgress(v) { return backend.setNamesInProgress(v); }
 
+// Benarkah ada handshake setelah connect yang belum selesai?
+//
+// Serial tidak punya handshake - device USB sudah tentu siap setelah port
+// terbuka - jadi selalu false. BLE punya afterConnectHandshake() yang
+// mengirim 7 perintah; selama itu berjalan, auto-switch preset harus
+// menunggu, kalau tidak upload preset menumpuk di atas handshake.
+export function handshakePending() {
+  return typeof backend.handshakePending === 'function'
+    ? backend.handshakePending()
+    : false;
+}
+
 export function transportId() { return backendId; }
 
 // Inisialisasi backend aktif dengan hook yang sudah didaftarkan main.js.

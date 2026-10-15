@@ -681,6 +681,45 @@ ok(/connectBusy = false/.test(bleSrc2),
 ok(/setTimeout\(\(\) => r\(false\), 10000\)/.test(bleSrc2),
   'connect() punya batas waktu 10 detik (FromIdAsync kadang tidak resolve)');
 
+// ---- Handshake gate ----
+//
+// `isConnected()` sudah true SEBELUM afterConnectHandshake() selesai. Tanpa
+// flag terpisah, poll auto-switch preset di adaptive.js langsung mengirim
+// upload preset lengkap (ratusan perintah SET) di atas 7 perintah handshake
+// yang masih diproses device - dua aliran perintah tumpang tindih, dan link
+// putus tepat setelah connect.
+console.log('\n--- 11. Handshake gate: auto-switch menunggu handshake selesai ---');
+ok(/let handshakeInProgress = false/.test(bleSrc2),
+  'ada flag handshakeInProgress di backend BLE');
+ok(/export function handshakePending\(\)/.test(bleSrc2),
+  'backend BLE mengekspor handshakePending()');
+// Ditandai SEBELUM penundaan 400 ms, kalau tidak ada jendela di mana
+// connected=true tapi flag masih false.
+const hsIdx = bleSrc2.indexOf('handshakeInProgress = true');
+const timeoutIdx = bleSrc2.indexOf('}, 400);');
+ok(hsIdx > -1 && timeoutIdx > -1 && hsIdx < timeoutIdx,
+  'handshakeInProgress di-set SEBELUM setTimeout 400 ms (tidak ada celah)');
+// Harus turun di semua jalur keluar, kalau tidak auto-switch mati permanen
+// setelah satu handshake yang menggantung.
+const hsClears = (bleSrc2.match(/handshakeInProgress = false/g) || []).length;
+ok(hsClears >= 3,
+  `handshakeInProgress dilepas di semua jalur keluar (jawaban masuk, timeout, disconnect, device hilang) - ada ${hsClears}`);
+
+// Facade harus meneruskan, dan serial harus aman (tidak punya handshake).
+const facadeSrc = fs.readFileSync(`${SRC}/../src/transport.js`, 'utf8');
+ok(/export function handshakePending\(\)/.test(facadeSrc),
+  'facade meneruskan handshakePending() ke backend aktif');
+ok(/typeof backend\.handshakePending === 'function'/.test(facadeSrc),
+  'facade aman kalau backend tidak punya handshakePending (serial)');
+
+// Sisi adaptive: guard HARUS ada di autoSwitchBlockedByLayerChoice().
+const adaptiveHsSrc = fs.readFileSync(`${SRC}/../src/adaptive.js`, 'utf8');
+const blockedBodyHs = adaptiveHsSrc.slice(adaptiveHsSrc.indexOf('function autoSwitchBlockedByLayerChoice'));
+ok(/if \(handshakePending\(\)\) return true;/.test(blockedBodyHs),
+  'autoSwitchBlockedByLayerChoice() memblokir selama handshake berjalan');
+ok(/import \{[^}]*handshakePending[^}]*\} from '\.\/transport\.js'/.test(adaptiveHsSrc),
+  'adaptive.js mengimpor handshakePending dari facade (bukan backend langsung)');
+
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
   : `\nHASIL: ${fail} masalah`);
