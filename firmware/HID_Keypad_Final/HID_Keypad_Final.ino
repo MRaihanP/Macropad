@@ -1,5 +1,5 @@
 /*
-  ESP32-S3 Macro Pad - Firmware v8 - SKETCH FINAL
+  ESP32-S3 Macro Pad - Firmware v7 - SKETCH FINAL
   (nomor resmi ada di FW_VERSION, firmware/common/limits.h - jangan diubah
    di sini; nilai header ini hanya catatan, yang dikirim ke app adalah FW_VERSION)
   ==============================================

@@ -12,52 +12,20 @@ Pindah profil = membuka sketsh yang lain, bukan mengubah sakelar.
 
 ---
 
-## Versi
-
-| Komponen | Versi | Sumber kebenaran | Tag git |
-|---|---|---|---|
-| **App** (frontend + Rust) | `0.6.1` | `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` | `app-v0.6.1` |
-| **Firmware** | `FW_VERSION 8` | `firmware/common/limits.h` (sumber tunggal) | `fw-v8` |
-| **Checkpoint** | app 0.6.1 + fw 8 | commit `ac0438d` | `checkpoint-app0.6.1-fw8` |
-
-Nomor firmware dikirim device di balasan `WHOAMI:...fw=<n>`, jadi firmware yang
-terpasang bisa dicek langsung di Serial Monitor (115200) - ketik `WHOAMI`, baca
-`fw=8`. Kalau masih `fw=7`, flash ulang firmware terbaru.
-
-Nomor versi app ada di tiga berkas terpisah dan harus selalu sama; itu dijaga
-`tests/suites/version-test.cjs`. Firmware punya penjaga serupa
-(`tests/suites/firmware-compile-guard-test.js`) yang memaksa `FW_VERSION` di
-`limits.h` sama dengan nomor di header kedua sketsh.
-
----
-
 ## Struktur
 
 ```
 firmware/
   common/
-    limits.h           # konstanta bersama (pin, limit, RGB, transport type, FW_VERSION)
+    limits.h           # konstanta bersama (pin, limit, RGB, transport type)
     macropad_core.h    # seluruh logika: keymap, protocol, scan matrix, encoder
     transport.h        # interface Transport (abstract USB CDC vs BLE)
     transport_usb.h    # implementasi USB CDC
-    transport_ble.h    # implementasi BLE NUS (notify + ring buffer)
-    switch_iface.h     # switch USB<->BLE runtime (tombol BOOT / GPIO0)
-    ble_diag.h         # perintah diagnostik BLE: IFACE, PROTO, BLE:RING, HID:SELF
   HID_Keypad_Prototype/HID_Keypad_Prototype.ino   # pin + simulasi
   HID_Keypad_Final/HID_Keypad_Final.ino           # pin + peripheral nyata
-src/
-  main.js              # satu-satunya titik pertemuan antar modul
-  transport.js         # facade: memilih backend serial atau BLE
-  serial-transport.js  # backend USB CDC
-  ble-transport.js     # backend BLE (scan/connect/reconnect/read loop)
-  protocol-parser.js   # parser baris & frame (DUMP/DUMPENC/DUMPNAMES)
-  adaptive.js          # auto-switch preset berdasarkan window foreground
+src/                    # frontend (ES modules, tanpa framework)
 src-tauri/              # backend Rust (Tauri commands, WinRT GATT)
-tests/suites/           # 37 skrip uji (Node + CJS)
 ```
-
-Modul **tidak** saling mengimpor `serial-transport.js` secara langsung - semua
-lewat facade `transport.js`, supaya memilih BLE di app benar-benar berefek.
 
 ### Aturan import
 

@@ -1,6 +1,6 @@
 [package]
 name = "macropad-configurator"
-version = "0.6.1"
+version = "0.6.0"
 description = "A Tauri App"
 authors = ["Muhammad Raihan Pradipta"]
 edition = "2021"

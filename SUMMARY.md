@@ -253,32 +253,20 @@ protokol konfigurasi — keduanya dari satu GATT server.
       Report ID tidak cocok, dan lookup characteristic per ketikan.
       **v2 sudah ditulis** (`spike_ble_hid2.ino`) dengan 8 perbaikan —
       menunggu di-flash dan diuji.
-- [x] Step 7: `iface` masuk `HWINFO`
-- [x] Step 8: `firmware/common/transport_ble.h` (jalur NUS) — notify dengan
-      retry + backoff, ring buffer, `BLE:RING`/`BLE:RAM` untuk diagnosis
+- [ ] Step 7: `iface` masuk `HWINFO`
+- [ ] Step 8: `firmware/common/transport_ble.h` (jalur NUS)
 - [ ] Step 9: **BLE HID keyboard** (device muncul sebagai keyboard di Windows)
-- [x] Step 10: runtime interface switch `IFACE:BLE` / `IFACE:USB` — juga lewat
-      tombol BOOT (GPIO0) di `firmware/common/switch_iface.h`
-- [x] Step 11: app — handler BLE (`src/ble-transport.js`: scan/connect/
-      auto-reconnect/read loop/watchdog frame)
-- [x] Step 12: app — pengecualian prototipe (baca `iface`, connect BLE)
-- [x] Step 13: app — switch COM↔BLE di panel Koneksi
+- [ ] Step 10: runtime interface switch `IFACE:BLE` / `IFACE:USB`
+- [ ] Step 11: app — handler BLE (scan/connect/reconnect/notify)
+- [ ] Step 12: app — pengecualian prototipe (baca `iface`, connect BLE)
+- [ ] Step 13: app — switch COM↔BLE di panel Advanced
 - [ ] Step 14: harness parity (satu skrip perintah di USB & BLE, diff ternormalisasi)
 - [ ] Step 15: firmware FINAL tanpa bypass BLE + **RGB engine step 2** (9 mode animasi)
 - [ ] Step 16: app mendukung firmware FINAL (hapus bypass prototipe)
 
-Status sekarang (app `0.6.1`, firmware `FW_VERSION 8`): jalur BLE sudah
-terpasang penuh di kedua sisi — firmware memakai `BleTransport` lewat
-`transport_ble.h`, frontend memakai `src/ble-transport.js` di balik facade
-`src/transport.js`, dan USB (CDC) tetap jalur default setelah boot.
-
-Yang tersisa: Step 9 (BLE HID sebagai keyboard Windows), Step 14 (harness
-parity), dan Step 15-16 (RGB engine FINAL).
-
-Catatan rilis 0.6.1: `[BLE] DUMP never closed` yang dulu dilaporkan "penyebabnya
-belum teridentifikasi" sudah ketemu — `BleTransport::write()` di firmware
-menyerahkan sisa data begitu saja begitu `notify()` gagal dua kali, sehingga
-`DUMP_END` hilang. Sudah diperbaiki dengan retry berjenjang + log.
+Status sekarang: 6 perintah BLE Rust **terdaftar dan kompilasi**, tapi **belum
+dipakai frontend** sama sekali. Yang masih terpasang adalah dropdown COM +
+tombol Refresh/Connect di panel advanced.
 
 ### 6.2 RGB engine step 2 (butuh hardware FINAL)
 

@@ -5,44 +5,7 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.1] - 2026-10-15
-
-Rilis perbaikan. App `0.6.1`, firmware `FW_VERSION 8`.
-Tag: `app-v0.6.1`, `fw-v8`, `checkpoint-app0.6.1-fw8`.
-
-### Fixed
-- **`[BLE] DUMP never closed (terminator lost)`** — akar masalahnya ketemu:
-  `BleTransport::write()` di `firmware/common/transport_ble.h` mencoba
-  `notify()` paling banyak dua kali, lalu `break` **tanpa mengirim sisa data**
-  dan tanpa log. Saat `notify()` gagal, penutup frame (`DUMP_END` / `NAMES_END`)
-  hilang, sehingga frame tidak pernah tertutup dan parser menelan seluruh
-  baris berikutnya. Akibatnya perpindahan preset macet sampai ada trafik lain
-  yang memaksa parser reset.
-  Sekarang: retry sampai 5 kali per chunk dengan backoff eksponensial
-  (6 / 12 / 24 / 48 / 96 ms), lalu `LOGS->printf` kalau tetap gagal - data
-  hilang jadi terlihat, bukan senyap.
-- **`backend.poll is not a function`** di `src/transport.js` - facade
-  memanggil `backend.poll()` tiap 2 detik (`src/main.js`), tapi backend serial
-  hanya mengekspor `pollPorts()`. Backend BLE punya `poll()`, serial tidak.
-  Sekarang `src/serial-transport.js` mengekspor `poll()` yang memanggil
-  `pollPorts()`.
-
-### Changed
-- `FW_VERSION` 7 → 8 di `firmware/common/limits.h`, dan header kedua sketsh
-  diselaraskan (`firmware-compile-guard-test.js` memaksa keduanya sama).
-- Versi app 0.6.0 → 0.6.1 di `package.json`, `src-tauri/Cargo.toml`,
-  `src-tauri/tauri.conf.json` (dicek `tests/suites/version-test.cjs`).
-
-### Upgrade note
-Firmware wajib di-flash ulang. Cek nomor versi di Serial Monitor (115200)
-lewat perintah `WHOAMI` - jawabannya harus `fw=8`. Kalau masih `fw=7`, device
-masih menjalankan firmware lama yang masih bisa kehilangan `DUMP_END`.
-
 ## [0.6.0] - 2026-10-12
-
-> Catatan retrospektif: pada rilis ini `[BLE] DUMP never closed` masihreported
-> sebagai "penyebab belum teridentifikasi". Penyebabnya sudah ditemukan dan
-> diperbaiki di 0.6.1.
 
 Checkpoint. Transport BLE sudah bisa dipilih dari app; switch USB<->BLE via
 tombol BOOT sudah ada di firmware PROTOTYPE. Git tag: `app-v0.6.0`.
