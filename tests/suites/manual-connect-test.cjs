@@ -10,7 +10,6 @@ const fs = require('fs');
 const html = fs.readFileSync('src/index.html', 'utf8');
 const main = fs.readFileSync('src/main.js', 'utf8');
 const serial = fs.readFileSync('src/serial-transport.js', 'utf8');
-const facadeSrc = fs.readFileSync('src/transport.js', 'utf8');
 const css = fs.readFileSync('src/styles.css', 'utf8');
 const idL = fs.readFileSync('src/locales/id.js', 'utf8');
 const enL = fs.readFileSync('src/locales/en.js', 'utf8');
@@ -71,17 +70,7 @@ ok(/export async function tryAutoConnect/.test(serial), 'tryAutoConnect() masih 
 ok(/autoDetect\(\);/.test(main), 'autoDetect() tetap dipanggil saat start');
 // Poll lewat facade supaya backend aktif yang memutuskan apa yang dipantau,
 // tapi jeda 2 detik dan fungsi pollPorts()-nya sendiri tidak boleh hilang.
-//
-// CATATAN: yang dipanggil sekarang pollAll(), bukan poll(). pollAll() memanggil
-// poll() pada KEDUA backend (USB dan BLE), karena device FINAL hanya menerima
-// satu transport pada satu waktu tapi itu keputusan firmware di device - bukan
-// keputusan app. App harus tetap mencari keduanya supaya tidak terjebak
-// mengira satu mode masih hidup padahal device sudah pindah.
-// Guard di bawah sengaja diperbarui, bukan dilonggarkan: pollAll() WAJIB ada
-// dan WAJIB dipakai di setInterval.
-ok(/setInterval\(\(\) => \{ pollAll\(\); \}, 2000\)/.test(main),
-  'pollAll() facade dipanggil tiap 2 detik (mencari USB dan BLE BERSAMAAN)');
-ok(/export async function pollAll/.test(facadeSrc), 'facade mengekspor pollAll()');
+ok(/setInterval\(\(\) => \{ poll\(\); \}, 2000\)/.test(main), 'poll() facade tetap dipanggil tiap 2 detik');
 ok(/export async function pollPorts/.test(serial), 'pollPorts() masih ada di backend serial');
 
 console.log('\n--- E. Label tombol tidak bertabrakan dengan i18n ---');

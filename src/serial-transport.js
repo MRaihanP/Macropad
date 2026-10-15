@@ -33,16 +33,6 @@ export let deviceWasLost = false;
 let lastGoodPort = null;
 try { lastGoodPort = localStorage.getItem(LAST_PORT_KEY); } catch (e) { }
 let autoReconnect = true;      // false setelah user menekan Disconnect sendiri
-// User TEKAN tombol Disconnect dengan sengaja.
-//
-// Terpisah dari autoReconnect karena autoDetect() me-reset autoReconnect =
-// true setiap kali dipanggil, jadi autoReconnect sendiri tidak bisa
-// membedakan "belum pernah dicoba" dari "user sudah menolak".
-//
-// Efeknya: pollPorts() dan pollAll() berhenti mencoba connect baru selama
-// flag ini menyala. Connect manual, atau app dibuka lagi dari tray, yang
-// melepasnya.
-let userStopped = false;
 let autoBusy = false;          // sedang probe/connect otomatis
 let pollBusy = false;
 let knownPorts = new Set();
@@ -230,9 +220,6 @@ export async function connect(pathArg) {
   setConnected(true);
   hooks.onConnected();
   deviceWasLost = false;
-  // Connect berhasil = user tidak lagi menolak. Melepas status "berhenti
-  // sampai connect manual".
-  userStopped = false;
   startPing();
   suppressEventsUntil = Date.now() + 800;
   await sendLine('PING');
@@ -263,9 +250,6 @@ export async function connect(pathArg) {
 export async function disconnect(manual) {
   if (manual) {
     autoReconnect = false;   // user sengaja memutus: jangan disambung otomatis lagi
-    // Hentikan juga pencarian port BARU. Tanpa ini, colok USB device kedua
-    // akan memicu connect padahal user sedang sengaja memutus.
-    userStopped = true;
     deviceWasLost = false;
     hooks.notify(t('transport.notifDisconnected'), 'disconnect');
     log(t('transport.autoPausedLog'));
@@ -449,16 +433,6 @@ export async function pollPorts() {
 export async function poll() {
   return pollPorts();
 }
-
-// User sedang sengaja memutus? Backend aktif tahu sendiri; yang belum aktif
-// juga perlu tahu supaya pollAll() tidak membuang energi scan untuk device
-// yang memang sedang ditolak.
-export function isUserStopped() { return userStopped; }
-
-// Lepas status "user sengaja memutus". Dipanggil saat app dibuka dari tray -
-// menutup jendela lalu membukanya dari tray berarti "coba lagi", bukan
-// "menolak".
-export function clearUserStopped() { userStopped = false; autoReconnect = true; }
 
 export function startPing() {
   stopPing();
