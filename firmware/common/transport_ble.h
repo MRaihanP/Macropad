@@ -55,48 +55,90 @@ public:
 // Batas chunk diambil dari bleNusChunkLimit() (MTU hasil negosiasi - 3),
 // BUKAN konstanta 244. Kalau Windows menawar MTU < 247, notify dengan
 // 244 byte akan gagal diam-diam dan jawaban terpotong.
+  // ---- Antrean TX non-blocking ----
+  //
+  // Kenapa tidak ada delay() di sini:
+  //
+  // notify() yang gagal TIDAK selalu berarti link radio rusak. Notify gagal
+  // juga saat buffer host penuh atau notify dipanggil terlalu cepat - dan
+  // itu的后果 yang paling berbahaya adalah notify berikutnya jadi lebih
+  // lambat lagi.
+  //
+  // Versi lama memakai delay(6 * (1 << retries)) = 6/12/24/48/96 ms per chunk,
+  // total 186 ms. Handshake ±1300 byte ≈ 6 chunk, jadi loop Arduino bisa
+  // tertahan lebih dari satu detik. Selama loop tertahan, firmware tidak
+  // sempat merespons koneksi radio, dan link lolos supervision timeout.
+  //
+  // Gejalanya persis yang tercatat di Serial Monitor:
+  //     [BLE] Putus (reason=0x208)
+  // 0x208 = BLE_HS_ERR_HCI_BASE (0x200) + 0x08, dan 0x08 adalah HCI
+  // "Connection Timeout" -Artinya link supervision timeout kadaluarsa karena
+  // kedua sisi berhenti hears satu sama lain.
+  //
+  // Jadiakibatnya: notify gagal -> delay() panjang -> link makin lama diam ->
+  // notify berikutnya makin lambat -> gagal lagi. Lingkaran yang making
+  // reconnect butuh banyak percobaan.
+  //
+  // Perbaikannya: JANGAN pernah menahan loop di sini. Data yang gagal dikirim
+  // disimpan, lalu dicoba lagi di siklus loop BERIKUTNYA. Loop Arduino tetap
+  // responsif, jadi radio tetap hears Windows.
+
+  static constexpr size_t TX_PENDING_MAX = 4096;
+  uint8_t txPending_[TX_PENDING_MAX];
+  size_t  txPendingLen_ = 0;
+
+  // Dipanggil dari loop() SETIAP iterasi. Mengirim sebanyak mungkin tanpa
+  // memblokir, lalu kembali seketika.
+  void servicePending() override {
+    if (txPendingLen_ == 0) return;
+    if (!isConnected() || bleNusSubCount == 0 || bleHidConnHandle == BLE_HID_NO_HANDLE) {
+      // Peer hilang. Buang - tidak ada yang bisa menerima, dan membawanya ke
+      // koneksi berikutnya akan mengutus jawaban basi ke app yang baru.
+      txPendingLen_ = 0;
+      return;
+    }
+
+    const uint16_t chunkMax = bleNusChunkLimit();
+    // Satu chunk per panggilan supaya loop tetap cepet. Sisanya dicoba
+    // pada iterasi loop berikutnya.
+    size_t n = txPendingLen_;
+    if (n > chunkMax) n = chunkMax;
+
+    if (!bleNusRx->notify(txPending_, n, bleHidConnHandle)) {
+      // Gagal lagi. Sengaja TANPA delay dan TANPA retry langsung - balik ke
+      // loop supaya scan matrix, encoder, dan radio tetap jalan.
+      return;
+    }
+
+    txPendingLen_ -= n;
+    if (txPendingLen_ > 0) {
+      memmove(txPending_, txPending_ + n, txPendingLen_);
+    }
+  }
+
+  size_t queuePending(const uint8_t* data, size_t len) {
+    if (txPendingLen_ + len > TX_PENDING_MAX) {
+      // Antrean penuh: link sudah bermasalah jauh sebelum titik ini.
+      return 0;
+    }
+    memcpy(txPending_ + txPendingLen_, data, len);
+    txPendingLen_ += len;
+    return len;
+  }
+
   size_t write(const uint8_t* data, size_t len) override {
     if (!isConnected()) return 0;
     if (bleNusSubCount == 0) return 0;   // tanpa subscriber notify diabaikan
+    if (bleHidConnHandle == BLE_HID_NO_HANDLE) return 0;
 
-    uint16_t h = bleHidConnHandle;
-    if (h == BLE_HID_NO_HANDLE) return 0;
-
-    const uint16_t chunkMax = bleNusChunkLimit();
-
-    size_t sent = 0;
-    while (sent < len) {
-      size_t n = len - sent;
-      if (n > chunkMax) n = chunkMax;
-
-      // Retry notify dengan backoff eksponensial. Maks 5 percobaan per chunk.
-      // Hindari break diam-diam yang membuat sisa data (termasuk DUMP_END) hilang.
-      uint8_t retries = 0;
-      bool sentOk = false;
-      while (retries < 5) {
-        if (bleNusRx->notify(data + sent, n, h)) {
-          sentOk = true;
-          break;
-        }
-        // Gagal: delay backoff eksponensial (6, 12, 24, 48, 96 ms)
-        delay(6 * (1 << retries));
-        retries++;
-        h = bleHidConnHandle;
-        if (h == BLE_HID_NO_HANDLE) break;
-      }
-
-      if (!sentOk) {
-        // Semua retry gagal: catat log, return byte yg sudah terkirim.
-        // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
-        // tapi setidaknya caller tahu ada masalah lewat return value < len.
-        LOGS->printf("[BLE] notify gagal total setelah 5x retry, %u byte tertinggal\n",
-                     (unsigned)(len - sent));
-        return sent;  // return byte yang sukses, caller bisa cek return < len
-      }
-
-      sent += n;
+    if (queuePending(data, len) != len) {
+      // Dicatat, bukan dibuang diam-diam - supaya ini kelihatan di Serial
+      // Monitor kalau link sudah tidak sehat sejak sebelumnya.
+      LOGS->printf("[BLE] antrean TX penuh, %u byte dibuang\n", (unsigned)len);
+      return 0;
     }
-    return sent;
+    servicePending();
+    return len;
   }
 
   void flush() override {}

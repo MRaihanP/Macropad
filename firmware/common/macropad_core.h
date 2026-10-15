@@ -1129,6 +1129,17 @@ void drainTransport(Transport* src) {
 }
 
 void checkSerialInput() {
+  // Dorong antrean notify BLE yang belum sempat terkirim.
+  //
+  // Ditaruh di sini, bukan di write() atau di loop() terpisah, karena ini
+  // satu-satunya titik yang dijamin jalan di SETIAP profil (FINAL tidak punya
+  // loop hook-nya sendiri, dan g_altTransport == nullptr di sana sehingga
+  // blok ini otomatis jadi no-op).
+  //
+  // Satu chunk per iterasi, tanpa delay. Loop tetap responsif supaya radio
+  // tetap hears Windows - inilah yang mencegah supervision timeout (0x208).
+  if (g_altTransport) g_altTransport->servicePending();
+
   // Medium utama dulu (USB CDC setelah boot). Urutan ini dipertahankan supaya
   // jalur USB tidak berubah karakteristik sama sekali.
   drainTransport(g_transport);

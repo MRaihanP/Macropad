@@ -42,6 +42,17 @@ public:
   // Flush buffer output (kalau ada buffering).
   virtual void flush() = 0;
 
+  // Kirim antrean tertunda sebanyak mungkin tanpa memblokir.
+  //
+  // Default no-op supaya Transport yang tidak punya antrean (USB CDC, yang
+  // write-nya langsung ke Serial) tidak perlu apa-apa. BleNusTransport
+  // meng-override-nya.
+  //
+  // Kenapa wajib ada di interface: core memanggilnya lewat g_altTransport yang
+  // bertipe Transport*, jadi harus virtual - kalau hanya ada di subclass,
+  // panggilan itu tidak compile.
+  virtual void servicePending() {}
+
   // Printf-style output untuk event/log ke host.
   // Implementasi default di base class memakai write().
   virtual void printf(const char* format, ...) = 0;
