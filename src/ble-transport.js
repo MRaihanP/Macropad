@@ -53,6 +53,12 @@ const READ_CHUNK_MAX = 4096;
 // overhead invoke() yang masih ringan (satu round-trip IPC ke thread BLE).
 const READ_POLL_MS = 40;
 
+// Jeda antar chunk write pada sendBatch(). Buffer GATT Windows tidak kosong
+// seketika setelah ble_write() mengembalikan Success - controller masih
+// memprosesnya. Chunk berikutnya yang menyusul terlalu cepat membuat Windows
+// membalas "Insufficient Resources to complete the request" (0x80650011).
+const WRITE_GAP_MS = 25;
+
 // Batas tunggu sebelum dianggap dump menggantung. DUMP untuk 3x3 hanya ~10 baris
 // dan dikirim dalam hitungan milidetik, jadi 2 detik sudah sangat longgar - cukup
 // untuk device lambat tanpa membuat user menunggu lama tanpa penjelasan.
@@ -217,24 +223,70 @@ export function handleIncomingChunk(data) {
 }
 
 // ---- Pengiriman ----
+// ---- Serialisasi write ----
+//
+// writeBusy mencegah dua write BLE berjalan bersamaan. Tanpa itu, semua
+// pemanggil (sendLine dari PING, writeRaw dari sendBatch, dump layer, upload
+// preset) bisa memanggil ble_write sekaligus, dan Windows membalas:
+//
+//   BLE write failed: Insufficient Resources to complete the request.
+//                     (0x80650011)
+//
+// 0x80650011 = buffer GATT Windows penuh. Buffer itu是因为 belum semua
+// write sebelumnya selesai diproses controller. Menumpuk write memperburuk
+// keadaan: device menerima perintah tidak berurutan, jawabannya tertahan, dan
+// yang muncul akhirnya supervision timeout (link putus dari app DAN hilang
+// dari daftar Bluetooth Windows).
+//
+// Pola yang teramati di dunia nyata: device sudah connect dan dump berjalan
+// normal, tapi begitu user langsung pindah aplikasi (dump preset baru
+// menumpuk di atas dump yang sedang jalan), companion app DAN Windows
+// Bluetooth sama-sama putus. Kalau user menunggu sebentar, tidak terjadi -
+// karena antrean sempat kosong.
+//
+//-readBusy sudah melindungi arah baca; inimelindungi arah tulis.
+let writeBusy = false;
+
+// Tunggu giliran kalau ada write lain yang sedang jalan.
+//
+// Timeout 8 detik supaya tidak mengunci SELAMANYA kalau ada write yang
+// menggantung - tanpa batas, satu write macet akan membekukan seluruh
+// pengiriman perintah sampai link putus.
+async function awaitWriteSlot() {
+  if (!writeBusy) return true;
+  const deadline = Date.now() + 8000;
+  while (writeBusy && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return !writeBusy;
+}
+
 async function writeRaw(str) {
   if (!connected) return;
+  if (!(await awaitWriteSlot())) return;
+  writeBusy = true;
   try {
     await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str)) });
   } catch (e) {
     log(t('ble.writeError', { err: e }), 'err');
     await handleDeviceLost();
+  } finally {
+    writeBusy = false;
   }
 }
 
 export async function sendLine(str) {
   if (!connected) return;
+  if (!(await awaitWriteSlot())) return;
+  writeBusy = true;
   try {
     await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str + '\n')) });
   } catch (e) {
     log(t('ble.writeError', { err: e }), 'err');
     // Tulis gagal = koneksi sudah putus; jangan tunggu polling 2 detik.
     await handleDeviceLost();
+  } finally {
+    writeBusy = false;
   }
 }
 
@@ -245,7 +297,17 @@ export async function sendLine(str) {
 export async function sendBatch(lines) {
   if (!connected) return;
   let chunk = '';
-  const flush = async () => { if (chunk) { await writeRaw(chunk); chunk = ''; } };
+  const flush = async () => {
+    if (!chunk) return;
+    const s = chunk;
+    chunk = '';
+    await writeRaw(s);
+    // Jeda pendek antar chunk. Buffer GATT Windows butuh waktu mengosongkan
+    // controller; tanpa jeda, chunk berikutnya menyusul sebelum chunk
+    // pertama selesai dan Windows membalas "Insufficient Resources"
+    // (0x80650011) - yang berakhir jadi link putus.
+    await sleep(WRITE_GAP_MS);
+  };
   for (const ln of lines) {
     if (chunk.length + ln.length + 1 > WRITE_CHUNK_MAX) await flush();
     chunk += ln + '\n';
@@ -458,6 +520,10 @@ export async function disconnect(manual) {
   resetParserState();
   // Disconnect = tidak ada lagi yang sedang diunggah ke device ini.
   resetBatchUploadState();
+  // Slot write ikut dilepas. Kalau tidak, penunggu di awaitWriteSlot()
+  // akan menunggu sampai batas 8 detik sebelum menyerah - dan karena
+  // connected sudah false, tidak ada yang perlu dikirim lagi ke device ini.
+  writeBusy = false;
   try { await invoke('ble_disconnect'); } catch (e) { log(t('ble.disconnectError', { err: e }), 'err'); }
   connected = false;
   deviceId = null;
@@ -480,6 +546,9 @@ export async function handleDeviceLost() {
   hooks.onDeviceLost();
   stopPing();
   stopReadLoop();
+  // Slot write dilepas, sama seperti di disconnect(). Menunggu giliran
+  // untuk menulis ke device yang sudah tidak ada hanya menahan timer.
+  writeBusy = false;
   setConnected(false);
   if (autoReconnect && wasId) scheduleRetry([wasId]);
 }
