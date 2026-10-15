@@ -100,15 +100,6 @@ BleNusTransport g_bleNusTransport;
 Transport* g_transport    = &g_usbTransport;
 Transport* g_logTransport = &g_usbTransport;
 
-// Transport kedua yang dibaca core setiap loop.
-//
-// Kenapa bukan cuma andalkan g_transport: setelah boot g_transport =
-// &g_usbTransport, sementara companion app yang tersambung lewat BLE menulis
-// perintahnya ke NUS. Tanpa pointer ini, byte dari NUS menumpuk di ring buffer
-// tanpa pernah diproses - device diam saja walau app sudah connect dan
-// mengirim WHOAMI/DUMP. App lalu menunggu jawaban yang tidak akan pernah datang.
-Transport* g_altTransport = &g_bleNusTransport;
-
 // Fungsi untuk mengganti transport protokol runtime.
 // Dipanggil dari ble_diag.h saat perintah PROTO:CDC/PROTO:NUS diterima.
 void protoTransportSwitch() {

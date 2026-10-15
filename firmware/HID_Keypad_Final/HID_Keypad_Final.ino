@@ -46,12 +46,6 @@ UsbTransport g_usbTransport;
 Transport* g_transport    = &g_usbTransport;
 Transport* g_logTransport = &g_usbTransport;
 
-// FINAL tidak mengompilasi NimBLE (HID_BLE_SUPPORT = 0), jadi tidak punya
-// transport kedua. nullptr = core hanya membaca USB CDC, sama seperti
-// sebelumnya. Deklarasinya tetap ada supaya macropad_core.h tidak perlu
-// #ifdef per profil.
-Transport* g_altTransport = nullptr;
-
 // =================== PROFIL: FINAL ===================
 #define HW_PROFILE_NAME "FINAL"
 #define NUM_ENCODERS    2

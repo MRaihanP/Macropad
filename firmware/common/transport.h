@@ -98,23 +98,6 @@ public:
 // Global transport instance - dipakai di seluruh core (handleSerialCommand, events, dll).
 extern Transport* g_transport;
 
-// Transport KEDUA yang juga harus dibaca peripheral, atau nullptr kalau profil
-// ini tidak punya (FINAL tidak mengompilasi NimBLE sama sekali).
-//
-// Kenapa perlu: g_transport hanya satu pointer, dan setelah boot isinya
-// &g_usbTransport (PROTO_DEFAULT = PROTO_CDC di limits.h). Padahal companion
-// app yang terhubung lewat BLE menulis perintahnya ke NUS. Kalau hanya
-// g_transport yang dibaca, byte-byte itu menumpuk di ring buffer tanpa pernah
-// ditarik - device tidak menjawab apa pun, padahal write dari sisi app
-// "berhasil". Gejalanya: app connect OK, log "Commands sent but device did not
-// answer within 6s", preset switch terlihat jalan di UI (notifikasi muncul)
-// tapi grid tidak pernah berubah karena tidak ada DUMP yang kembali.
-//
-// Dengan g_altTransport, core menarik dari KEDUA medium setiap siklus loop.
-// USB tidak berubah: byte dari CDC tetap dibaca persis seperti sebelumnya,
-// dan jawaban tetap kembali lewat medium asal perintah itu masuk.
-extern Transport* g_altTransport;
-
 // Transport untuk LOG DIAGNOSTIK. SELALU USB CDC, apa pun mode protokol.
 //
 // Kenapa harus dipisah dari SERIAL:

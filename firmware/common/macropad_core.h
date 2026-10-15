@@ -1070,75 +1070,24 @@ bool serialOverflow = false;
 
 void serialLineReset() { serialLineLen = 0; serialOverflow = false; }
 
-// Transport asal byte yang sedang mengisi serialLine.
-//
-// WAJIB ada: satu buffer baris dipakai untuk dua medium. Kalau "WHOAMI\n" lewat
-// USB tertahan setengah (tiga byte pertama masuk, sisanya belum), lalu siklus
-// berikutnya BLE mengirim "DUMP:0\n", buffer akan berisi "WHODUMP:0" - perintah
-// dari dua sumber bercampur jadi satu perintah yang tidak dikenal, dan jawaban
-// balik ke medium yang salah.
-//
-// Dengan nullptr = belum ada baris yang sedang dibangun, jadi aman dibaca
-// medium mana pun lebih dulu.
-Transport* s_lineSource = nullptr;
-
-// Tarik semua byte yang tersedia dari satu transport, lalu jalankan perintahnya.
-//
-// Byte dari medium lain DITUNDA selagi serialLine belum kosong. Kalau medium
-// ini baru memegang separuh baris, siklus ini berhenti di situ; baris itu
-// diselesaikan pada siklus berikutnya sebelum medium lain boleh menyumbang.
-void drainTransport(Transport* src) {
-  if (!src) return;
-  while (src->available()) {
-    // Baris yang belum tuntas milik medium lain - jangan dicampur.
-    if (s_lineSource && s_lineSource != src) return;
-
-    int raw = src->read();
-    if (raw < 0) break;
-    char c = (char)raw;
+void checkSerialInput() {
+  while (SERIAL->available()) {
+    char c = SERIAL->read();
     if (c == '\n') {
       if (serialOverflow) {
-        // Pesan overflow keluar lewat medium yang sedang dipakai, bukan lewat
-        // g_transport - kalau tidak, pengguna BLE tidak pernah melihat kenapa
-        // perintahnya ditolak.
-        Transport* prev = g_transport;
-        g_transport = src;
-        src->println("[ERROR] Baris terlalu panjang, dilewati");
-        g_transport = prev;
+        SERIAL->println("[ERROR] Baris terlalu panjang, dilewati");
       } else if (serialLineLen > 0) {
         serialLine[serialLineLen] = '\0';
-        // Jadikan src jalur jawaban selama perintah ini dieksekusi. almost
-        // semua dictum (WHOAMI/DUMP/SLOT:*) menulis lewat SERIAL-> yang
-        // expanded ke g_transport.
-        Transport* prev = g_transport;
-        g_transport = src;
         handleSerialCommand(String(serialLine));
-        g_transport = prev;
       }
       serialLineReset();
-      s_lineSource = nullptr;
     } else if (c != '\r') {
       if (serialLineLen < SERIAL_LINE_MAX - 1) {
-        if (serialLineLen == 0) s_lineSource = src;
         serialLine[serialLineLen++] = c;
       } else {
         serialOverflow = true;   // buang diam-diam sampai newline berikutnya
       }
     }
-  }
-}
-
-void checkSerialInput() {
-  // Medium utama dulu (USB CDC setelah boot). Urutan ini dipertahankan supaya
-  // jalur USB tidak berubah karakteristik sama sekali.
-  drainTransport(g_transport);
-
-  // Lalu medium kedua (BLE NUS), kalau profil ini punya. Inilah yang membuat
-  // companion app bisa bicara lewat BLE TANPA device harus dipindah ke mode BLE
-  // lebih dulu - sebelumnya byte dari NUS hanya menumpuk di ring buffer dan
-  // device tidak pernah menjawab apa pun.
-  if (g_altTransport && g_altTransport != g_transport) {
-    drainTransport(g_altTransport);
   }
 }
 
