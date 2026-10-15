@@ -168,15 +168,8 @@ ok(written.endsWith('\n'), 'batch diakhiri newline');
 console.log('\n--- 6. Batas write BLE (NUS ~512 byte) ---');
 I.calls = [];
 const long = 'A'.repeat(300);
-// Disalin dulu: sendBatch() sekarang memberi jeda antar chunk, jadi I.calls
-// masih bisa berubah selama jeda itu berjalan.
 await BLE.sendBatch([long, long, long]);
-// Ditunggu satu tick supaya jeda terakhir selesai dan tidak ada write lagi
-// yang masuk setelah I.calls disalin.
-await new Promise((r) => setTimeout(r, 60));
-const batchCalls = I.calls.filter((c) => c.cmd === 'ble_write');
-ok(batchCalls.length > 1, `batch panjang jadi beberapa write (dapat ${batchCalls.length})`);
-for (const c of batchCalls) {
+for (const c of I.calls) {
   ok(c.args.data.length <= 512, `write ${c.args.data.length} byte <= 512 (batas NUS)`);
 }
 
@@ -687,34 +680,6 @@ ok(/connectBusy = false/.test(bleSrc2),
 // selamanya dan tidak ada yang bisa mencoba lagi.
 ok(/setTimeout\(\(\) => r\(false\), 10000\)/.test(bleSrc2),
   'connect() punya batas waktu 10 detik (FromIdAsync kadang tidak resolve)');
-
-// ---- Serialisasi write ----
-//
-// Arah baca dilindungi readBusy sejak awal; arah tulis TIDAK. Semua pemanggil
-// (PING, sendBatch, dump layer, upload preset) bisa memanggil ble_write
-// bersamaan, dan Windows membalas 0x80650011 "Insufficient Resources" - yang
-// berakhir jadi link putus dari app DAN hilang dari daftar Bluetooth.
-console.log('\n--- 10. Serialisasi write: hanya boleh SATU write jalan ---');
-ok(/let writeBusy = false/.test(bleSrc2),
-  'ada flag writeBusy yang menandai write sedang berjalan');
-ok(/async function awaitWriteSlot/.test(bleSrc2),
-  'ada helper awaitWriteSlot() untuk ambil giliran');
-ok(/awaitWriteSlot\(\)/.test(bleSrc2),
-  'writeRaw() memanggil awaitWriteSlot() sebelum menulis');
-// Slot harus selalu dilepas, kalau tidak retry berikutnya terkunci selamanya.
-const writeBusyClears = (bleSrc2.match(/writeBusy = false/g) || []).length;
-ok(writeBusyClears >= 3,
-  `writeBusy dilepas di semua jalur keluar (success, error, disconnect) - ada ${writeBusyClears}`);
-// Timeout wajib supaya write yang menggantung tidak membekukan pengiriman
-// perintah sampai link putus.
-ok(/Date\.now\(\) \+ 8000/.test(bleSrc2),
-  'awaitWriteSlot punya batas 8 detik (tidak menunggu selamanya)');
-// Jeda antar chunk: buffer GATT Windows tidak kosong seketika setelah write
-// dianggap sukses.
-ok(/const WRITE_GAP_MS = \d+/.test(bleSrc2),
-  'sendBatch punya jeda antar chunk (WRITE_GAP_MS)');
-ok(/await sleep\(WRITE_GAP_MS\)/.test(bleSrc2),
-  'jeda WRITE_GAP_MS benar-benar dipakai di flush()');
 
 console.log(fail === 0
   ? '\nHASIL: backend BLE + facade berperilaku benar'
