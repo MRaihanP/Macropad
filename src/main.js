@@ -23,7 +23,7 @@ import {
   initTransport, sendLine, sendBatch, connect, disconnect,
   autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
-  setTransportBackend, transportId, bleBackend,
+  setTransportBackend, transportId, bleBackend, pollAll, clearUserStoppedBoth,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -50,7 +50,7 @@ import {
   renderTabs, renderGrid, renderEncoderList, loadLayer,
   resetEditorState, selected, stopRecordingContinuous, cancelEditor,
 } from "./home-page.js";
-import { initTray, initAutostart, initAutostartToggle, initTrayHandlers } from "./tray.js";
+import { initTray, initAutostart, initAutostartToggle, initTrayHandlers, setWindowRestoredHandler } from "./tray.js";
 // i18n. await di level modul supaya bahasa selesai ditentukan SEBELUM init*
 // mana pun yang merender teks dijalankan - kalau tidak, user akan melihat
 // teks dalam bahasa dasar sesaat lalu otomatis berubah.
@@ -138,6 +138,10 @@ initTray({ isDirty: () => dirty, setDirty: (v) => { dirty = !!v; } });
 initAutostartToggle();
 initAutostart();
 initTrayHandlers();
+// Jendela dibuka lagi dari tray = "coba lagi", bukan "menolak". Tanpa ini,
+// user harus menekan Connect manual setiap kali app masuk ke tray - itu
+// persis keluhan yang membuat fitur auto-connect ini dibuat.
+setWindowRestoredHandler(resumeAutoConnectBoth);
 
 // Parser protokol hanya boleh menyentuh layar lewat fungsi yang disuntikkan di
 // sini. Segala sesuatu yang lain (device-state, transport, adaptive, rgb, battery)
@@ -274,6 +278,47 @@ if (btnRefreshBle) {
     } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
   };
 }
+// ==================== AUTO-CONNECT USB + BLE (BERSAMAAN) ====================
+//
+// Companion app harus menemukan device-nya sendiri, tanpa user menekan
+// apa pun, di kedua transport.
+//
+// Prinsip yang dipegang: APP TIDAK MENEBAK MODE DEVICE.
+//
+// Device FINAL hanya menerima SATU transport pada satu waktu, tapi itu
+// keputusan firmware di device - bukan keputusan app. Colok USB, device
+// mematikan BLE-nya sendiri. Cabut USB, device menghidupkan BLE-nya sendiri.
+//
+// Kalau app mencoba "menang" dengan mematikan backend lain, ia akan salah
+// setiap kali device pindah mode di luar kendali app - dan user kembali ke
+// Refresh -> Connect. Jadi keduanya dibiarkan mencari, dan device yang
+// memutuskan.
+
+// Dipanggil sekali saat app siap.
+//
+// Yang dilakukan HANYA: pastikan auto-reconnect nyala, lalu scan USB satu
+// kali supaya port yang sudah ada langsung terdeteksi (pollPorts() juga akan
+// scan tiap 2 detik setelahnya, jadi ini hanya agar device yang sudah colok
+// tidak menunggu 2 detik pertama).
+//
+// BLE sengaja TIDAK disentuh di sini. pollAll() yang mengaturnya dalam 2 detik,
+// dan scan BLE itu mahal - memanggilnya dua kali akan sia-sia.
+//
+// TIDAK ada timer, jeda, atau urutan apa pun. Itu disengaja.
+function startAutoConnectBoth() {
+  enableAutoReconnect();
+  autoDetect();
+}
+
+// Dipanggil saat app dibuka lagi dari tray.
+//
+// Menutup jendela lalu membukanya dari tray berarti "coba lagi", bukan
+// "menolak". clearUserStoppedBoth() melepas status itu di KEDUA backend, lalu
+// auto-connect jalan lagi.
+function resumeAutoConnectBoth() {
+  clearUserStoppedBoth();
+  startAutoConnectBoth();
+}
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
 el('btnSave').onclick = () => { dirty = false; sendLine('SAVE'); };
 el('btnReset').onclick = async () => {
@@ -315,7 +360,18 @@ el('btnApply').onclick = async () => {
 };
 
 renderTabs(); renderGrid(); renderEncoderList();
-autoDetect();
+// Auto-connect BERSAMAAN di USB dan BLE.
+//
+// Sengaja tidak ada timer, jeda, atau urutan apa pun di sini. pollAll() yang
+// dipanggil setiap 2 detik akan membuat KEDUA backend mencari sendiri -
+// USB lewat pollPorts() (yang sudah scan terus-menerus) dan BLE lewat poll()
+// yang sekarang ikut scan saat belum connect.
+//
+// Yang TIDAK ada di sini: "tunggu USB gagal 4 detik lalu pindah ke BLE".
+// Itu akan memaksa app menebak mode device, padahal device sendiri yang
+// memutuskan. Kalau app mematikan BLE begitu USB connect, begitu device
+// dicabut USB, app tidak akan pernah mencari lagi.
+startAutoConnectBoth();
 // initAdaptivePage() memasang kontrol preset (tambah/rename/hapus, tombol Done/Cancel
 // editor) DAN memulai polling window foreground. Kalau ini terlewat, daftar preset
 // tetap tampil tapi tidak pernah auto-switch.
@@ -341,7 +397,11 @@ el('globalAdaptiveToggle').onchange = (e) => {
 el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
 // Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
 // dipantau (port COM untuk USB, status GATT untuk BLE).
-setInterval(() => { poll(); }, 2000);
+// Poll KEDUA backend (USB dan BLE) setiap 2 detik, bukan hanya yang aktif.
+// Device FINAL hanya menerima satu transport, tapi itu keputusan firmware di
+// device - bukan app. App harus tetap mencari keduanya supaya tidak pernah
+// terjebak mengira satu mode masih hidup padahal device sudah pindah.
+setInterval(() => { pollAll(); }, 2000);
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
 // tidak ada import bolak-balik antara main.js dan rgb-page.js.
