@@ -5,6 +5,10 @@ Dokumen ini berisi dua hal:
 1. **Ringkasan perkembangan** — apa yang sudah selesai dan apa yang belum.
 2. **Prosedur pengujian** — langkah-langkah memastikan semua fitur aman.
 
+Versi saat dokumen ini diperbarui: **app `0.6.1` / firmware `FW_VERSION 8`**
+(tag `app-v0.6.1`, `fw-v8`). Cek firmware yang terpasang lewat `WHOAMI` di
+Serial Monitor 115200 — jawabannya harus `fw=8`.
+
 Status verifikasi terakhir: **SEMUA HIJAU** (lihat [Bagian 3](#3-hasil-verifikasi-terakhir)).
 
 ---
@@ -46,13 +50,15 @@ setiap tahap bisa di-revert.
 #### Aplikasi (Rust)
 
 - 9 unit test hijau, termasuk pembacaan locale Windows asli.
+- Perintah BLE (`ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`,
+  `ble_read`, `ble_is_connected`) sudah dipakai `src/ble-transport.js`.
 - Perintah Tauri: aplikasi, consent, autostart, locale, bindable apps, preset,
   notifikasi, overlay, foreground exe.
 - Modul BLE (`src-tauri/src/ble.rs`) sudah ada dan **kompilasi bersih**.
 
 #### Aplikasi (JavaScript)
 
-- 21 skrip uji Node, semua hijau.
+- Seluruh suite uji Node hijau (35 suite lewat `npm test`).
 - `vite build` sukses.
 - Aksesibilitas: navigasi sidebar & layer dengan keyboard, modal dengan focus trap
   dan focus restore, live region untuk status & log.
@@ -61,17 +67,24 @@ setiap tahap bisa di-revert.
 
 ### 1.2 Yang belum selesai
 
-#### Phase 10 — BLE (sedang berjalan, belum di-commit)
+#### BLE — sisi firmware & app (selesai, rilis 0.6.1 / `FW_VERSION 8`)
 
-- **Sisi firmware**: abstraksi transport sudah siap, `TRANSPORT_TYPE` masih `TRANSPORT_USB`.
-  Belum ada implementasi `BleTransport` di firmware.
-- **Sisi Rust**: `ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`, `ble_read`,
-  `ble_is_connected` sudah terdaftar di `generate_handler!` dan bisa dikompilasi,
-  tapi **belum dipakai frontend** — masih command yang berdiri sendiri.
-- **Sisi JavaScript**: belum ada transport BLE. Dropdown COM (`#portSelect`),
-  tombol Refresh (`#btnRefreshPorts`) dan Connect (`#btnConnect`) masih ada.
-- Belum ada auto-connect / auto-reconnect.
-- Fallback force-connect manual harus disembunyikan (bukan dihapus) selama 1–2 rilis.
+- **Sisi firmware**: `BleTransport` sudah diimplementasikan di
+  `firmware/common/transport_ble.h` (notify + ring buffer + guard retry).
+  Abstraksi `transport.h` tetap dipakai; `HID_LINK_DEFAULT` masih `HID_LINK_USB`
+  dan `PROTO_DEFAULT` masih `PROTO_CDC`, jadi device **selalu boot di USB** —
+  perpindahan ke BLE harus diminta eksplisit (tombol BOOT / `IFACE:BLE`).
+- **Sisi Rust**: `ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`,
+  `ble_read`, `ble_is_connected` sudah dipakai frontend lewat
+  `src/ble-transport.js`.
+- **Sisi JavaScript**: ada backend BLE di `src/ble-transport.js` di balik facade
+  `src/transport.js`. Auto-connect / auto-reconnect sudah jalan
+  (retry berjenjang, device terakhir yang berhasil dicoba lebih dulu).
+- Selector USB/BLE ada di panel Koneksi.
+
+Sisa pekerjaan BLE yang **belum** selesai ada di `SUMMARY.md` §6.1: BLE HID
+sebagai keyboard Windows (Step 9), harness parity USB↔BLE (Step 14), dan
+dukungan firmware FINAL penuh (Step 15–16).
 
 #### Firmware FINAL — mesin efek RGB
 
@@ -117,29 +130,19 @@ cd ..
 # B. Build frontend (menangkap error yang tidak ditangkap node --check)
 npx vite build              # harus: "built in ..." tanpa error
 
-# C. 21 skrip uji Node
-$dir = 'C:\Users\Raihan\AppData\Local\Temp\opencode'
-$names = @(
-  'a11y-test.js','adaptive-contract-test.js','dump-waiter-test.js',
-  'encoder-quadrature-test.js','firmware-symbol-check.js','handleLine-diff.js',
-  'home-page-diff.js','key-event-test.js','no-lost-functions-test.js',
-  'parser-wiring-test.js','protocol-contract-test.js','settings-test.js',
-  'shell-ui-diff.js','tray-diff.js','device-state-test.mjs','i18n-test.mjs',
-  'protocol-parser-test.mjs','rgb-page-test.mjs','serial-transport-test.mjs',
-  'startup-smoke-test.mjs','battery-ui-test.mjs'
-)
-foreach ($n in $names) {
-  $out = & node "$dir\$n" 2>&1 | Out-String
-  if ($LASTEXITCODE -ne 0) { Write-Output "FAIL $n"; Write-Output $out }
-  else { Write-Output "PASS $n" }
-}
+# C. Seluruh skrip uji Node (runner resmi)
+npm test                      # harus: "35/35 suite hijau, 0 bermasalah"
+
+# D. Uji negatif (menolak jalan kalau working tree kotor)
+npm run test:negative         # commit dulu sebelum menjalankan ini
 ```
 
-**Semua 21 harus PASS.** Kalau ada FAIL, jangan commit — perbaiki dulu.
+Runner di `tests/runner/run-all.mjs` yang discovering skrip di `tests/suites/`,
+jadi skrip baru ikut jalan tanpa perlu didaftarkan manual. Kalau ada suite FAIL,
+jangan commit — perbaiki dulu.
 
-> Catatan: skrip diff meng-*pin* commit tertentu, bukan `HEAD`. Kalau Phase berikutnya
-> mengubah bentuk fungsi, skrip diff harus di-update (ada langkah de-translate untuk
-> memetakan `t('key', ...)` kembali ke literal lama).
+> Catatan: kalau kamu menambah skrip uji, cukup taruh di `tests/suites/`.
+> Berkas `.cjs` wajib pakai `require`, bukan `import`.
 
 ### 2.2 Tingkat 2 — Build & jalankan app
 
@@ -266,16 +269,24 @@ Sebelum rilis:
 
 Sebelum setiap commit:
 
-1. `cargo test --lib` + `cargo check` → hijau.
-2. `npx vite build` → sukses.
-3. 21 skrip uji Node → semua PASS.
-4. `git status` — pastikan tidak ada file yang tidak sengaja ikut (mis. `dist/`,
+1. `npm test` → semua suite hijau.
+2. `npm run build` (atau `npx vite build`) → sukses.
+3. `cargo test --lib` → hijau (9 passed).
+4. Kalau ada yang menyentuh firmware:
+   `arduino-cli compile --fqbn esp32:esp32:esp32s3 --no-color firmware/HID_Keypad_Prototype`
+   dan sketsh `HID_Keypad_Final` juga.
+5. `git status` — pastikan tidak ada file yang tidak sengaja ikut (mis. `dist/`,
    `target/`, `node_modules/`).
-5. Update `CHANGELOG.md`: **Added / Changed / Fixed / Removed**.
-6. Commit dengan pesan yang menyebut nomor fase.
+6. Update `CHANGELOG.md`: **Added / Changed / Fixed / Removed**.
+7. Kalau versi naik: samakan `package.json`, `src-tauri/Cargo.toml`,
+   `src-tauri/tauri.conf.json` (dicek `tests/suites/version-test.cjs`), dan
+   `FW_VERSION` di `firmware/common/limits.h` + header kedua sketsh
+   (dicek `tests/suites/firmware-compile-guard-test.js`).
+8. Commit dengan pesan yang menyebut nomor fase.
 
 Kalau ada regresi setelah commit: `git revert <hash>` (jangan `reset --hard`,
-supaya riwayatnya tetap bisa ditelusuri).
+supaya riwayatnya tetap bisa ditelusuri). Untuk rollback total ke checkpoint,
+lebih baik pindah ke tag (`checkpoint-*`) daripada menumpuk revert.
 
 ---
 
@@ -285,16 +296,19 @@ supaya riwayatnya tetap bisa ditelusuri).
 |---|---|
 | `cargo check` | Bersih (0 error) |
 | `cargo test --lib` | **9 passed**, 0 failed |
-| `npx vite build` | Sukses, 32 modul |
-| 21 skrip uji Node | **21/21 PASS** |
+| `npm run build` (vite) | Sukses |
+| `npm test` | **35/35 suite hijau** |
+| `arduino-cli compile` PROTOTYPE | Sukses |
+| `arduino-cli compile` FINAL | Sukses |
 
-Dua skrip sempat gagal setelah Phase 10 karena masih mencari `Serial.printf(`,
-padahal firmware sekarang memakai macro `SERIAL->printf(`. Itu **test usang, bukan
-regresi** — regex-nya sudah diperbaiki, dan sekarang menerima keduanya.
+> Angka di tabel ini berasal dari eksekusi nyata pada rilis 0.6.1 / `FW_VERSION 8`.
+> Jalankan ulang seluruh baris di [Bagian 2](#2-prosedur-pengujian) sebelum
+> mempercayai tabel ini untuk perubahan berikutnya.
 
 ### Yang belum terverifikasi
 
-- Compile Arduino (tidak ada toolchain).
-- Perilaku nyata di device (tidak ada akses ke device dari lingkungan ini).
+- Perilaku nyata di device — lingkungan build tidak punya akses ke hardware.
+  Yang sudah dilakukan baru uji manual oleh pengguna: `[BLE] DUMP never closed`
+  dilaporkan hilang setelah firmware 0.6.1 di-flash.
 - Fase FINAL yang butuh charger/VBUS/RGB asli.
-- BLE end-to-end (masih dalam pengerjaan).
+- BLE HID sebagai keyboard Windows (Step 9 di `SUMMARY.md` §6.1).
