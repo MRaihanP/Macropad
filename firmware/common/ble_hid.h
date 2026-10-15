@@ -211,10 +211,91 @@ static void bleAdvReport() {
                  bleAdvOk ? "" : " ADA YANG GAGAL");
 }
 
+// ---- Connection parameters: supervision timeout ----
+//
+// KENAPA INI ADA
+//
+// Putus dengan "reason=0x208" adalah HCI error 0x08 (Connection Timeout),
+// yang artinya link supervision timeout kadaluarsa: kedua sisi berhenti
+// hears satu sama lain selama durasi timeout itu, lalu link diputus.
+//
+// Nilai BAWAAN NimBLE (ble_gap.h:122):
+//   #define BLE_GAP_INITIAL_SUPERVISION_TIMEOUT 0x0100
+//   0x0100 = 256 x 10 ms = 2,56 detik
+//
+// 2,56 detik itu pendek kalau kondisi radio sekecil apa pun jelek - satu
+// interferensi sesaat sudah cukup untuk menghabiskan seluruh timeout dan
+// memutus link yang sebenarnya masih bisa diselamatkan.
+//
+// Yang diketahui dari pengujian di PC ini:
+//   - Device + smartphone : STABIL, tidak pernah putus
+//   - Device + PC (dongl USB, powerbank, semua port) : SERING PUTUS
+//   - Device + PC TANPA companion app (link idle, nol perintah) : TETAP PUTUS
+//
+// Uji ketiga yang menentukan: tanpa companion app tidak ada satu pun
+// perintah yang dikirim - tidak ada PING, tidak ada DUMP, tidak ada SET.
+// Link itu idle total, hanya link layer. Kalau link kosong pun putus,
+// penyebabnya TIDAK bisa dari firmware atau companion app.
+//
+// Kesimpulan: adapter Bluetooth PC bermasalah. Yang bisa kita lakukan dari
+// sisi device hanya MEMBERI LEBIH BANYAK WAKTU, bukan menghilangkan masalah -
+// ini MITIGASI, bukan FIX.
+//
+// Mengganti 2,56 dtk -> 10 detik memberi chance link yang "sedang jelek" untuk
+// bertahan. Trade-off yang disepakati: link yang benar-benar mati akan lebih
+// lambat terdeteksi (reconnect lebih lambat, bukan lebih cepat).
+//
+// CATATAN PENTING SOAL SIAPA YANG MENENTUKAN
+//
+// Di BLE, CONNECTION PARAMETER DIUSULKAN central (PC) dan disetujui
+// peripheral (device). updateConnParams() hanya mengirim REQUEST - kalau PC
+// menolak, nilai lama yang berlaku. Jadi ini permintaan, bukan paksaan.
+// PC yang menentukan parameter final.
+
+// 10 detik, dalam satuan 10 ms (BLE_GAP_SUPERVISION_TIMEOUT_MS(t) = t / 10).
+#ifndef BLE_SUPERVISION_TIMEOUT_10MS
+#define BLE_SUPERVISION_TIMEOUT_10MS 1000
+#endif
+
+// Interval koneksi. Baikan dibiarkan longgar: makin sering paket dikirim,
+// makin besar chances ada yang hilang - dan yang hilang itu yang menghabiskan
+// supervision timeout. Nilai default NimBLE adalah 30 ms (min) dan 50 ms (max).
+#ifndef BLE_CONN_INTERVAL_MIN_MS
+#define BLE_CONN_INTERVAL_MIN_MS 50
+#endif
+#ifndef BLE_CONN_INTERVAL_MAX_MS
+#define BLE_CONN_INTERVAL_MAX_MS 100
+#endif
+
+// Latency 0 = central tidak boleh tidur, selalu ada koneksi. Itu yang kita mau:
+// device ini butuh responsif.
+#define BLE_CONN_LATENCY 0
+
+// Dipanggil dari onConnect(). Pointer server boleh null (tidak semua callback
+// memberikannya) - kalau null, permintaan dilewati dan nilai bawaan tetap
+// berlaku. Kehilangan request lebih baik daripada crash.
+static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
+  if (server == nullptr) {
+    LOGS->printf("[BLE] param: dilewati (server null)\n");
+    return;
+  }
+  server->updateConnParams(ci.getConnHandle(),
+                           BLE_CONN_INTERVAL_MIN_MS,
+                           BLE_CONN_INTERVAL_MAX_MS,
+                           BLE_CONN_LATENCY,
+                           BLE_SUPERVISION_TIMEOUT_10MS);
+  LOGS->printf("[BLE] param diminta: itvl=%u-%ums lat=%d timeout=%ums (PC yang memutuskan)\n",
+               (unsigned)BLE_CONN_INTERVAL_MIN_MS,
+               (unsigned)BLE_CONN_INTERVAL_MAX_MS,
+               (int)BLE_CONN_LATENCY,
+               (unsigned)(BLE_SUPERVISION_TIMEOUT_10MS * 10));
+}
+
 class BleHidServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*, NimBLEConnInfo& ci) override {
+  void onConnect(NimBLEServer* server, NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
     LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
+    bleHidApplyConnParams(server, ci);
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& ci) override {
     // Windows tidak selalu memanggil onConnect; event ini sering yang pertama.
