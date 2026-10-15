@@ -33,15 +33,6 @@ export let deviceWasLost = false;
 let lastGoodPort = null;
 try { lastGoodPort = localStorage.getItem(LAST_PORT_KEY); } catch (e) { }
 let autoReconnect = true;      // false setelah user menekan Disconnect sendiri
-// User TEKAN tombol Disconnect dengan sengaja.
-//
-// Terpisah dari autoReconnect karena autoDetect() me-reset autoReconnect =
-// true setiap kali dipanggil, jadi autoReconnect sendiri tidak bisa
-// membedakan "belum pernah dicoba" dari "user sudah menolak".
-//
-// Efeknya: pollPorts() berhenti mencoba connect baru selama flag ini menyala.
-// Connect manual, atau app dibuka lagi dari tray, yang melepasnya.
-let userStopped = false;
 let autoBusy = false;          // sedang probe/connect otomatis
 let pollBusy = false;
 let knownPorts = new Set();
@@ -229,10 +220,6 @@ export async function connect(pathArg) {
   setConnected(true);
   hooks.onConnected();
   deviceWasLost = false;
-  // Connect berhasil = user tidak lagi menolak. Ini yang melepas
-  // "berhenti sampai connect manual" - baik dari klik Connect, baik dari
-  // auto-connect yang sedang jalan.
-  userStopped = false;
   startPing();
   suppressEventsUntil = Date.now() + 800;
   await sendLine('PING');
@@ -263,9 +250,6 @@ export async function connect(pathArg) {
 export async function disconnect(manual) {
   if (manual) {
     autoReconnect = false;   // user sengaja memutus: jangan disambung otomatis lagi
-    // Hentikan juga pencarian port BARU. Tanpa ini, colok USB device kedua
-    // akan memicu connect padahal user sedang sengaja memutus.
-    userStopped = true;
     deviceWasLost = false;
     hooks.notify(t('transport.notifDisconnected'), 'disconnect');
     log(t('transport.autoPausedLog'));
@@ -449,16 +433,6 @@ export async function pollPorts() {
 export async function poll() {
   return pollPorts();
 }
-
-// User sedang sengaja memutus: jangan cari device baru sampai dia connect
-// manual atau app dibuka lagi dari tray. Dipakai oleh koordinator auto-connect
-// di main.js supaya kedua backend berhenti mengarahkan probing ke device yang
-// tidak ada, dan tidak membuang energi scan tanpa guna.
-export function isUserStopped() { return userStopped; }
-
-// Lepas status "user sengaja memutus". Dipanggil saat app dibuka dari tray -
-//_itu makna "coba lagi" yang wajar setelah user autistic menutup jendela.
-export function clearUserStopped() { userStopped = false; autoReconnect = true; }
 
 export function startPing() {
   stopPing();

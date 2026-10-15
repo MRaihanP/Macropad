@@ -60,28 +60,6 @@ export function updateConnectButton(state) { return backend.updateConnectButton(
 export function handleDeviceLost() { return backend.handleDeviceLost(); }
 export function resetParserState() { return backend.resetParserState(); }
 
-// ---- Auto-connect ----
-
-// User sedang sengaja memutus (tekan tombol Disconnect)? Backend aktif tahu
-// sendiri; yang belum aktif tidak tahu, jadi keduanya ditanya.
-export function isUserStopped() {
-  return typeof backend.isUserStopped === 'function' ? backend.isUserStopped() : false;
-}
-
-// Lepas status "user sengaja memutus" di KEDUA backend.
-//
-// Dipakai saat app dibuka lagi dari tray: menutup jendela lalu membukanya dari
-// tray berarti "coba lagi", bukan "menolak" - kalau tidak, user harus menekan
-// Connect manual setiap kali app masuk ke tray.
-//
-// Backend yang belum pernah dipakai mungkin tidak ter-load (BLE di-load
-// dinamis), jadi backend yang tidak ada dilewati diam-diam.
-export function clearUserStoppedBoth() {
-  if (typeof serialBackend.clearUserStopped === 'function') serialBackend.clearUserStopped();
-  const ble = backendId === 'ble' ? backend : bleBackend();
-  if (ble && typeof ble.clearUserStopped === 'function') ble.clearUserStopped();
-}
-
 // ---- State: getter, bukan snapshot ----
 // Nilai live diekspor lewat getter supaya perubahan di backend langsung terlihat.
 // Mengekspor `let` langsung dari facade akan membekukan nilainya pada saat
