@@ -52,6 +52,11 @@ extern char bleNusLastWrite[];
 // Dipanggil dari transport_ble.h setiap write(), bukan disimpan sebagai
 // konstanta, supaya perubahan MTU langsung berlaku tanpa re-init.
 uint16_t bleNusChunkLimit();
+
+// MTU ATT yang sedang berlaku. Fungsi, bukan konstanta, supaya DIAG selalu
+// melaporkan nilai terbaru setelah onMTUChange - angka MTU yang dicetak saat
+// boot akan basi begitu negosiasi selesai.
+uint16_t bleNusMtu();
 extern NimBLECharacteristic* bleNusTx;
 extern NimBLECharacteristic* bleNusRx;
 
@@ -61,15 +66,67 @@ volatile uint16_t bleNusHead = 0;
 volatile uint16_t bleNusTail = 0;
 portMUX_TYPE bleNusMux = portMUX_INITIALIZER_UNLOCKED;
 
+// =================== PENGHITUNG LAPIS MEDIA (L4) ===================
+//
+// Semua yang di bawah ini SEBELUMNYE hilang tanpa jejak.
+//
+// bleNusPush() dulu memakai `if (next == bleNusTail) break;` - jadi saat ring
+// buffer penuh, byte langsung dibuang tanpa satu pun counter yang naik.
+// Akibatnya companion app hanya melihat jawaban device yang "berhenti di
+// tengah" dan tidak pernah bisa tahu apakah itu karena radio, host yang
+// lambat, atau ring buffer device yang penuh. Ketiganya punya tindakan
+// berbeda, jadi tidak boleh dicampur jadi satu gejala.
+//
+// Sekarang semuanya dihitung, lalu dicetak oleh perintah DIAG (diag.h).
+// Tidak ada perilaku transfer yang berubah - hanya jadi terlihat.
+//
+// bleNusRingHigh (tinggi air isi ring) yang paling berguna: kalau ini
+// menyentuh atau mendekati BLE_NUS_RING_SIZE, penyebabnya sudah pasti BUKAN
+// radio, melainkan device terlalu lambat membaca atau app mengirim terlalu
+// cepat. Nilai kecil sementara notify gagal berulang = masalah radio/host.
+//
+// PENTING: deklarasi ini HARUS sebelum bleNusPush() - inline function di
+// header ini diproses saat didefinisikan, bukan saat dipanggil.
+volatile uint32_t bleNusPushDropped = 0;   // byte yang TIDAK masuk ring (penuh)
+volatile uint16_t bleNusRingHigh    = 0;   // tinggi air isi ring, dalam byte
+volatile uint32_t bleNusNotifyOk    = 0;   // chunk notify berhasil
+volatile uint32_t bleNusNotifyFail  = 0;   // chunk notify gagal setelah semua retry
+volatile uint32_t bleNusNotifyChunk = 0;   // total chunk notify yang dicoba
+volatile uint32_t bleNusNotifyRetry = 0;   // total percobaan ulang (backoff)
+
+// Dua kasus yang tadinya return 0 TANPA JEJAK. Keduanya terlihat dari sisi app
+// persis sama - "connect berhasil tapi device diam" - padahal penyebabnya
+// berbeda dan perbaikannya juga berbeda:
+//   writeNoConn: link belum naik / device sudah tidur
+//   writeNoSub : GATT nyambung, tapi companion app belum subscribe notify
+// Yang kedua adalah penyebab paling sering dari "app connect tapi tidak ada
+// apa-apa", jadi harus bisa dibedakan tanpa menebak.
+volatile uint32_t bleNusWriteNoConn = 0;
+volatile uint32_t bleNusWriteNoSub  = 0;
+
 inline void bleNusPush(const uint8_t* data, size_t len) {
+  uint16_t dropped = 0;
   portENTER_CRITICAL(&bleNusMux);
   for (size_t i = 0; i < len; i++) {
     uint16_t next = (uint16_t)((bleNusHead + 1) % BLE_NUS_RING_SIZE);
-    if (next == bleNusTail) break;
+    // Penting: drop TETAP terjadi (mengubahnya jadi blocking akan menahan
+    // task host NimBLE dan mematikan BLE), tapi sekarang DIHITUNG.
+    //
+    // Nilai byte yang hilang disimpan, bukan cuma flag - supaya DIAG bisa
+    // melaporkan "n byte hilang", yang langsung membedakan "sedikit" dari
+    // "ring buffer penuh terus-menerus".
+    if (next == bleNusTail) { dropped++; continue; }
     bleNusRing[bleNusHead] = data[i];
     bleNusHead = next;
   }
+  const uint16_t used =
+      (uint16_t)((bleNusHead - bleNusTail + BLE_NUS_RING_SIZE) % BLE_NUS_RING_SIZE);
   portEXIT_CRITICAL(&bleNusMux);
+
+  // Di luar critical section: counter ini dibaca dari loop Arduino, bukan
+  // dari dalam mux.
+  if (dropped) bleNusPushDropped += dropped;
+  if (used > bleNusRingHigh) bleNusRingHigh = used;
 }
 
 inline int bleNusPop(uint8_t* out) {
@@ -98,6 +155,9 @@ inline void bleNusClear() {
   portEXIT_CRITICAL(&bleNusMux);
 }
 
+// Snapshot perintah terakhir yang masuk, untuk log diagnostik. Harus ada: log
+// "NUS RX" di ble_hid.h memakainya, dan tanpa definisi ini kompilasi gagal
+// dengan "incomplete type 'char []'".
 volatile uint16_t bleNusSubCount   = 0;
 volatile uint32_t bleNusWriteCount = 0;
 char bleNusLastWrite[64] = {0};

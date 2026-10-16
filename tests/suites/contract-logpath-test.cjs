@@ -54,11 +54,23 @@ ok(/LOGS->printf\("\[BLE\]/.test(bleHid), 'ble_hid.h: log [BLE] lewat LOGS->');
 ok(/LOGS->printf\("IFACE:link=/.test(bleDiag), 'ble_diag.h: status IFACE lewat LOGS->');
 ok(/LOGS->printf\("\[IN:%s\]/.test(hidLink), 'hid_link.h: jejak input lewat LOGS->');
 
-console.log('\n--- 4. Core TIDAK boleh pakai LOGS-> ---');
-// core = protokol. Kalau satu baris pun di core memakai LOGS, jawaban
-// perintah tidak akan sampai ke companion app.
-ok(!/LOGS->/.test(core),
-  'macropad_core.h tidak memakai LOGS-> sama sekali');
+console.log('\n--- 4. Core TIDAK boleh MENULIS lewat LOGS-> ---');
+// core = protokol. Kalau core MENULIS lewat LOGS, jawaban perintah tidak akan
+// sampai ke companion app. Itu yang dilarang di sini.
+//
+// Yang TIDAK dilarang adalah MEMBACA status lewat LOGS. serviceBootBanner()
+// memakai LOGS->isConnected() hanya untuk tahu "apakah ada host yang
+// mendengarkan", tanpa menulis apa pun. Melarang pembacaan seperti itu akan
+// memaksa core memeriksa USB lewat jalur lain - padahal jalur log adalah satu-
+// satunya tempat yang tahu apakah CDC benar-benar terhubung.
+//
+// Aturannya jadi: TIDAK ADA output ke LOGS, tapi status boleh dibaca.
+const coreLogOut = core.match(/LOGS->(printf|println|print|write|flush)/g);
+ok(!coreLogOut,
+  `macropad_core.h tidak menulis apa pun lewat LOGS-> (ditemukan: ${coreLogOut || 'tidak ada'})`);
+const coreLogUse = core.match(/LOGS->\w+/g) || [];
+ok(coreLogUse.every((u) => u === 'LOGS->isConnected'),
+  `pola LOGS-> di core hanya boleh pembaca status (ditemukan: ${[...new Set(coreLogUse)].join(', ') || 'tidak ada'})`);
 ok(/SERIAL->printf\("HWINFO:/.test(core), 'core masih menjawab HWINFO lewat SERIAL->');
 ok(/SERIAL->printf\("\[KEY\] /.test(core), 'core masih mengirim [KEY] lewat SERIAL->');
 ok(/SERIAL->printf\("EVT:/.test(core), 'core masih mengirim EVT: lewat SERIAL->');

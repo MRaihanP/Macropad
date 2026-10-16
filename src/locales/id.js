@@ -455,6 +455,7 @@ export const id = {
 'ble.autoNotFound': '[BLE] MacroPad tidak ditemukan otomatis. Pindai dan pilih manual.',
 'ble.pickDevice': 'Pilih device BLE dulu (klik ↻ bila kosong)',
 'ble.foundLog': '[BLE] {count} device ditemukan.',
+'ble.diagError': '[DIAG] Gagal mengambil laporan diagnosa: {err}',
 'ble.readError': '[BLE] Gagal menarik data: {err}',
 'ble.pickTransportFirst': 'Pilih transport BLE dulu di dropdown Transport',
 'ble.traceSwitched': '[BLE] Transport diganti ke BLE, memindai device...',

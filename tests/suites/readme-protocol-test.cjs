@@ -14,6 +14,11 @@ const root = process.cwd();
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const core = fs.readFileSync(path.join(root, 'firmware/common/macropad_core.h'), 'utf8');
 const limits = fs.readFileSync(path.join(root, 'firmware/common/limits.h'), 'utf8');
+// Perintah diagnosa (DIAG) tinggal di diag.h, bukan di core. Tanpa baris ini,
+// setiap perintah yang dipindah ke header sendiri akan dilaporkan sebagai
+// "tidak ada di firmware" - padahal ia hanya pindah tempat.
+const diag = fs.readFileSync(path.join(root, 'firmware/common/diag.h'), 'utf8');
+const fwSources = core + '\n' + diag;
 
 let fail = 0;
 const ok = (c, m) => { console.log(`  ${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) fail++; };
@@ -32,7 +37,7 @@ ok(uniqCmds.length >= 20, `README mendokumentasikan ${uniqCmds.length} perintah`
 
 for (const c of uniqCmds) {
   // Firmwareiniti dengan either startsWith("X:") atau cmd == "X".
-  const found = core.includes(`"${c}:`) || core.includes(`cmd == "${c}"`) || core.includes(`"${c}"`);
+  const found = fwSources.includes(`"${c}:`) || fwSources.includes(`cmd == "${c}"`) || fwSources.includes(`"${c}"`);
   ok(found, `perintah ${c} ada di firmware`);
 }
 

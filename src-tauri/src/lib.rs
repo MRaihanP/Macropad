@@ -32,7 +32,7 @@ use windows::core::{PWSTR, PCWSTR, Interface};
 
 // =================== BLE TRANSPORT ===================
 mod ble;
-use ble::BleTransport;
+use ble::{BleStats, BleTransport};
 // DeviceInformation dipakai di ble_worker untuk menyimpan hasil scan, sehingga
 // connect() tidak perlu scan ulang. Objek WinRT ini tidak Send, jadi hanya
 // boleh hidup di thread worker itu.
@@ -915,6 +915,7 @@ enum BleRequest {
         resp: tokio::sync::oneshot::Sender<Vec<u8>>,
     },
     IsConnected(tokio::sync::oneshot::Sender<bool>),
+    Stats(tokio::sync::oneshot::Sender<BleStats>),
 }
 
 static BLE_TX: std::sync::OnceLock<std::sync::mpsc::Sender<BleRequest>> =
@@ -1038,6 +1039,13 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
             BleRequest::IsConnected(resp) => {
                 let _ = resp.send(transport.as_ref().is_some_and(|t| t.is_connected()));
             }
+            BleRequest::Stats(resp) => {
+                // Angka DEFAULT kalau transport sudah lepas: laporan harus
+                // tetap bisa diambil setelah disconnect, justru di saat itulah
+                // angka terakhir paling dibutuhkan.
+                let st = transport.as_ref().map(|t| t.stats()).unwrap_or_default();
+                let _ = resp.send(st);
+            }
         }
     }
 }
@@ -1095,6 +1103,21 @@ async fn ble_is_connected() -> bool {
         return false;
     }
     rx.await.unwrap_or(false)
+}
+
+/// Snapshot penghitung lapis LINK (L1).
+///
+/// Dibaca frontend untuk menyusun blok DIAG. Sengaja tidak bisa gagal: kalau
+/// thread BLE tidak hidup, angka kosong dianggap "tidak ada koneksi", bukan
+/// error - laporan harus selalu bisa ditampilkan, termasuk kondisi paling Buruk
+/// yang justru paling perlu dilihat.
+#[tauri::command]
+async fn ble_stats() -> BleStats {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    if ble_tx().send(BleRequest::Stats(resp)).is_err() {
+        return BleStats::default();
+    }
+    rx.await.unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1225,6 +1248,7 @@ pub fn run() {
             ble_read,
             ble_is_connected,
             ble_switch_interface,
+            ble_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -138,6 +138,10 @@ inline uint16_t bleNusChunkLimit() {
   return (bleAttMtu > 3) ? (uint16_t)(bleAttMtu - 3) : 20;
 }
 
+// MTU yang sedang berlaku, untuk DIAG. Sengaja accessor supaya angka yang
+// dicetak selalu yang terbaru, bukan nilai yang terekam saat init.
+inline uint16_t bleNusMtu() { return bleAttMtu; }
+
 // UUID Nordic UART Service - jalur PROTOCOL companion app. Harus sama persis
 // dengan companion app (src-tauri/src/ble.rs).
 //

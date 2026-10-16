@@ -7,6 +7,9 @@
 // ==================================================================
 
 #include "transport.h"
+// Lapis diagnosa protokol (L3). Harus SETELAH transport.h karena memakai
+// makro SERIAL, dan SEBELUM handleSerialCommand dipakai.
+#include "diag.h"
 
 // Global transport instance - diinisialisasi di sketsh profil (transport_usb.cpp / transport_ble.cpp).
 extern Transport* g_transport;
@@ -702,6 +705,19 @@ void handleSerialCommand(const String& cmd) {
 
   lastHostSeenMs = millis();
 
+  // ---- Rekam perintah yang masuk (lapisan L3) ----
+  //
+  // "Perintah terakhir yang sampai" adalah satu-satunya jejak yang membedakan
+  // "device tidak pernah menerima perintah" dari "device menerimanya tapi tidak
+  //atau salah menjawab". Tanpa ini, keduanya terlihat sama dari app.
+  protoCmdsTotal++;
+  {
+    size_t n = cmd.length();
+    if (n > sizeof(protoLastCmd) - 1) n = sizeof(protoLastCmd) - 1;
+    memcpy(protoLastCmd, cmd.c_str(), n);
+    protoLastCmd[n] = '\0';
+  }
+
   if (cmd == "WHOAMI") {
     // fw= muncul supaya user bisa tahu firmware mana yang terpasang tanpa
     // perlu menebak dari perilaku. "v1" setelah nama adalah versi PROTOCOL
@@ -1046,11 +1062,20 @@ void handleSerialCommand(const String& cmd) {
     return;
   }
 
+  // ---- DIAG: laporan lapis (L3 + L4) ----
+  //
+  // Diletakkan sebelum PROFILE_TRY_COMMAND supaya DIAG selalu dijawab core,
+  // di profil mana pun dan di mode media mana pun. Kalau ini dititipkan ke
+  // profil,akibatnya: profil FINAL (tanpa BLE) tidak punya DIAG sama sekali,
+  // persis device yang paling perlu diperiksa.
+  if (protoDiagCommand(cmd)) return;
+
   // Titik ekstensi perintah milik profil (diagnostics IFACE/BLE, dll).
   // Dijalankan sebelum error "tidak dikenal" supaya profil bisa menambah
   // command sendiri tanpa core perlu tahu apa pun soal BLE.
   if (PROFILE_TRY_COMMAND(cmd)) return;
 
+  protoUnknownCmd++;
   SERIAL->println("[ERROR] Command tidak dikenal");
 }
 
@@ -1075,8 +1100,13 @@ void checkSerialInput() {
     char c = SERIAL->read();
     if (c == '\n') {
       if (serialOverflow) {
+        // Dihitung per BARIS yang hilang, bukan per byte. Kalau dihitung per
+        // byte, satu baris 5 KB langsung menambah ribuan dan angka akhirnya
+        // tidak bisa dipakai menilai seberapa sering ini terjadi.
+        protoLineTooLong++;
         SERIAL->println("[ERROR] Baris terlalu panjang, dilewati");
       } else if (serialLineLen > 0) {
+        protoLinesParsed++;
         serialLine[serialLineLen] = '\0';
         handleSerialCommand(String(serialLine));
       }
@@ -1100,11 +1130,58 @@ void updateLed() {
   if (ledFlashUntil != 0 && now >= ledFlashUntil) { ledFlashUntil = 0; statusLed(false); }
 }
 
+// =================== BANNER BOOT ===================
+//
+// Kenapa banner dicetak ulang, bukan cukup sekali di setup():
+//
+// Dua hal terjadi pada USB CDC ESP32-S3 yang membuat banner yang dicetak di
+// setup() saja hampir selalu tidak terlihat:
+//
+//  1. USB enumerasi beberapa ratus ms SETELAH boot. Apa pun yang ditulis
+//     sebelum host benar-benar membuka port hilang permanen.
+//  2. Membuka Serial Monitor sering memicu reset lewat DTR. Device lalu boot
+//     ulang tepat saat host sedang membuka port, dan device selesai boot
+//     sebelum host selesai mendengarkan.
+//
+// Hasilnya di monitor: baris pertama terpotong, lalu output baru muncul
+// beberapa saat setelah boot. Bukan bug di aplikasi atau di port-nya, hanya
+// urutan waktu.
+//
+// Solusinya sederhana: cetak banner saat boot (berguna kalau host kebetulan
+// sudah siap), lalu cetak LAGI begitu isConnected() pertama kali true. Yang
+// kedua inilah yang membuat banner selalu terlihat, tidak soal kapan monitor
+// dibuka.
+//
+// bootBannerArmed sengaja TIDAK direset saat host terputus. Kalau di-reset
+// setiap DTR berkedip, banner akan terisi berulang dan justru membingungkan.
+// Cukup satu kali per boot; mau ulang? reset device.
+static bool bootBannerArmed = false;
+
+static void printBootBanner() {
+  SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
+  SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
+  // uptime sengaja ikut dicetak. Tanpa ini, "hanya mulai mencetak setelah
+  // beberapa saat" tidak bisa dibedakan dari device yang memang lambat -
+  // padahal yang sebenarnya adalah device sudah siap jauh sebelum host
+  // mulai mendengarkan.
+  SERIAL->printf("[BOOT] uptime=%lu ms, heap=%lu\n",
+                 (unsigned long)millis(), (unsigned long)ESP.getFreeHeap());
+  SERIAL->println("[BOOT] ketik DIAG untuk laporan lapis, MODE:BT / MODE:PC untuk ganti media");
+}
+
+// Dipanggil dari loop(). Murah: satu pemeriksaan flag USB per iterasi.
+void serviceBootBanner() {
+  if (bootBannerArmed || !LOGS->isConnected()) return;
+  bootBannerArmed = true;
+  SERIAL->println("[BOOT] Serial Monitor terhubung, mengulang banner:");
+  printBootBanner();
+}
+
 // =================== SETUP ===================
 void setup() {
   // Detail medium diserahkan ke transport: UsbTransport::begin()
   // sudah mengatur buffer RX (4096 - batch upload preset bisa
-  // beberapa KB), baud 115200, dan jeda stabilisasi CDC.
+  // beberapa KB) dan baud 115200.
   SERIAL->begin();
   USB.productName("MacroPad3x3");
   USB.manufacturerName("DIY Macropad");
@@ -1113,8 +1190,16 @@ void setup() {
   Keyboard.begin();
   ConsumerControl.begin();
 
-  SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
-  SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
+  // Jeda SESUDAH USB.begin(). Inilah yang tadinya salah posisi: jeda CDC
+  // berada di dalam UsbTransport::begin(), yang dipanggil SEBELUM USB.begin(),
+  // sehingga tidak benar-benar menunggu apa pun. 300 ms cukup untuk enumerasi
+  // CDC pada core 3.3.x. Ini hanya mengurangi kebutuhan cetak pertama -
+  // kebenarannya dijamin oleh serviceBootBanner() di bawah, bukan oleh jeda.
+  delay(300);
+  printBootBanner();
+  // Kalau host kebetulan sudah terhubung saat ini (monitor dibiarkan terbuka
+  // sebelum flash), tandai supaya banner tidak dicetak dua kali.
+  if (LOGS->isConnected()) bootBannerArmed = true;
   loadConfigFromFlash();
   for (uint8_t i = 0; i < APP_SLOTS; i++) resetCfgStruct(slotCfg[i]);
   resetAppCfg(); // siapkan appCfg kosong dari awal (belum dipakai sampai ada CONTEXT:APP:NEW)
@@ -1149,6 +1234,10 @@ void setup() {
 }
 
 void loop() {
+  // Banner berulang harus jadi yang PERTAMA, sebelum langkah lain yang bisa
+  // memblokir. Inilah yang membuat output monitor terlihat utuh, bukan
+  // terpotong, tidak soal kapan monitor dibuka.
+  serviceBootBanner();
   scanMatrix();
   checkEncoder();
   checkSerialInput();

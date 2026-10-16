@@ -458,6 +458,7 @@ export const en = {
 'ble.autoNotFound': '[BLE] MacroPad not found automatically. Scan and pick manually.',
 'ble.pickDevice': 'Pick a BLE device first (click ↻ when empty)',
 'ble.foundLog': '[BLE] {count} device(s) found.',
+'ble.diagError': '[DIAG] Failed to collect diagnostics: {err}',
 'ble.readError': '[BLE] Failed to pull data: {err}',
 'ble.pickTransportFirst': 'Pick BLE transport first in the Transport dropdown',
 'ble.traceSwitched': '[BLE] Transport switched to BLE, scanning for devices...',

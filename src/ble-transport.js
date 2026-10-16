@@ -28,6 +28,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
 import { batchUploadInFlight, resetBatchUploadState, registerOnBatchStart } from './upload-state.js';
+import { parseKV, renderDiag, rttSummary, diagHasFailure } from './diag-report.js';
 
 const LAST_DEVICE_KEY = 'macropad.lastBleDevice';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -57,6 +58,39 @@ const READ_POLL_MS = 40;
 // dan dikirim dalam hitungan milidetik, jadi 2 detik sudah sangat longgar - cukup
 // untuk device lambat tanpa membuat user menunggu lama tanpa penjelasan.
 const DUMP_STUCK_MS = 2000;
+
+// ---- DIAG: laporan lapis (Fase 0) ----
+//
+// Tujuan: laporan "app connect tapi diam" SELALU bisa menyebut lapis penyebabnya,
+// bukan lagi harus menebak (ganti kabel, dekatkan device, ulangi).
+//
+// Empat lapis, masing-masing punya sumber angka sendiri:
+//   L0 RADIO  - latensi PING/PONG, dari app
+//   L1 LINK   - counter WinRT (notify/write/overflow), dari Rust lewat ble_stats
+//   L3 PROTO  - counter parser baris, dari firmware lewat DIAG
+//   L4 DEVICE - counter media NUS (notify gagal, ring buffer), dari firmware
+//
+// Interval 30 detik. Tidak perlu lebih cepat: yang dicari adalah pola yang
+// menetap (ringHigh selalu penuh, drop selalu naik), bukan kejadian sesaat. Dan
+// terlalu sering menambah beban pada link yang justru sedang diperiksa.
+const DIAG_INTERVAL_MS = 30000;
+// Berapa banyak sampel RTT yang disimpan. Cukup untuk membedakan "putus-putus
+// sebentar" dari "selalu lambat" tanpa menyimpan riwayat tanpa batas.
+const RTT_SAMPLES_MAX = 20;
+
+// Jawaban DIAG terakhir dari firmware. null = belum pernah dapat, dan itu
+// sendiri sudah informasi: berarti perintah DIAG tidak sampai atau device
+// tidak menjawabnya - bukan berarti DEVICE rusak.
+let diagProto = null;
+let diagMedia = null;
+let diagAt = 0;
+// Counter sisi host. null = ble_stats belum pernah dipanggil / tidak
+// tersedia (mis. build Rust lama).
+let linkStats = null;
+let rttSamples = [];
+let pingSentAt = 0;
+let diagTimer = null;
+let diagBusy = false;
 
 // ---- State koneksi ----
 let deviceId = null;
@@ -192,6 +226,68 @@ export const isAutoBusy = () => autoBusy;
 export const portPath = null;   // tidak ada path; device diidentifikasi lewat id
 export function enableAutoReconnect() { autoReconnect = true; }
 
+// Logika laporan dan vonis sengaja TIDAK di file ini.
+//
+// Seluruhnya ada di src/diag-report.js, yang tidak meng-import apa pun. Satu
+// alasan: vonis adalah bagian paling berharga dari fase ini, dan bagian itu
+// harus bisa diuji dengan menyuntikkan angka kegagalan lalu memeriksa apakah
+// lapis yang disebut benar. Kalau ia tetap di backend, satu-satunya cara
+// mengujinya adalah membaca teks secara visual - yaitu persis cara kita
+// mendiagnosis masalah selama ini, dengan menebak.
+//
+// Backend ini hanya satu tugas: mengumpulkan angka, memanggil report, dan mencetak.
+
+// Satu siklus DIAG: minta angka dari firmware dan dari Rust, lalu cetak blok.
+//
+// `diagBusy` mencegah tumpang tindih. Tanpa itu, interval 30 detik bisa menimpa
+// request yang masih berjalan kalau invoke('ble_read') sedang lambat - dan dua
+// blok laporan yang saling menimpa membuat angka terlihat tidak konsisten.
+async function diagOnce() {
+  if (diagBusy || !connected) return;
+  diagBusy = true;
+  try {
+    // Minta angka firmware dulu. Jawaban datang lewat notify, jadi baris
+    // DIAG/DIAGMEDIA akan dibaca handleIncomingChunk di bawah.
+    await sendLine('DIAG');
+    // Counter sisi host - tidak bergantung pada device menjawab. Ini penting:
+    // kalau device diam total, angka L1 satu-satunya yang tetap bisa didapat.
+    try {
+      const s = await invoke('ble_stats');
+      if (s) linkStats = s;
+    } catch (e) { /* command belum ada di build lama - biarkan null */ }
+    // Beri waktu device menjawab dua baris itu sebelum blok dicetak.
+    await sleep(400);
+    diagAt = Date.now();
+    const blok = `=== DIAG ${new Date().toLocaleTimeString()} ===\n` +
+      renderDiag(diagProto, diagMedia, linkStats, rttSummary(rttSamples));
+    // Dicetak sebagai 'err' kalau ada angka yang jelas menunjukkan kegagalan.
+    // Alasannya: panel log dipakai user, dan blok ini harus bisa dicari
+    // kemudian dengan mata - bukan jadi satu baris netral di antara ratusan
+    // baris lain.
+    log(blok, diagHasFailure(diagProto, diagMedia, linkStats) ? 'err' : '');
+  } catch (e) {
+    log(t('ble.diagError', { err: e }), 'err');
+  } finally {
+    diagBusy = false;
+  }
+}
+
+function startDiag() {
+  stopDiag();
+  // Jeda pertama dibuat lebih lama supaya blok pertama tidak menabrak
+  // handshake yang sedang berjalan - handshake itu kondisi paling noisik.
+  diagTimer = setInterval(() => { diagOnce(); }, DIAG_INTERVAL_MS);
+  setTimeout(() => { diagOnce(); }, DIAG_INTERVAL_MS / 2);
+}
+
+function stopDiag() {
+  if (diagTimer) clearInterval(diagTimer);
+  diagTimer = null;
+  diagBusy = false;
+  // Angka TIDAK direset di sini. Laporan paling dibutuhkan justru setelah link
+  // putus, jadi Reset hanya lewat DIAG:ZERO yang eksplisit.
+}
+
 export function handleIncomingChunk(data) {
   lineBuffer += data;
   // Urutan penting: resetParserState() mengosongkan lineBuffer, jadi harus
@@ -217,6 +313,29 @@ export function handleIncomingChunk(data) {
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {
     const line = lineBuffer.slice(0, idx);
     lineBuffer = lineBuffer.slice(idx + 1);
+
+    // ---- Sadarai baris DIAG sebelum masuk parser ----
+    //
+    // Parser protokol tidak mengenal DIAG:/DIAGMEDIA:. Kalau diteruskan, ia
+    // akan memperlakukannya sebagai baris tak dikenal yang berstatus noise
+    // di tengah frame dump - justru menciptakan masalah baru pada apa yang
+    // seharusnya alat bantu diagnosis.
+    if (line.startsWith('DIAGMEDIA:')) {
+      diagMedia = parseKV(line.slice('DIAGMEDIA:'.length));
+      continue;
+    }
+    if (line.startsWith('DIAG:')) {
+      diagProto = parseKV(line.slice('DIAG:'.length));
+      continue;
+    }
+    // PONG diteruskan ke parser (supaya perilaku keepalive tidak berubah),
+    // tapi dicatat lebih dulu untuk menghitung latensi.
+    if (line === 'PONG' && pingSentAt) {
+      rttSamples.push(Date.now() - pingSentAt);
+      if (rttSamples.length > RTT_SAMPLES_MAX) rttSamples.shift();
+      pingSentAt = 0;
+    }
+
     hooks.onLine(line);
     if (line === 'DUMP_END' || line === 'ENC_END' || line === 'NAMES_END') {
       cancelDumpWatchdog();
@@ -377,8 +496,8 @@ export async function connect(deviceIdArg) {
   //
   // Tiga link hidup bersamaan. Masing-masing memasang callback notifikasi
   // yang menulis ke buffer bersama, jadi notify bercampur dan device
-  // kewalahan menerima. Link yang最早 hilang menghasilkan supervision
-  // timeout (0x208) yang Atas nama device juga hilang dari daftar Bluetooth
+  // kewalahan menerima. Link yang pertama hilang menghasilkan supervision
+  // timeout (0x208) yang atas nama device juga hilang dari daftar Bluetooth
   // Windows.
   //
   // Guard ini menutup sumbernya di sisi app. Timeout radio (0x208) sendiri
@@ -449,6 +568,9 @@ export async function connect(deviceIdArg) {
   hooks.onConnected();
   deviceWasLost = false;
   startPing();
+  // DIAG dinyalakan setelah handshake, bukan sebelum: angka pada 400 ms pertama
+  // hampir selalu 0 dan hanya menambah satu blok noise di log.
+  startDiag();
   // Loop pembacaan harus hidup SEBELUM handshake, bukan sesudahnya. Handshake
   // mengirim WHOAMI dalam 400 ms, dan jawabannya perlu langsung ditarik -
   // kalau loop belum jalan, jawaban itu menunggu sampai poll 2 detik berikutnya.
@@ -487,6 +609,7 @@ export async function disconnect(manual) {
   // interval tetap berjalan dan menarik buffer dari koneksi yang sudah tutup -
   // memunculkan "GATT tidak terhubung" berulang padahal user sudah disconnect.
   stopReadLoop();
+  stopDiag();
   // Parser ikut dibersihkan di jalur manual juga: tanpa ini baris parsial dari
   // sesi lama menempel pada byte pertama device berikutnya.
   resetParserState();
@@ -519,6 +642,7 @@ export async function handleDeviceLost() {
   hooks.onDeviceLost();
   stopPing();
   stopReadLoop();
+  stopDiag();
   // Device hilang di tengah handshake -> flag harus turun. Kalau tidak,
   // reconnect berikutnya akan tetap terblokir oleh handshake yang sudah tidak
   // ada, dan auto-switch preset tidak akan pernah jalan lagi.
@@ -639,7 +763,14 @@ export async function poll() {
 // ---- Ping ----
 export function startPing() {
   stopPing();
-  pingTimer = setInterval(() => { if (connected) sendLine('PING'); }, PING_MS);
+  pingTimer = setInterval(() => {
+    if (!connected) return;
+    // Waktu kirim dicatat supaya PONG bisa dihitung jadi latensi. Hanya satu
+    // amostra "terkirim terakhir" yang disimpan: device menjawab PING satu per
+    // satu, jadi satu stempel sudah cukup dan tidak bisa tertukar antar sampel.
+    pingSentAt = Date.now();
+    sendLine('PING');
+  }, PING_MS);
 }
 
 // ---- Loop pembacaan ----
@@ -673,8 +804,17 @@ function stopReadLoop() {
 registerOnBatchStart(() => { cancelDumpWatchdog(); });
 
 // Ekspor untuk test; dipakai juga oleh disconnect().
-export function stopAllBleTimers() { stopPing(); stopReadLoop(); }
+export function stopAllBleTimers() { stopPing(); stopReadLoop(); stopDiag(); }
 export function stopPing() { if (pingTimer) clearInterval(pingTimer); pingTimer = null; }
+
+// Ekspor untuk test dan untuk alat diagnosa on-device (tools/ble-diag.js):
+// membaca laporan terakhir tanpa perlu menunggu interval 30 detik.
+export function diagSnapshot() {
+  return { proto: diagProto, media: diagMedia, link: linkStats, rtt: rttSummary(), at: diagAt };
+}
+export function diagReport() {
+  return renderDiag(diagProto, diagMedia, linkStats, rttSummary(rttSamples));
+}
 
 // ---- UI ----
 export function updateConnectButton(state) {

@@ -13,7 +13,14 @@ public:
   bool begin() override {
     Serial.setRxBufferSize(4096);
     Serial.begin(115200);
-    delay(300);
+    // CATATAN: jeda CDC yang dulu ada di sini (delay(300)) dipindah ke
+    // setup(), SESUDAH USB.begin().
+    //
+    // Urutan di file ini: begin() dipanggil SERIAL->begin() lebih dulu, dan
+    // USB.begin() baru jalan setelahnya. Jadi jeda di dalam begin() hanya
+    // menunggu sesuatu yang belum dimulai - USB stack-nya sendiri belum
+    // diinisialisasi. Akibatnya banner boot dicetak ke port yang belum
+    // benar-benar siap, dan baris pertama hilang atau terpotong.
     return true;
   }
 

@@ -85,6 +85,16 @@ app selalu memvalidasinya sebelum dipakai.
 | `RGB:DUMP` | baca seluruh state | `RGB_DUMP:..` + `RGB_KEY:..` ... + `RGB_DUMP_END` |
 | `RGB:SAVE` | simpan ke flash | `[OK] RGB disimpan` |
 | `RGB:RESET` | kembali ke default | `[OK] RGB reset ke default` |
+| `DIAG` | laporan diagnosa 4 lapis | `DIAG:..` + `DIAGMEDIA:..` |
+| `DIAG:ZERO` | reset penghitung diagnosa | `[OK] DIAG counter direset` |
+
+`DIAG` menjawab dua baris: `DIAG:` (lapisan protokol: baris yang diparse,
+baris terlalu panjang, perintah tak dikenal, perintah terakhir, heap) dan
+`DIAGMEDIA:` (lapisan media: notify berhasil/gagal/retry, tinggi air ring
+buffer, byte yang dibuang, write tanpa koneksi/subscriber, MTU). Companion app
+mengirim `DIAG` tiap 30 detik dan menampilkan blok `=== DIAG ===` di panel log
+beserta satu kalimat vonis yang menyebut lapis penyebabnya. Lihat
+`src/diag-report.js`.
 
 Tipe aksi (`type` pada SET/SETENC): `0` none, `1` teks, `2` kombinasi,
 `3` macro, `4` consumer/media, `5` buka aplikasi.

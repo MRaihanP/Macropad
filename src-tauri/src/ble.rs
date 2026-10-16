@@ -73,12 +73,56 @@ fn block_on_winrt<T: windows::core::RuntimeType>(
     futures::executor::block_on(async { op?.await })
 }
 
+/// Penghitung lapis LINK (L1), sisi host.
+///
+/// Semuanya dulu "tidak terlihat": notify yang datang lalu hilang diam-diam
+/// ketika buffer penuh, dan write yang gagal tanpa laporan (app hanya melihat
+/// "tidak sampai"). Sekarang semuanya bisa dibaca lewat `ble_stats`, jadi
+/// keputusan "masalahnya di radio, di app, atau di device" diambil dari angka,
+/// bukan dari mencoba-coba.
+///
+/// Angka dikumpulkan lewat Arc<Mutex<..>> karena handler notifikasi dijalankan
+/// oleh thread WinRT, bukan thread worker BLE yang memegang &mut self.
+#[derive(serde::Serialize, Clone, Default, Debug)]
+pub struct BleStats {
+    /// Berapa kali callback notifikasi benar-benar memberikan payload.
+    pub notify_events: u64,
+    /// Total byte notifikasi yang masuk ke rx_buffer.
+    pub notify_bytes: u64,
+    /// Byte yang DIBUANG karena rx_buffer penuh.
+    ///
+    /// Ini angka yang paling penting. Nilai > 0 berarti ada data yang hilang
+    /// sebelum sampai ke app, dan penyebabnya hampir selalu app yang berhenti
+    /// menarik (jendela ditutup / laptop tidur), bukan radio.
+    pub rx_dropped_bytes: u64,
+    /// Berapa kali overflow terjadi (bukan per byte).
+    pub rx_overflow_events: u64,
+    pub read_calls: u64,
+    pub read_bytes: u64,
+    pub write_calls: u64,
+    pub write_bytes: u64,
+    pub write_errors: u64,
+    pub connect_count: u64,
+    pub disconnect_count: u64,
+    /// Notifikasi diterima saat buffer sudah >= batas. Indikasi app menarik
+    /// data lebih lambat dari device mengirim, bukan link yang lambat.
+    pub notify_while_buffered: u64,
+    /// Episode overflow sedang berjalan (sudah dilog, belum selesai).
+    /// Dipakai supaya satu episode = satu baris log.
+    pub overflow_logged: bool,
+}
+
+// Batas keras rx_buffer. Dipindah ke luar fungsi karena dipakai oleh handler
+// notifikasi (thread WinRT) sekaligus read_bulk (thread worker).
+const RX_BUFFER_MAX: usize = 256 * 1024;
+
 pub struct BleTransport {
     device: Option<BluetoothLEDevice>,
     service: Option<GattDeviceService>,
     tx_char: Option<GattCharacteristic>,
     rx_char: Option<GattCharacteristic>,
     rx_buffer: Arc<Mutex<VecDeque<u8>>>,
+    stats: Arc<Mutex<BleStats>>,
     connected: bool,
     // WinRT event token di windows 0.61 bertipe i64 (bukan EventRegistrationToken).
     value_changed_token: Option<i64>,
@@ -92,6 +136,7 @@ impl BleTransport {
             tx_char: None,
             rx_char: None,
             rx_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            stats: Arc::new(Mutex::new(BleStats::default())),
             connected: false,
             value_changed_token: None,
         }
@@ -277,6 +322,7 @@ impl BleTransport {
 
         // Subscribe notifications
         let buffer = self.rx_buffer.clone();
+        let stats = self.stats.clone();
         let handler = TypedEventHandler::<GattCharacteristic, BleGattEvent>::new(
             move |_sender, args| {
                 if let Some(args) = &*args {
@@ -285,17 +331,68 @@ impl BleTransport {
                             if let Ok(len) = reader.UnconsumedBufferLength() {
                                 let mut bytes = vec![0u8; len as usize];
                                 if reader.ReadBytes(&mut bytes).is_ok() {
+                                    if let Ok(mut st) = stats.lock() {
+                                        st.notify_events += 1;
+                                        st.notify_bytes += bytes.len() as u64;
+                                        // Dicatat SEBELUM buffer penuh dicek, supaya
+                                        // "notify datang saat antrean sudah panjang"
+                                        // bisa dibedakan dari notify yang kemudian hilang.
+                                        if buffer
+                                            .lock()
+                                            .map(|b| b.len() >= RX_BUFFER_MAX / 2)
+                                            .unwrap_or(false)
+                                        {
+                                            st.notify_while_buffered += 1;
+                                        }
+                                    }
                                     if let Ok(mut buf) = buffer.lock() {
                                         // Batas keras. Tanpa ini, kalau frontend
-                                        // berhenti mengaji (jendela ditutup,
+                                        // berhenti mengambil (jendela ditutup,
                                         // laptop tidur) buffer tumbuh tanpa
                                         // akhir dan seluruh app ikut kehabisan
                                         // memori. Saat penuh, byte LAMA dibuang.
-                                        const RX_BUFFER_MAX: usize = 256 * 1024;
+                                        //
+                                        // PERUBAHAN: byte yang dibuang sekarang
+                                        // DIHITUNG dan dilaporkan lewat ble_stats.
+                                        // Sebelumnya ini terjadi tanpa jejak, jadi
+                                        // data yang hilang sama sekali tidak bisa
+                                        // dibedakan dari data yang tidak pernah
+                                        // dikirim - padahal penyebabnya sama
+                                        // sekali berbeda.
+                                        let mut dropped = 0u64;
                                         while buf.len() + bytes.len() > RX_BUFFER_MAX
                                             && !buf.is_empty()
                                         {
                                             buf.pop_front();
+                                            dropped += 1;
+                                        }
+                                        if dropped > 0 {
+                                            let mut log_it = false;
+                                            if let Ok(mut st) = stats.lock() {
+                                                st.rx_dropped_bytes += dropped;
+                                                st.rx_overflow_events += 1;
+                                                // Log hanya pada overflow PERTAMA tiap
+                                                // episode. Kalau dicatat tiap notifikasi,
+                                                // panel log dibanjiri baris yang sama dan
+                                                // baris yang penting justru tenggelam.
+                                                if !st.overflow_logged {
+                                                    st.overflow_logged = true;
+                                                    log_it = true;
+                                                }
+                                            }
+                                            if log_it {
+                                                eprintln!(
+                                                    "[ble-trace] RX BUFFER PENUH: episode dimulai, \
+                                                     {} byte dibuang. App berhenti menarik data - \
+                                                     ini sisi app/host, BUKAN radio.",
+                                                    dropped
+                                                );
+                                            }
+                                        } else if let Ok(mut st) = stats.lock() {
+                                            // Episode selesai: buffer sudah kembali
+                                            // normal, jadi episode berikutnya boleh
+                                            // logged lagi.
+                                            st.overflow_logged = false;
                                         }
                                         let preview: String = bytes
                                             .iter()
@@ -361,9 +458,21 @@ impl BleTransport {
         self.rx_char = Some(rx_char);
         self.value_changed_token = Some(token);
         self.connected = true;
+        if let Ok(mut st) = self.stats.lock() {
+            st.connect_count += 1;
+        }
 
         ble_log!("Connected to MacroPad");
         Ok(())
+    }
+
+    /// Snapshot penghitung L1 untuk ditampilkan di panel log aplikasi.
+    ///
+    /// Sengaja-readonly: laporan harus bisa diambil KAPAN SAJA tanpa mengubah
+    /// state koneksi. Kalau ini ikut disconnect, angka terakhir hilang tepat di
+    /// saat paling dibutuhkan yaitu setelah link putus.
+    pub fn stats(&self) -> BleStats {
+        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     pub fn disconnect(&mut self) {
@@ -392,6 +501,12 @@ impl BleTransport {
         self.rx_char = None;
         self.connected = false;
         self.rx_buffer.lock().map(|mut b| b.clear()).ok();
+        if let Ok(mut st) = self.stats.lock() {
+            st.disconnect_count += 1;
+            // Episode overflow ditutup supaya disconnect berikutnya mulai dari
+            // log yang bersih, bukan melanjutkan episode yang sudah selesai.
+            st.overflow_logged = false;
+        }
         ble_log!("Disconnected");
     }
 
@@ -430,6 +545,10 @@ impl BleTransport {
                 buf.drain(..take).collect()
             })
             .unwrap_or_default();
+        if let Ok(mut st) = self.stats.lock() {
+            st.read_calls += 1;
+            st.read_bytes += out.len() as u64;
+        }
         // Hanya log saat ADA isinya. Kalau log ditulis setiap panggilan,
         // loop 40 ms di frontend menghasilkan 25 baris/detik yang tidak
         // pernah informatif.
@@ -445,6 +564,13 @@ impl BleTransport {
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        // Dihitung SEBELUM cabang hasil, jadi write yang gagal karena tidak
+        // connected juga tercatat. Write yang gagal tanpa jejak adalah alasan
+        // paling sering "app mengira terkirim padahal tidak".
+        if let Ok(mut st) = self.stats.lock() {
+            st.write_calls += 1;
+            st.write_bytes += data.len() as u64;
+        }
         if let Some(tx_char) = &self.tx_char {
             let writer = DataWriter::new().map_err(|e| format!("Gagal create DataWriter: {}", e))?;
             writer
@@ -472,6 +598,9 @@ impl BleTransport {
             if result == GattCommunicationStatus::Success {
                 Ok(data.len())
             } else {
+                if let Ok(mut st) = self.stats.lock() {
+                    st.write_errors += 1;
+                }
                 Err(format!("BLE write failed: {:?}", result))
             }
         } else {
