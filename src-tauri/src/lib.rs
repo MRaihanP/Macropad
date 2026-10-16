@@ -33,6 +33,11 @@ use windows::core::{PWSTR, PCWSTR, Interface};
 // =================== BLE TRANSPORT ===================
 mod ble;
 use ble::{BleStats, BleTransport};
+
+// Codec frame protokol v2. Fase 1: sudah ada dan sudah diuji, tapi BELUM
+// tersambung ke link BLE apa pun. Sengaja ditahan di sini supaya bisa diuji
+// silang dengan firmware dan frontend tanpa perangkat.
+pub mod frame;
 // DeviceInformation dipakai di ble_worker untuk menyimpan hasil scan, sehingga
 // connect() tidak perlu scan ulang. Objek WinRT ini tidak Send, jadi hanya
 // boleh hidup di thread worker itu.
