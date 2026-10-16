@@ -98,6 +98,24 @@
 #define FA_T_EVT          0x20u
 #define FA_T_ERR          0x7Fu
 
+/* Bit paling atas menandai frame JAWABAN.
+ *
+ * Dengan begitu tipe yang sama bisa dipakai dua arah tanpa perlu tabel
+ * terpisah, dan lapisan penerima bisa tahu "ini balasan atau perintah" hanya
+ * dari satu bit - tanpa harus mengingat dari frame mana pun yang sedang
+ * berjalan. Ini yang membuat protocol bisa diperluas tanpa mengubah
+ * aturan yang sudah ada.
+ */
+#define FA_RESP_BIT 0x80u
+
+/* Tipe jawaban. Sama persis dengan tipe perintahnya, ditambah bit atas.
+ * Ditentukan di sini (bukan di lapisan di atas) karena ini bagian dari
+ * format yang tersandi di kabel. */
+#define FA_T_HELLO_RSP      (FA_T_HELLO | FA_RESP_BIT)        /* 0x81 */
+#define FA_T_CFG_RESULT     (FA_T_CFG_COMMIT | FA_RESP_BIT)   /* 0x92 */
+#define FA_T_CFG_META       (FA_T_CFG_QUERY | FA_RESP_BIT)    /* 0x93 */
+#define FA_T_CFG_ACT_RSP    (FA_T_CFG_ACTIVATE | FA_RESP_BIT) /* 0x94 */
+
 /* ---- Kode kesalahan ----
  * Hanya tiga yang benar-benar dikeluarkan perakit sekarang. Sisanya
  * dicadangkan untuk fase berikutnya dan sengaja TIDAK dipakai di sini supaya
@@ -197,19 +215,25 @@ static inline void faInit(fa_state_t* s) {
   s->got_crc = 0;
 }
 
-/* Masukkan satu byte.
+/* Deklarasi perakit.
  *
- * SANGAT penting: fungsi ini tidak pernah mengecek SOF lagi di tengah frame.
- * Itu yang membuat payload yang memuat 0xA5 aman.
- */
-fa_feed_t faFeed(fa_state_t* s, uint8_t b);
+ * static inline, bukan extern + file .c terpisah. Alasannya praktis: Arduino
+ * hanya mengompilasi file yang ada di dalam folder sketsh, sedangkan
+ * firmware/common/ tidak - jadi file .c di sini tidak akan ikut ter-link, dan
+ * build gagal dengan "undefined reference to faFeed" yang tidak mengarah ke
+ * penyebabnya. Seluruh firmware/common di repo ini juga berformat header, jadi
+ * ini konsisten dengan yang lain.
+ *
+ * Konsekuensinya: file ini hanya boleh dipakai dari SATU translation unit.
+ * Untuk repo ini tidak masalah - seluruhnya sudah satu TU (sketsh .ino). */
+static inline fa_feed_t faFeed(fa_state_t* s, uint8_t b);
 
 /* Ambil frame lengkap setelah faFeed() mengembalikan FA_F_FRAME.
  * Mengembalikan false kalau belum ada frame (dipanggil berlebihan). */
-bool faNextFrame(fa_state_t* s, fa_frame_t* out);
+static inline bool faNextFrame(fa_state_t* s, fa_frame_t* out);
 
 /* Enkode satu frame ke buffer. Mengembalikan jumlah byte yang ditulis, atau 0
  * kalau payload terlalu besar. Dipakai generator vectors dan tes round-trip. */
-size_t faEncode(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t* out, size_t outCap);
+static inline size_t faEncode(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t* out, size_t outCap);
 
 #endif /* FRAME_H_ */

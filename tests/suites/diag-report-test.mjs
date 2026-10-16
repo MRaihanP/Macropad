@@ -226,10 +226,21 @@ console.log('\n--- 8. Firmware: tidak boleh ada data yang hilang tanpa jejak ---
   ok(/bleNusMtu\(\)/.test(shared) && /inline uint16_t bleNusMtu\(\)/.test(src('firmware/common/ble_hid.h')),
     'MTU yang dilapor ke DIAG dibaca yang terbaru, bukan nilai lama');
 
-  ok(/bleNusNotifyFail\+\+/.test(tble), 'notify gagal setelah semua retry dihitung');
-  ok(/bleNusNotifyOk\+\+/.test(tble), 'notify berhasil dihitung');
-  ok(/bleNusNotifyChunk\+\+/.test(tble), 'total chunk notify dicoba dihitung');
-  ok(/bleNusNotifyRetry\+\+/.test(tble), 'percobaan ulang dihitung');
+  // Counter notify ditulis lewat naikkan() sejak warning -Wvolatile membuat
+  // `x++` pada tipe volatile jadi error kompilasi. Regex ini tidak boleh
+  // menyusut jadi "belum naikkan" saja - yang diuji adalah bahwa counter
+  // COUNTER itu masih benar-benar dihitung; helper-nya hanya mengganti CARA
+  // menulis increment, bukan menghilangkannya.
+  ok(/bleNusNotifyFail/.test(tble) && /naikkan\(bleNusNotifyFail\)/.test(tble),
+    'notify gagal setelah semua retry dihitung');
+  ok(/bleNusNotifyOk/.test(tble) && /naikkan\(bleNusNotifyOk\)/.test(tble),
+    'notify berhasil dihitung');
+  ok(/bleNusNotifyChunk/.test(tble) && /naikkan\(bleNusNotifyChunk\)/.test(tble),
+    'total chunk notify dicoba dihitung');
+  ok(/bleNusNotifyRetry/.test(tble) && /naikkan\(bleNusNotifyRetry\)/.test(tble),
+    'percobaan ulang dihitung');
+  ok(/bleNusPushDropped/.test(shared) && /naikkan\(bleNusPushDropped/.test(shared),
+    'byte yang tidak masuk ring dihitung');
   ok(/PROTO_DIAG_MEDIA\(\)\s+protoDiagMedia\(\)/.test(tble), 'media NUS hooked ke laporan DIAG');
 }
 

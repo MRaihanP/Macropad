@@ -18,7 +18,12 @@ const limits = fs.readFileSync(path.join(root, 'firmware/common/limits.h'), 'utf
 // setiap perintah yang dipindah ke header sendiri akan dilaporkan sebagai
 // "tidak ada di firmware" - padahal ia hanya pindah tempat.
 const diag = fs.readFileSync(path.join(root, 'firmware/common/diag.h'), 'utf8');
-const fwSources = core + '\n' + diag;
+// Perintah protokol frame (SIG, FRAME, FRAMEIN, FRAME:LINE) tinggal di
+// frame_proto.h, dengan alasan yang sama seperti diag.h: lapisan frame
+// bebas Arduino, dan menambahkannya sebagai berkas .cpp
+// di folder sketsh berarti menggandakan kode di dua profil.
+const frameProto = fs.readFileSync(path.join(root, 'firmware/common/frame_proto.h'), 'utf8');
+const fwSources = core + '\n' + diag + '\n' + frameProto;
 
 let fail = 0;
 const ok = (c, m) => { console.log(`  ${c ? 'OK  ' : 'FAIL'} ${m}`); if (!c) fail++; };

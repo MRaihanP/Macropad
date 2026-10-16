@@ -71,6 +71,14 @@ static void protoDiagMediaReset() {
 #define PROTO_DIAG_MEDIA()  protoDiagMedia()
 #define PROTO_DIAG_RESET()  protoDiagMediaReset()
 
+// MTU untuk lapisan protokol frame (dibaca frame_proto.h lewat hook ini).
+//
+// Deklarasi di header ini harus terjadi SEBELUM frame_proto.h di-include,
+// dan di kedua sketsh transport_ble.h memang selalu lebih dulu. Kalau tidak,
+// profil FINAL akan diam-diam memakai nilai 0 - artinya HELLO melaporkan
+// payload maksimum 0 padahal devicenya sebenarnya punya NUS.
+#define PROTO_FRAME_MTU()   ((uint32_t)bleNusMtu())
+
 // ---- Transport ----
 class BleNusTransport : public TransportBase {
 public:
@@ -100,8 +108,8 @@ public:
 // BUKAN konstanta 244. Kalau Windows menawar MTU < 247, notify dengan
 // 244 byte akan gagal diam-diam dan jawaban terpotong.
   size_t write(const uint8_t* data, size_t len) override {
-    if (!isConnected()) { bleNusWriteNoConn++; return 0; }
-    if (bleNusSubCount == 0) { bleNusWriteNoSub++; return 0; }  // tanpa subscriber notify diabaikan
+    if (!isConnected()) { naikkan(bleNusWriteNoConn); return 0; }
+    if (bleNusSubCount == 0) { naikkan(bleNusWriteNoSub); return 0; }  // tanpa subscriber notify diabaikan
 
     uint16_t h = bleHidConnHandle;
     if (h == BLE_HID_NO_HANDLE) return 0;
@@ -117,14 +125,14 @@ public:
       // Hindari break diam-diam yang membuat sisa data (termasuk DUMP_END) hilang.
       uint8_t retries = 0;
       bool sentOk = false;
-      bleNusNotifyChunk++;
+      naikkan(bleNusNotifyChunk);
       while (retries < 5) {
         if (bleNusRx->notify(data + sent, n, h)) {
           sentOk = true;
           break;
         }
         // Gagal: delay backoff eksponensial (6, 12, 24, 48, 96 ms)
-        bleNusNotifyRetry++;
+        naikkan(bleNusNotifyRetry);
         delay(6 * (1 << retries));
         retries++;
         h = bleHidConnHandle;
@@ -135,13 +143,13 @@ public:
         // Semua retry gagal: catat log, return byte yg sudah terkirim.
         // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
         // tapi setidaknya caller tahu ada masalah lewat return value < len.
-        bleNusNotifyFail++;
+        naikkan(bleNusNotifyFail);
         LOGS->printf("[BLE] notify gagal total setelah 5x retry, %u byte tertinggal\n",
                      (unsigned)(len - sent));
         return sent;  // return byte yang sukses, caller bisa cek return < len
       }
 
-      bleNusNotifyOk++;
+      naikkan(bleNusNotifyOk);
       sent += n;
     }
     return sent;

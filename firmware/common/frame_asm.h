@@ -19,11 +19,13 @@
  * membuat 0xA5 di dalam payload aman tanpa perlu escaping sama sekali.
  */
 
+#pragma once
+
 #include "frame.h"
 
 /* Titik masuk tunggal untuk semua jalur kesalahan. Menjamin tidak ada keadaan
  * yang bisa "lupa" kembali ke awal setelah gagal. */
-static void faResync(fa_state_t* s) {
+static inline void faResync(fa_state_t* s) {
   s->st = FA_ST_SOF;
   s->got = 0;
   s->got_crc = 0;
@@ -31,7 +33,7 @@ static void faResync(fa_state_t* s) {
   s->resyncs++;
 }
 
-fa_feed_t faFeed(fa_state_t* s, uint8_t b) {
+static inline fa_feed_t faFeed(fa_state_t* s, uint8_t b) {
   switch (s->st) {
     case FA_ST_SOF:
       /* Byte lain diabaikan. Inilah yang membedakan "menunggu frame" dari
@@ -137,7 +139,7 @@ fa_feed_t faFeed(fa_state_t* s, uint8_t b) {
   return FA_F_NONE;
 }
 
-bool faNextFrame(fa_state_t* s, fa_frame_t* out) {
+static inline bool faNextFrame(fa_state_t* s, fa_frame_t* out) {
   if (s->st != FA_ST_CRC) return false;
   out->type = s->type;
   out->len = s->want;
@@ -146,7 +148,7 @@ bool faNextFrame(fa_state_t* s, fa_frame_t* out) {
   return true;
 }
 
-size_t faEncode(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t* out, size_t outCap) {
+static inline size_t faEncode(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t* out, size_t outCap) {
   if (len > FA_MAX_PAYLOAD) return 0;
   const size_t total = (size_t)FA_OVERHEAD + len;
   if (outCap < total) return 0;
@@ -163,4 +165,53 @@ size_t faEncode(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t* out
   out[5 + len] = (uint8_t)(crc & 0xFFu);
   out[6 + len] = (uint8_t)((crc >> 8) & 0xFFu);
   return total;
+}
+
+/* =================== AUTO-DETECT DUAL MODE ===================
+ *
+ * Di mana satu byte inbound harus pergi: ke buffer baris, ke perakit frame,
+ * atau Nowhere sambil memindahkan device kembali ke mode baris.
+ *
+ * Kenapa fungsi murni, bukan logika inline di checkSerialInput():
+ *
+ * Aturan auto-detect ini adalah satu-satunya keputusan menarik di seluruh
+ * lapisan frame, danAturannya mudah rusak tanpa symptom yang menunjuk ke
+ * penyebabnya. Device yang salah mendeteksi mode tidak error - dia hanya diam,
+ * atau lebih buruk: jawabannya bukan yang diharapkan app. Menuliskan aturannya
+ * sebagai fungsi murni berarti aturan ini bisa diuji seperti fungsi biasa,
+ * dengan tabel kasus yang menyebutkan hasil yang diharapkan secara eksplisit.
+ *
+ * Aturannya sengaja sekecil mungkin:
+ *
+ *   mode baris + byte PERTAMA baris = 0xA5  -> frame
+ *   mode frame  + 0x0A saat perakit IDLE    -> kembali ke mode baris
+ *   selainnya                            -> mode yang sedang aktif
+ *
+ * Dua syarat yang tidak boleh longgar:
+ *
+ *  - "byte PERTAMA baris". Kalau pengecekan dilakukan kapan saja, byte 0xA5 di
+ *    tengah perintah yang sah akan menggeser device ke mode frame dan
+ *    comunidad baris berikutnya jadi tidak terbaca.
+ *  - "saat perakit IDLE". Tanpa itu, byte 0x0A di dalam payload frame akan
+ *    mematikan mode frame di tengah frame, dan sisa frame dibaca sebagai
+ *    perintah baris - perintah yang isinya byte acak.
+ */
+typedef enum {
+  FA_ROUTE_LINE = 0,   /* masuk ke buffer baris teks */
+  FA_ROUTE_FRAME,     /* masuk ke perakit frame */
+  FA_ROUTE_TO_LINE    /* abaikan byte ini, pindah ke mode baris */
+} fa_route_t;
+
+static inline fa_route_t faRoute(bool modeFrame, bool busy, bool lineEmpty,
+                                 bool lineOverflow, uint8_t b) {
+  if (modeFrame) {
+    /* 0x0A hanya berarti "balik ke mode baris" saat tidak di tengah frame.
+     * Di tengah frame, 0x0A adalah isi payload biasa. */
+    if (!busy && b == 0x0Au) return FA_ROUTE_TO_LINE;
+    return FA_ROUTE_FRAME;
+  }
+  /* Baris yang overflow tidak boleh dipicu frame: isinya sudah salah, dan
+   * memprosesnya sebagai frame akan membuang sisa baris tanpa jejak. */
+  if (lineEmpty && !lineOverflow && b == FA_SOF) return FA_ROUTE_FRAME;
+  return FA_ROUTE_LINE;
 }

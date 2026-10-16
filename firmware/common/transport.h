@@ -64,8 +64,21 @@ public:
     va_start(args, format);
     int len = vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
+
+    // vsnprintf mengembalikan JUMLAH byte yang AKAN ditulis, bukan yang ditulis.
+    // Kalau format menghasilkan 300 byte, isinya dipotong ke 255 + NUL tapi
+    // len = 300. write(buffer, 300) lalu membaca 45 byte DI LUAR buffer -
+    // isi stack yang tidak gehört, termasuk byte acak yang bisa berisi
+    // newline palsu dan membuat baris companion app terbelah di tempat
+    // yang salah.
+    //
+    // Dibatasi ke sizeof(buffer) - 1, sama persis dengan yang benar-benar ada
+    // di buffer. Memotong lebih dari itu berarti menghapus isi, yang jauh lebih
+    // mudah dilihat daripada menabrak stack.
     if (len > 0) {
-      write((const uint8_t*)buffer, len);
+      size_t n = (size_t)len;
+      if (n >= sizeof(buffer)) n = sizeof(buffer) - 1;
+      write((const uint8_t*)buffer, n);
     }
   }
 

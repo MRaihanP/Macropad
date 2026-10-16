@@ -3,7 +3,7 @@
 // Golden vectors di tests/vectors/frames.vec dibaca oleh tiga runner terpisah:
 //   1. file ini                        (JavaScript) -> src/frame-codec.js
 //   2. src-tauri/src/frame.rs          (Rust)       -> src-tauri/src/frame.rs
-//   3. tests/suites/frame-asm-native-test.js (C, gcc) -> firmware/common/frame_asm.c
+//   3. tests/suites/frame-asm-native-test.js (C, gcc) -> firmware/common/frame_asm.h
 //
 // Kalau hanya satu yang jalan, "implementasinya sama" cuma klaim. Kalau ketiganya
 // hijau terhadap berkas yang sama, mereka benar-benar setara byte per byte.
@@ -218,7 +218,7 @@ console.log('\n--- 9. Truncasi di semua posisi tidak boleh menghasilkan frame ut
 console.log('\n--- 10. Kontrak dengan header firmware ---');
 {
   const header = fs.readFileSync('firmware/common/frame.h', 'utf8');
-  const asm = fs.readFileSync('firmware/common/frame_asm.c', 'utf8');
+  const asm = fs.readFileSync('firmware/common/frame_asm.h', 'utf8');
   // Buang komentar dulu: kalau konstanta disebut di penjelasan saja, test ini
   // akan hijau tanpa ada kode yang benar-benar memakai nilai itu.
   const kode = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -242,7 +242,7 @@ console.log('\n--- 10. Kontrak dengan header firmware ---');
   // menjadi panic "shift left with overflow"; di C jadi perilaku tak terdefinisi.
   const asmKode = kode(asm);
   ok(/s->st = FA_ST_CRC;[\s\S]{0,240}?s->got = 0;[\s\S]{0,80}?s->got_crc = 0;/.test(asmKode),
-    'frame_asm.c: got dan got_crc direset saat masuk state CRC (regresi shift overflow)');
+    'frame_asm.h: got dan got_crc direset saat masuk state CRC (regresi shift overflow)');
 
   // Perakit TIDAK BOLEH mencari SOF baru di tengah frame. Itu yang membuat
   // payload berisi 0xA5 aman tanpa escaping sama sekali.

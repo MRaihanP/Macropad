@@ -56,7 +56,7 @@ app selalu memvalidasinya sebelum dipakai.
 | Perintah | Bentuk | Balasan |
 |---|---|---|
 | `PING` | - | `PONG` |
-| `WHOAMI` | - | `WHOAMI:MacroPad:v1:rows=..,cols=..,encoders=..` |
+| `WHOAMI` | - | `WHOAMI:MacroPad:v1:rows=..,cols=..,encoders=..,proto=line\|frame,frame=0xA5` |
 | `INFO` | - | `INFO:layerCount=..,currentLayer=..,maxLayers=..,rows=..,cols=..,encoders=..,context=..` |
 | `HWINFO` | - | `HWINFO:profile=..,encoders=..,statusLed=..,rgb=..,rgbSlots=..,vdiv=..,chg=..,simulated=..` |
 | `BATT` | - | `BATT:pin_mv=..,batt_mv=..,pct=..,charging=..,usb=..` |
@@ -87,6 +87,11 @@ app selalu memvalidasinya sebelum dipakai.
 | `RGB:RESET` | kembali ke default | `[OK] RGB reset ke default` |
 | `DIAG` | laporan diagnosa 4 lapis | `DIAG:..` + `DIAGMEDIA:..` |
 | `DIAG:ZERO` | reset penghitung diagnosa | `[OK] DIAG counter direset` |
+| `SIG` | sidik jari config aktif | `SIG:%08lX` |
+| `SIG:ALL` | sidik jari semua slot | `SIGSLOT:<n>:%08lX,layers=..,active=..` (6 baris) |
+| `FRAME` | penghitung lapisan frame | `FRAME:mode=..,rx=..,tx=..,txDrop=..,txErr=..,crcErr=..,verErr=..,lenErr=..,unsup=..` |
+| `FRAME:LINE` | paksa kembali ke mode baris | `[OK] Frame mode dimatikan, kembali ke mode baris` |
+| `FRAMEIN:<nama>` | device menyusun frame sendiri lalu memprosesnya | byte frame + `ERR`/`EVT` |
 
 `DIAG` menjawab dua baris: `DIAG:` (lapisan protokol: baris yang diparse,
 baris terlalu panjang, perintah tak dikenal, perintah terakhir, heap) dan
@@ -98,6 +103,87 @@ beserta satu kalimat vonis yang menyebut lapis penyebabnya. Lihat
 
 Tipe aksi (`type` pada SET/SETENC): `0` none, `1` teks, `2` kombinasi,
 `3` macro, `4` consumer/media, `5` buka aplikasi.
+
+### Protokol frame v2 (migrasi, belum dipakai app)
+
+Device sudah bisa berbicara dalam frame biner berdampingan dengan baris teks, dan
+mendeteksi mode-nya sendiri. Aturannya sesempit mungkin:
+
+```
+mode baris + byte PERTAMA baris = 0xA5  -> mode frame
+mode frame  + byte 0x0A saat perakit IDLE -> kembali ke mode baris
+```
+
+Format frame: `[SOF 0xA5][VER 0x02][TYPE][LEN u16 LE][PAYLOAD][CRC16 u16 LE]`,
+CRC16/CCITT-FALSE atas `TYPE+LEN+PAYLOAD`. Specifikasi otoritatif ada di
+`firmware/common/frame.h`; golden vectors di `tests/vectors/frames.vec` dibaca
+tiga runner independen (C, JS, dan dicocokkan silang lewat `cargo test`).
+
+Perintah frame yang sudah ada di device:
+
+| Frame | Balasan |
+|---|---|
+| `HELLO` (0x01) | `HELLO_RSP` (0x81): versi fw, ukuran matriks, jumlah encoder, payload maksimum, jumlah slot, layer maksimum, slot aktif |
+| `CFG_QUERY` (0x13) | `CFG_META` (0x93): slot aktif + sidik jari & jumlah layer tiap slot |
+| `CFG_ACTIVATE` (0x14) | `CFG_ACT_RSP` (0x94): kode hasil, sidik jari yang aktif, slot |
+| `LINE` (0x02) | diperlakukan sebagai satu perintah protokol lama, jawabannya keluar sebagai teks |
+| lainnya | `ERR` (0x7F) dengan kode `UNSUPPORTED` - device mengatakannya terus terang |
+
+**Serial Monitor selalu bisa mengirim perintah.** Device membaca USB CDC
+sebagai jalur perintah kedua, terpisah dari jalur protokol yang bisa pindah ke
+BLE NUS. Tanpa ini, begitu app mengirim `PROTO:NUS`, Serial Monitor jadi jalan
+buntu: mengetik apa pun di sana tidak menghasilkan apa pun - bukan error,
+keheningan - dan termasuk perintahnya sendiri untuk mengembalikan jalur
+(`PROTO:CDC`). Test `contract-logpath-test.cjs` menjaga bahwa core tetap
+dilarang **menulis** lewat `LOGS`; yang dibaca hanyalah input.
+
+Jawaban `SIG`, `SIG:ALL`, dan `FRAME` sengaja dicerminkan ke Serial Monitor,
+karena perintah itu dibuat untuk dibaca manusia. Jawaban frame (`HELLO_RSP`,
+`CFG_META`, `CFG_ACT_RSP`) tidak dicerminkan - itu jawaban protokol, dan
+menggandakannya akan membuat device yang membaca keduanya mengira ada dua
+jawaban untuk satu permintaan.
+
+**Kenapa `LINE` dan `FRAMEIN` ada.** Serial Monitor tidak bisa mengirim byte
+biner. Tanpa `FRAMEIN` dan frame `LINE`, seluruh lapisan frame tidak akan pernah
+bisa diuji sampai app selesai - dan justru kasus yang paling sulit direproduksi
+dari app (CRC salah, versi salah, LEN monster) justru yang paling mudah diperiksa
+dari sini.
+
+`FRAMEIN` punya dua bentuk. **Gunakan yang pertama:**
+
+```
+FRAMEIN:CFG_QUERY           device menyusun frame-nya sendiri, CRC dihitung di device
+FRAMEIN:HELLO
+FRAMEIN:CFG_ACTIVATE:3
+FRAMEIN:LINE:DIAG           perintah teks dibungkus frame LINE
+
+FRAMEIN:A5 02 13 00 00 ...  byte mentah apa adanya - hanya untuk menguji frame yang salah
+```
+
+Bentuk kedua hanya berguna untuk menguji frame yang rusak dengan sengaja, dan
+memerlukan hitung CRC manual. Bentuk pertama tidak mungkin salah, jadi kalau
+bentuk pertama tidak menghasilkan frame, penyebabnya pasti di device - bukan di
+byte yang diketik. Device mencetak byte frame yang disusunnya sebelum memprosesnya,
+supaya bisa dibandingkan langsung dengan yang dikirim app nanti.
+
+Contoh:
+
+```
+FRAMEIN:CFG_QUERY   -> [FRAME] CFG_QUERY (7 byte): a5 02 13 00 00 xx xx
+                       [FRAME] FRAMEIN: 7 byte, mode=frame, rx=1, crcErr=0
+FRAME                -> FRAME:mode=frame,rx=1,tx=1,txDrop=0,...,crcErr=0,...
+```
+
+Kalau device tidak bisa keluar dari mode frame, tekan Enter di Serial Monitor
+(0x0A saat perakit sedang IDLE) atau kirim `FRAME:LINE`.
+
+**`CFG_SIG`.** Sidik jari konfigurasi dihitung dari bentuk kanonik, bukan
+`sizeof(struct)` mentah: hanya layer yang hidup, nilai action dihitung seluruh
+lebarnya, dan semua field berlebar tetap. Alasannya di `firmware/common/cfg_sig.h`.
+Perhitungannya diuji silang di C dan JS dari berkas vektor yang sama
+(`tests/vectors/cfg.vec`, dihasilkan `tools/gen-cfg-vectors.mjs`), karena kalau
+kedua sisi menghitung sidik jari yang berbeda, app akan mengunggah ulang preset
+yang sebenarnya sudah identik - setiap kali.
 
 ### Baris dari device
 

@@ -104,6 +104,22 @@ volatile uint32_t bleNusNotifyRetry = 0;   // total percobaan ulang (backoff)
 volatile uint32_t bleNusWriteNoConn = 0;
 volatile uint32_t bleNusWriteNoSub  = 0;
 
+// Naikkan counter volatile tanpa memicu -Wvolatile.
+//
+// `x++` pada tipe volatile di-deprecate di C++20, dan GCC memperingatkan
+// bahkan di mode lebih lama. Bentuk `x = x + by` tidak memicu warning itu,
+// dan hasilnya sama persis - volatile tetap memaksa baca/tulis aktual,
+// hanya operator majemuknya yang bermasalah.
+//
+// Dipakai sebagai pengganti `bleNusNotifyOk++` dan kawan-kawannya. Tanpa
+// helper ini, setiap increment counter volatile menambah satu baris
+// warning yang tidak berarti - dan warning yang tidak berarti membuat
+// warning yang BENAR jadi tidak terlihat.
+template <typename T>
+inline void naikkan(volatile T& counter, T by = 1) {
+  counter = counter + by;
+}
+
 inline void bleNusPush(const uint8_t* data, size_t len) {
   uint16_t dropped = 0;
   portENTER_CRITICAL(&bleNusMux);
@@ -125,7 +141,7 @@ inline void bleNusPush(const uint8_t* data, size_t len) {
 
   // Di luar critical section: counter ini dibaca dari loop Arduino, bukan
   // dari dalam mux.
-  if (dropped) bleNusPushDropped += dropped;
+  if (dropped) naikkan(bleNusPushDropped, (uint32_t)dropped);
   if (used > bleNusRingHigh) bleNusRingHigh = used;
 }
 

@@ -58,19 +58,47 @@ console.log('\n--- 4. Core TIDAK boleh MENULIS lewat LOGS-> ---');
 // core = protokol. Kalau core MENULIS lewat LOGS, jawaban perintah tidak akan
 // sampai ke companion app. Itu yang dilarang di sini.
 //
-// Yang TIDAK dilarang adalah MEMBACA status lewat LOGS. serviceBootBanner()
-// memakai LOGS->isConnected() hanya untuk tahu "apakah ada host yang
-// mendengarkan", tanpa menulis apa pun. Melarang pembacaan seperti itu akan
-// memaksa core memeriksa USB lewat jalur lain - padahal jalur log adalah satu-
-// satunya tempat yang tahu apakah CDC benar-benar terhubung.
+// Yang TIDAK dilarang adalah MEMBACA lewat LOGS. Ada dua bentuk, dan keduanya
+// dipakai dengan alasan yang berbeda:
 //
-// Aturannya jadi: TIDAK ADA output ke LOGS, tapi status boleh dibaca.
+//   MEMBACA STATUS   serviceBootBanner() memakai LOGS->isConnected() hanya untuk
+//                   tahu "apakah ada host yang mendengarkan", tanpa menulis apa
+//                   pun. Melarangnya akan memaksa core memeriksa USB lewat jalur
+//                   lain - padahal jalur log adalah satu-satunya tempat yang
+//                   tahu apakah CDC benar-benar terhubung.
+//
+//   MEMBACA INPUT    checkSerialInput() membaca USB CDC sebagai JALUR PERINTAH
+//                   kedua. ini bukan diagnostik: tanpa itu, begitu g_transport
+//                   pindah ke NUS, Serial Monitor jadi jalan buntu total - dan
+//                   termasuk perintahnya sendiri untuk mengembalikan jalur
+//                   (PROTO:CDC). Gejalanya bukan error, melainkan ketiadaan
+//                   suara apa pun, yang mustahil dibedakan dari "perintah tidak
+//                   sampai". Firmware yang sedang dimigrasi justru paling butuh
+//                   Serial Monitor bisa dipakai.
+//
+// Yang tetap dilarang tanpa kecuali: OUTPUT apa pun lewat LOGS. Membaca input
+// tidak mungkin mengirim apa pun ke companion app, jadi tidak bisa mengotori
+// stream protokol seperti yang menjadi maksud test ini sejak awal.
 const coreLogOut = core.match(/LOGS->(printf|println|print|write|flush)/g);
 ok(!coreLogOut,
   `macropad_core.h tidak menulis apa pun lewat LOGS-> (ditemukan: ${coreLogOut || 'tidak ada'})`);
+
+// Pola LOGS-> di core dibatasi pada daftar ini. Melonggarnya jadi "apa pun
+// boleh" akan membuat bagian 4 kehilangan artinya tanpa ada yang memberi tahu.
+const CORE_LOGS_BISA = new Set(['LOGS->isConnected', 'LOGS->available', 'LOGS->read']);
 const coreLogUse = core.match(/LOGS->\w+/g) || [];
-ok(coreLogUse.every((u) => u === 'LOGS->isConnected'),
-  `pola LOGS-> di core hanya boleh pembaca status (ditemukan: ${[...new Set(coreLogUse)].join(', ') || 'tidak ada'})`);
+const coreLogLain = [...new Set(coreLogUse)].filter((u) => !CORE_LOGS_BISA.has(u));
+ok(coreLogLain.length === 0,
+  `pola LOGS-> di core hanya boleh pembacaan (ditemukan: ${[...new Set(coreLogUse)].join(', ') || 'tidak ada'})`);
+
+// Pembacaan input harus TERBATAS pada satu fungsi. Kalau spread ke seluruh
+// core, "membaca input" berubah jadi alasan umum untuk menyentuh jalur log
+// dari mana saja - dan bagian 4 kembali jadi tidak berarti.
+const dualRead = /void checkSerialInput\(\)\s*\{[\s\S]*?LOGS->available\(\)[\s\S]*?\n\}/.test(core);
+ok(dualRead, 'pembacaan input USB CDC hanya terjadi di checkSerialInput()');
+const logReadsDiLuar = core.replace(/void checkSerialInput\(\)\s*\{[\s\S]*?\n\}/g, '');
+ok(!/LOGS->(available|read)\(/.test(logReadsDiLuar),
+  'tidak ada pembacaan input LOGS di luar checkSerialInput()');
 ok(/SERIAL->printf\("HWINFO:/.test(core), 'core masih menjawab HWINFO lewat SERIAL->');
 ok(/SERIAL->printf\("\[KEY\] /.test(core), 'core masih mengirim [KEY] lewat SERIAL->');
 ok(/SERIAL->printf\("EVT:/.test(core), 'core masih mengirim EVT: lewat SERIAL->');

@@ -11,6 +11,34 @@
 // makro SERIAL, dan SEBELUM handleSerialCommand dipakai.
 #include "diag.h"
 
+// ==================================================================
+//  LAPISAN PROTOKOL FRAME v2 - deklarasi maju saja
+// ==================================================================
+// Definisi lengkapnya ada di frame_proto.h, yang di-include jauh di bawah -
+// setelah serialLineReset(), karena lapisan itu memakainya.
+//
+// Tapi handleSerialCommand() memanggil protoFrameCommand() sekarang, jadi
+// deklarasi majunya harus ada di sini. Kalau dideklarasikan di dekat lokasi
+// include, build gagal dengan "not declared in this scope" yang sama sekali
+// tidak mengarah ke penyebabnya.
+static bool protoFrameCommand(const String& cmd);
+
+// Mode protokol sedang aktif: true = frame biner, false = baris teks.
+//
+// WHOAMI membutuhkannya, dan WHOAMI berada di handleSerialCommand() yang jauh
+// di atas lokasi include frame_proto.h. Deklarasi majunya ada di sini dengan
+// alasan yang sama seperti protoFrameCommand. Menyimpan flag-nya di dua tempat
+// akan membuat keduanya bisa berbeda - lalu WHOAMI melaporkan mode yang salah,
+// yang persis kesalahan yang seharusnya dicegah.
+//
+// frame.h ikut di-include di sini karena WHOAMI juga perlu FA_SOF, dan
+// frame_proto.h yang membawanya baru di-include jauh di bawah. frame.h murni
+// header constexpr - bebas Arduino, tidak ada state, tidak ada urutan inisialisasi
+// yang berarti - jadi meng-include-nya lebih awal tidak mengubah apa pun.
+// Included guard-nya mencegah dobel definisi.
+#include "frame.h"
+static bool faModeFrame();
+
 // Global transport instance - diinisialisasi di sketsh profil (transport_usb.cpp / transport_ble.cpp).
 extern Transport* g_transport;
 
@@ -722,8 +750,21 @@ void handleSerialCommand(const String& cmd) {
     // fw= muncul supaya user bisa tahu firmware mana yang terpasang tanpa
     // perlu menebak dari perilaku. "v1" setelah nama adalah versi PROTOCOL
     // (bentuk pesan), bukan versi firmware - keduanya memang terpisah.
-    SERIAL->printf("WHOAMI:MacroPad:v1:fw=%d,rows=%d,cols=%d,encoders=%d\n",
-                   FW_VERSION, ROWS, COLS, NUM_ENCODERS);
+    //
+    // proto=memberi tahu jalur mana yang INI aktif sekarang, bukan protocol
+    // terbaik yang bisa=device. Itu dibedakan dengan sengaja:
+    //
+    //   proto=line  mode baris teks, jawaban WHOAMI ini keluar sebagai teks
+    //   proto=frame mode frame biner, device siap menerima frame
+    //
+    // Kenapa perlu: pada fase migrasi device bisa menjawab WHOAMI dengan dua
+    // bentuk berbeda tergantung mode. App yang mengira selalu dapat teks akan
+    // menggantung diam-diam, dan gejalanya (timeout) sama sekali tidak
+    // mengarah ke penyebabnya. Field ini membuat app bisa memutuskan sebelum
+    // mengirim, bukan setelah menunggu.
+    SERIAL->printf("WHOAMI:MacroPad:v1:fw=%d,rows=%d,cols=%d,encoders=%d,proto=%s,frame=0x%02X\n",
+                   FW_VERSION, ROWS, COLS, NUM_ENCODERS,
+                   faModeFrame() ? "frame" : "line", FA_SOF);
     return;
   }
 
@@ -1070,6 +1111,12 @@ void handleSerialCommand(const String& cmd) {
   // persis device yang paling perlu diperiksa.
   if (protoDiagCommand(cmd)) return;
 
+  // Lapisan protokol frame (dual mode baris/frame). Deklarasi majunya ada di
+  // bagian atas file. Dicechecked sebelum titik ekstensi profil supaya
+  // perintah diagnostiknya (FRAMEIN, FRAME, SIG) selalu ada di profil mana pun,
+  // termasuk FINAL yang tanpa BLE.
+  if (protoFrameCommand(cmd)) return;
+
   // Titik ekstensi perintah milik profil (diagnostics IFACE/BLE, dll).
   // Dijalankan sebelum error "tidak dikenal" supaya profil bisa menambah
   // command sendiri tanpa core perlu tahu apa pun soal BLE.
@@ -1095,29 +1142,94 @@ bool serialOverflow = false;
 
 void serialLineReset() { serialLineLen = 0; serialOverflow = false; }
 
-void checkSerialInput() {
-  while (SERIAL->available()) {
-    char c = SERIAL->read();
-    if (c == '\n') {
-      if (serialOverflow) {
-        // Dihitung per BARIS yang hilang, bukan per byte. Kalau dihitung per
-        // byte, satu baris 5 KB langsung menambah ribuan dan angka akhirnya
-        // tidak bisa dipakai menilai seberapa sering ini terjadi.
-        protoLineTooLong++;
-        SERIAL->println("[ERROR] Baris terlalu panjang, dilewati");
-      } else if (serialLineLen > 0) {
-        protoLinesParsed++;
-        serialLine[serialLineLen] = '\0';
-        handleSerialCommand(String(serialLine));
-      }
-      serialLineReset();
-    } else if (c != '\r') {
-      if (serialLineLen < SERIAL_LINE_MAX - 1) {
-        serialLine[serialLineLen++] = c;
-      } else {
-        serialOverflow = true;   // buang diam-diam sampai newline berikutnya
-      }
+// ==================================================================
+//  LAPISAN PROTOKOL FRAME v2
+// ==================================================================
+// Di-include DI SINI karena dua hal harus sudah ada: handleSerialCommand()
+// lengkap di atas (lapisan ini memanggilnya untuk frame LINE) dan
+// serialLineReset() di baris tepat sebelum ini.
+//
+// Urutan ini adalah bagian dari kontrak. Memindahkan include ke atas akan
+// membuat build gagal dengan error yang tidak menjelaskan apa pun.
+#include "frame_proto.h"
+
+// Satu byte inbound, dari transport mana pun.
+//
+// Dipisah dari checkSerialInput() karena device harus membaca DUA jalur, bukan
+// satu (lihat catatan di fungsi itu). Menyalin bodies per-byte di dua tempat
+// akan membuat keduanya bisa berbeda, dan perbedaannya akan muncul sebagai
+// "perintah kadang jalan kadang tidak" - sulit sekali ditelusuri.
+static void handleInboundByte(uint8_t b) {
+  // ---- Dual mode: baris teks atau frame biner ----
+  //
+  // Aturannya TIDAK ditulis di sini. Semua keputusan satu byte dikumpulkan di
+  // faRoute() (frame_asm.h), supaya bisa diuji sebagai fungsi murni dengan
+  // tabel kasus. Menyalin aturannya di sini akan menghasilkan dua versi yang
+  // bisa berbeda - dan yang salah tidak akan pernah ketahuan, karena device
+  // yang salah mendeteksi mode hanya diam, bukan error.
+  //
+  // SELURUH jalur baris teks di bawahnya tetap persis seperti sebelumnya.
+  // Mode frame hanya menyala kalau byte 0xA5 benar-benar tiba.
+  const fa_route_t r = faRoute(faModeFrame(), faBusy(),
+                               serialLineLen == 0, serialOverflow, b);
+  if (r == FA_ROUTE_TO_LINE) {
+    faSetMode(false);
+    return;
+  }
+  if (r == FA_ROUTE_FRAME) {
+    // 0xA5 sebagai byte pertama baris berarti mode frame belum aktif, jadi
+    // perakit harus mulai dari keadaan bersih. faSetMode() yang melakukan
+    // itu lewat faInit() - dan hanya kalau modenya memang berubah.
+    faSetMode(true);
+    faProtoFeed(b);
+    return;
+  }
+
+  // ---- Jalur baris teks, tidak berubah ----
+  if (b == (uint8_t)'\n') {
+    if (serialOverflow) {
+      // Dihitung per BARIS yang hilang, bukan per byte. Kalau dihitung per
+      // byte, satu baris 5 KB langsung menambah ribuan dan angka akhirnya
+      // tidak bisa dipakai menilai seberapa sering ini terjadi.
+      protoLineTooLong++;
+      SERIAL->println("[ERROR] Baris terlalu panjang, dilewati");
+    } else if (serialLineLen > 0) {
+      protoLinesParsed++;
+      serialLine[serialLineLen] = '\0';
+      handleSerialCommand(String(serialLine));
     }
+    serialLineReset();
+  } else if (b != (uint8_t)'\r') {
+    if (serialLineLen < SERIAL_LINE_MAX - 1) {
+      serialLine[serialLineLen++] = (char)b;
+    } else {
+      serialOverflow = true;   // buang diam-diam sampai newline berikutnya
+    }
+  }
+}
+
+// Device membaca DUA jalur byte, bukan satu.
+//
+// Kenapa: SERIAL (= g_transport) adalah jalur PROTOKOL, dan ia pindah ke BLE
+// NUS begitu app mengirim PROTO:NUS. LOGS (= g_logTransport) selalu USB CDC.
+// Setelah perpindahan itu, tidak ada yang membaca input USB CDC lagi - dan
+// Serial Monitor menjadi jalan buntu total: mengetik PING di sana tidak
+// menghasilkan apa pun, bahkan error.
+//
+// Ini bukan Detail kecil. Justru Serial Monitor adalah satu-satunya cara
+// menguji lapisan frame dari tangan manusia (lihat FRAMEIN), dan commands
+// seperti PROTO:CDC untuk mengembalikan jalur juga ikut tenggelam. Device jadi
+// tidak bisa diperiksa tanpa app - persis yang tidak boleh terjadi pada
+// firmware yang sedang dimigrasi.
+//
+// Perbandingan POINTER, bukan flag, dipakai karena dua transport bisa menunjuk
+// objek yang sama (g_transport == g_logTransport saat lewat CDC). Membaca
+// keduanya tanpa pengecekan akan membaca tiap byte dua kali.
+void checkSerialInput() {
+  while (SERIAL->available()) handleInboundByte((uint8_t)SERIAL->read());
+
+  if (g_transport != g_logTransport) {
+    while (LOGS->available()) handleInboundByte((uint8_t)LOGS->read());
   }
 }
 

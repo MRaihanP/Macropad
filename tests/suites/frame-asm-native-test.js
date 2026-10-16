@@ -1,4 +1,4 @@
-// Test Fase 1, runner KETIGA: firmware/common/frame_asm.c diuji dengan gcc
+// Test runner KETIGA: firmware/common/frame_asm.h diuji dengan gcc
 // di host, tanpa Arduino dan tanpa perangkat.
 //
 // Kenapa runner ini wajib ada, bukan cuma "nice to have":
@@ -51,7 +51,7 @@ console.log(`compiler: ${gcc}`);
 
 // ---- Program uji C ----
 // Program ini membaca tests/vectors/frames.vec langsung dan mencetak verdict
-// per vektor. Dengan begitu HANYA yang diuji adalah frame_asm.c + frame.h -
+// per vektor. Dengan begitu HANYA yang diuji adalah frame_asm.h + frame.h -
 // tidak ada reimplementasi algoritma di JavaScript yang bisa "membantu" atau
 // menutupi bug di C.
 const C_SRC = `
@@ -59,6 +59,8 @@ const C_SRC = `
 #include <stdlib.h>
 #include <string.h>
 #include "frame.h"
+#include "frame_asm.h"
+#include "cfg_sig.h"
 
 /* Buffers dialokasikan sekali di luar fungsi supaya ukuran payload maksimum
    (512 byte) tidak membuat stack meledak di host 32-bit. */
@@ -192,6 +194,46 @@ int main(int argc, char** argv) {
   }
 
   fclose(f);
+
+  /* ---- Auto-detect dual mode: faRoute() ----
+   *
+   * Aturan ini deciding apakah device diam atau menjawab, jadi kesalahannya
+   * tidak muncul sebagai error - hanya sebagai "tidak terjadi apa-apa". Karena
+   * itu tiap kasus punya nama yang menyebutkan KENAPA hasilnya harus begitu,
+   * bukan sekadar "kasus 3 benar".
+   *
+   * Kolom: modeFrame busy lineEmpty overflow byte  ->  hasil
+   */
+  {
+    struct { const char* nama; int mf, busy, empty, ovf; unsigned b; fa_route_t harap; } kasus[] = {
+      {"byte 0xA5 di awal baris -> frame",           0,0,1,0, 0xA5, FA_ROUTE_FRAME},
+      {"0xA5 di tengah baris -> tetap baris",       0,0,0,0, 0xA5, FA_ROUTE_LINE},
+      {"huruf biasa di mode baris -> baris",         0,0,0,0, 'P',  FA_ROUTE_LINE},
+      {"0xA5 setelah baris overflow -> tetap baris", 0,0,1,1, 0xA5, FA_ROUTE_LINE},
+      {"0x0A di mode frame saat IDLE -> balik baris",1,0,1,0, 0x0A, FA_ROUTE_TO_LINE},
+      {"0x0A di mode frame saat BUSY -> isi frame",  1,1,1,0, 0x0A, FA_ROUTE_FRAME},
+      {"0x0A di mode baris -> baris (bukan balik)",  0,0,1,0, 0x0A, FA_ROUTE_LINE},
+      {"0xA5 di mode frame IDLE -> cari SOF",        1,0,1,0, 0xA5, FA_ROUTE_FRAME},
+      {"0xA5 di mode frame BUSY -> isi frame",       1,1,1,0, 0xA5, FA_ROUTE_FRAME},
+      {"0x00 di mode frame IDLE -> cari SOF",        1,0,1,0, 0x00, FA_ROUTE_FRAME},
+      {"sampah di mode frame IDLE tetap diteruskan", 1,0,1,0, 0x7F, FA_ROUTE_FRAME},
+      {"0x0D di mode frame IDLE -> cari SOF",        1,0,1,0, 0x0D, FA_ROUTE_FRAME},
+    };
+    long rt = 0, rb = 0;
+    for (size_t i = 0; i < sizeof(kasus) / sizeof(kasus[0]); i++) {
+      fa_route_t got = faRoute(kasus[i].mf != 0, kasus[i].busy != 0,
+                               kasus[i].empty != 0, kasus[i].ovf != 0,
+                               (uint8_t)kasus[i].b);
+      rt++;
+      if (got != kasus[i].harap) {
+        printf("GAGAL ROUTE %s: dapat %d harap %d\\n", kasus[i].nama, (int)got, (int)kasus[i].harap);
+        rb++;
+      }
+    }
+    printf("ROUTE %ld/%ld\\n", rt - rb, rt);
+    gagal += rb;
+  }
+
   printf("VEC %ld GAGAL %ld\\n", total, gagal);
   return gagal ? 1 : 0;
 }
@@ -202,7 +244,7 @@ const cPath = path.join(dir, 'uji_frame.c');
 const exe = path.join(dir, 'uji_frame.exe');
 fs.writeFileSync(cPath, C_SRC, 'utf8');
 
-// Salin frame.h + frame_asm.c ke direktori sementara, lalu kompilasi TANPA -I.
+// Salin frame.h + frame_asm.h ke direktori sementara, lalu kompilasi TANPA -I.
 //
 // kenapa tidak pakai -I firmware/common: firmware/common/limits.h akan
 // MENGGANTIKAN <limits.h> milik standar C. stdlib.h memuat <limits.h>, dan
@@ -212,20 +254,20 @@ fs.writeFileSync(cPath, C_SRC, 'utf8');
 // Build Arduino tidak kena karena header-nya di-include lewat path relatif,
 // bukan lewat -I. Tes ini memakai -I, jadi menyalin file lebih aman.
 //
-// Efek sampingnya bagus: frame_asm.c + frame.h terbukti benar-benar mandiri,
+// Efek sampingnya bagus: frame_asm.h + frame.h terbukti benar-benar mandiri,
 // tidak diam-diam bergantung pada header lain di firmware/common.
 const commonDir = path.join(ROOT, 'firmware', 'common');
-for (const f of ['frame.h', 'frame_asm.c']) {
+for (const f of ['frame.h', 'frame_asm.h', 'crc32.h', 'cfg_sig.h']) {
   fs.copyFileSync(path.join(commonDir, f), path.join(dir, f));
 }
 
-console.log('\n--- 1. Kompilasi frame_asm.c di host ---');
+console.log('\n--- 1. Kompilasi frame_asm.h di host ---');
 // -std=c11 : mengikuti default Arduino ESP32.
 // -Wall -Wextra -Werror : warning diperlakukan sebagai error. Compiler yang
 //   bisa membiarkan kode berbahaya lewat harus tertangkap di sini, bukan
 //   ditemukan nanti saat flash ke perangkat.
 const DASAR = ['-std=c11', '-Wall', '-Wextra', '-Werror', '-g', '-O1'];
-const sumber = [cPath, path.join(dir, 'frame_asm.c')];
+const sumber = [cPath];
 
 let sanitizerAktif = false;
 try {
@@ -257,14 +299,26 @@ try {
   }
 }
 
-console.log('\n--- 2. frame_asm.c cocok dengan golden vectors ---');
+console.log('\n--- 2. frame_asm.h cocok dengan golden vectors ---');
 try {
   const out = run(exe, [VEC], { encoding: 'utf8' });
   const baris = out.trim().split('\n');
   let vektor = 0;
+  let route = 0;
   for (const b of baris) {
     if (b.startsWith('GAGAL')) { ok(false, b); continue; }
     if (b.startsWith('OK   crc16')) { ok(true, 'CRC16/CCITT-FALSE check value cocok'); continue; }
+    if (b.startsWith('ROUTE ')) {
+      // Format "ROUTE lulus/total" - TANPA spasi di sekitar '/', jadi
+      // split(/\s+/) hanya menghasilkan dua bagian dan parseInt dari bagian
+      // keempat selalu NaN. Dicocokkan dengan regex, bukan dipecah.
+      const m = b.match(/^ROUTE\s+(\d+)\/(\d+)/);
+      if (!m) { ok(false, `baris ROUTE tidak bisa dibaca: ${b}`); continue; }
+      route = parseInt(m[2], 10);
+      ok(parseInt(m[1], 10) === route,
+        `auto-detect dual mode: ${route} kasus routing benar`);
+      continue;
+    }
     if (b.startsWith('VEC ')) {
       const [, t, , g] = b.split(/\s+/);
       vektor = parseInt(t, 10);
@@ -273,6 +327,10 @@ try {
     }
   }
   ok(vektor >= 25, `jumlah vektor yang diproses: ${vektor}`);
+  // Kalau tabel routing hilang diam-diam,faRoute() bisa dikembalikan ke versi
+  // salah tanpa ada yang gagal. Angka nol di sini berarti programnya tidak
+  // pernah mencetak, yang hampir selalu berarti seksi ini tidak dijalankan.
+  ok(route >= 10, `jumlah kasus routing yang diproses: ${route}`);
 } catch (e) {
   const out = ((e.stdout || '') + (e.stderr || '')).trim();
   ok(false, `program uji C gagal${out ? ':\n' + out : ''}`);
