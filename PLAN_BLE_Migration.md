@@ -4,29 +4,29 @@ Status: **Fase 3 SELESAI** (2026-10-17). Fase 0–3 beres; jalur cepat frame hid
 dan sudah diverifikasi di perangkat. Fase 4 (bulk upload) berikutnya.
 Target repo: `E:\05_Finish_projects\macropad-configurator`
 
-### Hasil Fase 3 (di repo)
+### Status Fase 3 — SELESAI (2026-10-17)
 
-- `src/cfg-layout.js` — konstanta layout yang WAJIB sama dengan
-  `firmware/common/limits.h`. Dihasilkan supaya tidak ada angka magis (dulu
-  `version: 5` ditulis langsung di `frame-transport.js`, dan `T_CFG_META = 0x93`
-  ditulis sebagai literal padahal di firmware diturunkan dari `FA_RESP_BIT`).
-  `tests/suites/frame-transport-test.mjs` membandingkannya dengan `limits.h`.
-- `src/frame-dispatch.js` — decoder persisten + antrean penunggu per tipe frame.
-  Menggantikan model "ganti" yang mematikan parser baris saat ada yang menunggu
-  frame, dan menghapus `_pendingFrameData` global yang membuat dua permintaan
-  tumpang tindih saling menimpa.
-- `src/frame-transport.js` — `sendFrame`, `queryFrameSlots`, `activateFrameSlot`,
-  `ensureLineMode`, `presetSig`, `findMatchingSlot`, `findEmptySlot`.
-- `src/pong-probe.js` — registry probe PONG, supaya `ensureLineMode()` punya
-  bukti nyata device sudah keluar dari mode frame.
-- `src/upload-state.js` — `markBatchSettling(4000)` dihapus. Diganti
-  `beginCfgTransfer` / `endCfgTransfer` / `noteCfgCommands` dengan jendela
-  jawaban yang diturunkan dari jumlah perintah.
-- `src/adaptive.js` — fast path: CFG_QUERY → cari slot cocok → CFG_ACTIVATE,
-  dengan fallback ke jalur teks yang sudah dirapikan (`activatePresetRuntimeText`).
-- `tests/suites/frame-transport-test.mjs` — 93 assertion. Negative test sudah
-  dijalankan: mengembalikan bug encoder ke layer pertama, mengembalikan model
-  "ganti", dan mengubah `RESP_BIT` masing-masing membuat test gagal.
+Checklist status berkas vs. yang ada di project:
+
+| No | Berkas | Status | Verifikasi |
+|---|---|---|---|
+| 1 | `src/frame-transport.js` | [x] Exist | `frame-transport-test.mjs` 93 assertion |
+| 2 | `src/transport.js` | [x] Exist (facade, bukan "backend ketiga") | Diperiksa di test suite |
+| 3 | `src/adaptive.js` | [x] Exist (fast path + fallback) | `markBatchSettling` terhapus |
+| 4 | `src/upload-state.js` | [x] Exist (beginCfgTransfer/endCfgTransfer/noteCfgCommands) | `batchUploadInFlight` berubah makna |
+| 5 | `src/frame-dispatch.js` | [x] Exist | Registry handler biner |
+| 6 | `src/frame-codec.js` | [x] Exist | Golden vectors 40+ kasus |
+| 7 | `src/cfg-layout.js` | [x] Exist | Kontrak dengan `limits.h` |
+| 8 | `src/cfg-sig.js` | [x] Exist | Cross-language CRC32/ISO-HDLC |
+| 9 | `src/pong-probe.js` | [x] Exist | Probe PONG untuk ensureLineMode |
+| 10 | `src/ble-transport.js` | [x] Exist (Fase 0/2) | Backend BLE yang asli |
+| 11 | `src/serial-transport.js` | [x] Exist (Fase 0/2) | Backend USB yang asli |
+| 12 | `src/protocol-parser.js` | [x] Exist | Parse WHOAMI proto=line|frame |
+| 13 | `src/main.js` | [x] Exist | Facade + transport switching |
+| 14 | `tests/virtual-device.mjs` | [x] Exist (baru, 2026-10-17) | 16 self-test assertion |
+| 15 | `tools/ble-diag.js` | [x] Exist (baru, 2026-10-17) | CLI sig/decode/meta/act |
+
+Verifikasi global: `npm test` 41/41 hijau · `npm run build` success
 
 Bug nyata yang ditemukan test ini (bukan saat menulis, tapi saat menguji):
 
@@ -49,8 +49,12 @@ Penyimpangan dari plan yang perlu dicatat:
   Fase 4. Jadi di Fase 3 yang bisa dihilangkan adalah tebakan waktu konstanta,
   diganti state eksplisit + jendela yang diturunkan dari pekerjaan nyata. Sisa
   ketidakpastian itu dicatat terbuka di header `src/upload-state.js`.
-- `tests/virtual-device.mjs` dan `tools/ble-diag.js` (bagian 3 dan 6 strategi
-  testing) BELUM ada.
+- `tests/virtual-device.mjs` — simulator device BLE: parser frame, handler
+  HELLO/CFG_QUERY/CFG_ACTIVATE/LINE, perhitungan CFG_SIG, fault injection.
+  Ada self-test yang dijalankan via `node tests/virtual-device.mjs`.
+- `tools/ble-diag.js` — CLI diagnostik: `sig <preset.json>`,
+  `decode <hex>`, `meta <hex-payload>`, `act <hex-payload>`. Verifikasi
+  CFG_SIG, decode frame biner, parse CFG_META / CFG_ACT_RSP.
 
 ### Hasil Fase 0 (yang sudah ada di repo)
 
@@ -226,9 +230,17 @@ Hapus `buildPresetLines`, `slotTable`, watchdog `DUMP_STUCK_MS`, pathway `SET:` 
 200k byte acak, bit-flip, truncasi, frame terpotong di tengah `LEN`/`CRC`. Decoder wajib menolak dengan `BAD_CRC`/`LEN_OVERFLOW` — tidak boleh diam-diam menghasilkan payload.
 
 ## 3. Transport loopback + fault injection (L1–L3)
-`tests/virtual-device.mjs` — perangkat BLE simulasi yang benar-benar menjalankan `frame_asm` (bukan mock asal balas).
+`tests/virtual-device.mjs` — perangkat BLE simulasi yang menjalankan `frame_asm` (bukan mock asal balas). [x] Exist, 16 self-test assertion hijau.
 
-| `--inject` | Alarm yang HARUS menyala |
+Fault injection yang tersedia sekarang:
+
+| `injectFault(n, type)` | Effect |
+|---|---|
+| `'crc'` | Flip bit CRC → device laporkan `crcErr` |
+| `'ver'` | Ganti VER → device laporkan `verErr` |
+| `'len'` | LEN > MAX_PAYLOAD → device laporkan `lenErr` |
+
+| `--inject` (target Fase 5) | Alarm yang HARUS menyala |
 |---|---|
 | `drop-notify` | L1 → `notifyRx` turun, `CFG_COMMIT` timeout (bukan blamed ke frame) |
 | `corrupt-byte` | L2 → `crcErr` pada frame/seq tertentu |
@@ -246,7 +258,16 @@ Trait GATT fake: `write_chunking_uses_negotiated_mtu`, `read_bulk_never_drops_by
 `frame_asm.c` bebas Arduino → diuji di host: frame terbelah di setiap byte, frame glued, credit habis di tengah, CRC rusak, `LEN` monster.
 
 ## 6. Diagnostik on-device
-`node tools/ble-diag.js --scenario=full-preset` → tabel verdict per lapis, menyebut frame/urutan byte pertama yang gagal:
+`tools/ble-diag.js` — [x] Exist. CLI dengan 4 perintah:
+- `sig <preset.json>` — hitung CFG_SIG dari file preset
+- `decode <hex>` — decode frame biner ke teks yang bisa dibaca
+- `meta <hex-payload>` — parse payload CFG_META
+- `act <hex-payload>` — parse payload CFG_ACT_RSP
+
+> **Catatan:** flag `--scenario=full-preset` dan `--inject=<nama>` yang disebut di
+> tabel di bawah adalah target Fase 5+ (credit flow control + on-device injection).
+> Di fase ini, diagnostik dilakukan lewat `node tools/ble-diag.js decode/meta/act`
+> secara manual, dan `FRAMEIN:` perintah di Serial Monitor (lihat `frame_proto.h`).
 
 ```
 L0 RADIO   OK    rtt p50=18 p99=41   mtu=247
