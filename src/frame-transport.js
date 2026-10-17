@@ -26,13 +26,15 @@
 
 import {
   encode, T_HELLO, T_CFG_QUERY, T_CFG_ACTIVATE,
-  T_HELLO_RSP, T_CFG_META, T_CFG_ACT_RSP, T_ERR,
+  T_HELLO_RSP, T_CFG_META, T_CFG_ACT_RSP,
+  T_CFG_BEGIN, T_CFG_WRITE, T_CFG_RESULT, T_CFG_COMMIT, T_ERR,
 } from './frame-codec.js';
 import { cfgSigOfPreset } from './cfg-sig.js';
 import {
   CONFIG_VERSION, APP_SLOTS, SLOT_NONE,
   CFG_META_SLOT_STRIDE, CFG_META_HEADER_LEN, CFG_ACT_RSP_LEN, cfgSigDims,
 } from './cfg-layout.js';
+import { encodePreset, chunkPlan } from './cfg-builder.js';
 import { waitForFrame } from './frame-dispatch.js';
 import { registerPongProbe, clearPongProbe } from './pong-probe.js';
 import { sendRaw, sendLine, isConnected } from './transport.js';
@@ -272,6 +274,125 @@ function probePong() {
     if (registerPongProbe(finish)) sendLine('PING');
     else finish(false);
   });
+}
+
+/**
+ * Parse payload CFG_COMMIT response (FA_T_CFG_RESULT).
+ *
+ * @param {Uint8Array|number[]} payload
+ * @returns {{code:number, sig:number, slot:number}|null}
+ */
+export function parseCfgResult(payload) {
+  if (!payload || payload.length < 1) return null;
+  return {
+    code: payload[0],
+    sig: payload.length >= 5
+      ? (payload[1] | (payload[2] << 8) | (payload[3] << 16) | (payload[4] << 24)) >>> 0
+      : 0,
+    slot: payload.length >= 6 ? payload[5] : 0,
+  };
+}
+
+/**
+ * Konversi preset app ke bentuk datar untuk encodePreset.
+ *
+ * Bentuk flat sama persis dengan yang pakai presetSig() di atas —
+ * jadi CFG_SIG dan binary payload akan konsisten. Encoder diambil
+ * dari layer TERAKHIR (sama dengan presetSig).
+ *
+ * @param {object} preset preset dari presetsData
+ * @param {object} geom {rows, cols, numEncoders}
+ * @returns {object} flat preset
+ */
+export function presetToFlat(preset, geom) {
+  const dims = cfgSigDims(geom);
+  const layerCount = Math.min(preset.layers?.length || 0, dims.maxLayers);
+
+  const flat = {
+    version: CONFIG_VERSION,
+    layerCount,
+    currentLayer: 0,
+    names: preset.layers?.map(l => l.name || '') || [],
+    layers: [],
+    enc: [],
+  };
+
+  for (let l = 0; l < layerCount; l++) {
+    const layer = preset.layers[l];
+    flat.layers[l] = { keys: [] };
+    if (!layer) continue;
+    for (let r = 0; r < geom.rows; r++) {
+      for (let c = 0; c < geom.cols; c++) {
+        const k = layer.keys?.[r]?.[c];
+        flat.layers[l].keys.push(
+          (k && k.type) ? { type: k.type, value: k.value } : { type: 0, value: '' });
+      }
+    }
+  }
+
+  const lastLayer = preset.layers?.[layerCount - 1] || null;
+  for (let i = 0; i < geom.numEncoders; i++) {
+    for (const key of ['encCw', 'encCcw', 'encBtn']) {
+      const a = lastLayer?.[key]?.[i];
+      flat.enc.push(a && a.type ? { type: a.type, value: a.value } : { type: 0, value: '' });
+    }
+  }
+
+  return flat;
+}
+
+/**
+ * Upload preset biner via protocol frame v2.
+ *
+ * Alur:
+ *   1. Encode preset → binary payload (termasuk CRC32)
+ *   2. Kirim CFG_BEGIN dengan slot tujuan
+ *   3. Kirim CFG_WRITE berulang dengan chunk payload (maks ~237 byte/frame)
+ *   4. Kirim CFG_COMMIT → dapatkan CFG_RESULT (kode + sig)
+ *   5. Jika sukses, aktifkan slot lewat CFG_ACTIVATE
+ *
+ * @param {object} preset preset app
+ * @param {object} geom {rows, cols, numEncoders}
+ * @param {number} slot target slot (0..APP_SLOTS-1)
+ * @param {function} onProgress callback (sent, total) untuk progress bar
+ * @returns {Promise<{ok:boolean, sig?:number, reason?:string}>}
+ */
+export async function uploadPresetBinary(preset, geom, slot, onProgress) {
+  if (slot < 0 || slot >= APP_SLOTS) {
+    return { ok: false, reason: 'slot tidak valid' };
+  }
+
+  const dims = cfgSigDims(geom);
+  const flat = presetToFlat(preset, geom);
+  const payload = encodePreset(flat, dims);
+
+  // CFG_BEGIN → slot target
+  await sendFrame(T_CFG_BEGIN, [slot & 0xff]);
+
+  // CFG_WRITE → chunk
+  const { chunkSize } = chunkPlan(payload.length);
+  let sent = 0;
+  for (let off = 0; off < payload.length; off += chunkSize) {
+    const chunk = payload.slice(off, off + chunkSize);
+    await sendFrame(T_CFG_WRITE, chunk);
+    sent += chunk.length;
+    if (onProgress) onProgress(Math.min(sent, payload.length), payload.length);
+  }
+
+  // CFG_COMMIT → CFG_RESULT
+  const r = await requestFrame(T_CFG_COMMIT, T_CFG_RESULT, []);
+  if (!r.ok) {
+    return { ok: false, reason: r.reason || 'timeout CFG_COMMIT' };
+  }
+  const result = parseCfgResult(r.payload);
+  if (!result || result.code !== 0) {
+    const code = result ? result.code : -1;
+    const errNames = { 0: 'NONE', 1: 'BAD_VER', 2: 'BAD_CRC', 3: 'LEN_OVERFLOW',
+                       0x13: 'CREDIT_EXHAUSTED', 0x14: 'STAGING_FULL', 0x15: 'CRC32_MISMATCH' };
+    return { ok: false, reason: `device CONFIG_COMMIT error: code=${code} (${errNames[code] || 'UNKNOWN'})` };
+  }
+
+  return { ok: true, sig: result.sig, slot: result.slot };
 }
 
 /**

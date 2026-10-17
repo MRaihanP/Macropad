@@ -106,6 +106,28 @@ static uint32_t faTxErrEncode = 0;
 static uint32_t faTxDropped   = 0;
 static uint32_t faCxUnsup     = 0;
 
+// =================== CFG STAGING (Fase 4: bulk upload biner) ===================
+//
+// Buffer sementara untuk menerima preset biner via CFG_WRITE.
+// Layout binary (LE, tidak pakai padding):
+//   u8  version       - harus == CONFIG_VERSION (5)
+//   u8  layerCount    - 1..MAX_LAYERS
+//   per layer (layerCount x):
+//     char  name[16]                (NAME_LEN)
+//     key  : u8 type, char value[48] x (ROWS*COLS)      = 9 x 49 = 441
+//     enc  : u8 type, char value[48] x (NUM_ENCODERS*3) = 3 x 49 = 147
+//     subtotal = 16 + 441 + 147 = 604 byte
+//   u32 crc32      - CRC32/ISO-HDLC atas seluruh byte di atas
+//
+// Size maksimum: 2 + 604*8 + 4 = 4838 byte. Buffer 5120 (5KB) muat dengan
+// sedikit ruang, jauh di bawah limit stack ESP32-S3 di IRAM.
+#define CFG_STAGING_SIZE 5120u
+
+static uint8_t  cfgStage[CFG_STAGING_SIZE];
+static uint16_t cfgStageLen = 0;    // berapa byte yang sudah ditulis
+static uint8_t  cfgStageSlot = 0;   // slot tujuan (0..APP_SLOTS-1)
+static bool     cfgStageActive = false;
+
 // =================== MENGIRIM JAWABAN ===================
 //
 // Memakai SERIAL (= g_transport), bukan LOGS: jawaban frame adalah jawaban
@@ -160,6 +182,16 @@ static void faTerjemahkan(uint8_t type, const uint8_t* p, uint16_t len) {
           : 0;
       LOGS->printf("  -> kode=%u sig=%08lX slot=%u\n", p[0], (unsigned long)sig,
                    (len >= 6) ? p[5] : 0);
+      return;
+    }
+
+    case FA_T_CFG_RESULT: {
+      if (len < 1) return;
+      const uint32_t sig = (len >= 5)
+          ? ((uint32_t)p[1] | ((uint32_t)p[2] << 8) | ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24))
+          : 0;
+      LOGS->printf("  -> CFG_COMMIT kode=%u sig=%08lX slot=%u\n", p[0],
+                   (unsigned long)sig, (len >= 6) ? p[5] : 0);
       return;
     }
 
@@ -405,12 +437,176 @@ static void faCmdLine(const uint8_t* pl, uint16_t len) {
   kedalaman--;
 }
 
+// =================== CFG BULK UPLOAD (Fase 4) ===================
+//
+// Protokol tiga langkah: app kirim CFG_BEGIN → banyak CFG_WRITE → CFG_COMMIT.
+// Device menampung semua payload CFG_WRITE di staging buffer, lalu di
+// CFG_COMMIT parse + verify CRC32 + copy ke slotCfg.
+//
+// Respons:
+//   CFG_BEGIN    → tidak ada jawaban (fire-and-forget), app tahu karena
+//                  frame berikutnya adalah CFG_WRITE. (Jika mau future-proof,
+//                  bisa tambahkan ack di fase berikutnya.)
+//   CFG_WRITE    → tidak ada jawaban (ack implisit = tidak error).
+//   CFG_COMMIT   → FA_T_CFG_RESULT (0x92):
+//                  u8 code (0=sukses, >0=error), u32 sig, u8 slot
+//                  (total 6 byte payload; sig=0 jika gagal)
+static void faCmdCfgBegin(const uint8_t* pl, uint16_t len) {
+  if (len < 1) {
+    faReplyUnsupported(FA_T_CFG_BEGIN);
+    return;
+  }
+  cfgStageSlot = pl[0];
+  if (cfgStageSlot >= APP_SLOTS) {
+    uint8_t resp[6] = { FA_ERR_UNSUPPORTED, 0, 0, 0, 0, cfgStageSlot };
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    return;
+  }
+  cfgStageLen = 0;
+  cfgStageActive = true;
+  LOGS->printf("[FRAME] CFG_BEGIN slot=%u\n", cfgStageSlot);
+}
+
+static void faCmdCfgWrite(const uint8_t* pl, uint16_t len) {
+  if (!cfgStageActive) {
+    faReplyUnsupported(FA_T_CFG_WRITE);
+    return;
+  }
+  if (cfgStageLen + len > CFG_STAGING_SIZE) {
+    uint8_t resp[6] = { FA_ERR_STAGING_FULL, 0, 0, 0, 0, cfgStageSlot };
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    cfgStageActive = false;
+    return;
+  }
+  memcpy(cfgStage + cfgStageLen, pl, len);
+  cfgStageLen += len;
+}
+
+static void faCmdCfgCommit() {
+  if (!cfgStageActive) {
+    faReplyUnsupported(FA_T_CFG_COMMIT);
+    return;
+  }
+  uint8_t resp[6] = { 0, 0, 0, 0, 0, cfgStageSlot };
+
+  // Verifikasi panjang minimum (header 2 byte + trailer 4 byte)
+  if (cfgStageLen < 2 + 4) {
+    resp[0] = FA_ERR_BAD_VER;
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    cfgStageActive = false;
+    return;
+  }
+
+  // Pisahkan CRC32 (4 byte terakhir, LE)
+  const uint16_t dataLen = cfgStageLen - 4;
+  const uint32_t expectedCrc = (uint32_t)cfgStage[dataLen]
+                              | ((uint32_t)cfgStage[dataLen + 1] << 8)
+                              | ((uint32_t)cfgStage[dataLen + 2] << 16)
+                              | ((uint32_t)cfgStage[dataLen + 3] << 24);
+  const uint32_t actualCrc = crc32_bytes(cfgStage, dataLen);
+
+  if (expectedCrc != actualCrc) {
+    resp[0] = FA_ERR_CRC32_MISMATCH;
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    LOGS->printf("[FRAME] CFG_COMMIT CRC mismatch: expected=%08lX actual=%08lX\n",
+                 (unsigned long)expectedCrc, (unsigned long)actualCrc);
+    cfgStageActive = false;
+    return;
+  }
+
+  // Parse binary payload field-per-field ke dalam struct.
+  // Layout binary (canonical, LE, no padding):
+  //   u8 version, u8 layerCount
+  //   per layer: char name[16], 9*(u8 type, char value[48]), 3*(u8 type, char value[48])
+  // Panjang per layer = 16 + 9*49 + 3*49 = 604 byte
+  const uint8_t version = cfgStage[0];
+  const uint8_t layerCount = cfgStage[1];
+  if (version != CONFIG_VERSION) {
+    resp[0] = FA_ERR_BAD_VER;
+    resp[1] = version;
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    cfgStageActive = false;
+    return;
+  }
+  uint8_t nLayers = (layerCount < MAX_LAYERS) ? layerCount : MAX_LAYERS;
+
+  // Hitung berapa byte yang sebenarnya ada untuk layer data (tanpa CRC)
+  const uint16_t needLen = (uint16_t)(2 + 604u * nLayers);
+  if (dataLen < needLen) {
+    // data terlalu pendek untuk layerCount yang diklaim — ini CRC mismatch
+    // konseptual (app menghitung salah) jadi laporkan sebagai CRC error.
+    resp[0] = FA_ERR_CRC32_MISMATCH;
+    faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
+    LOGS->printf("[FRAME] CFG_COMMIT payload too short: have %u need %u\n",
+                 (unsigned)dataLen, (unsigned)needLen);
+    cfgStageActive = false;
+    return;
+  }
+
+  // Reset slot tujuan
+  MacroConfig& dst = slotCfg[cfgStageSlot];
+  resetCfgStruct(dst);
+
+  dst.version = CONFIG_VERSION;
+  dst.layerCount = nLayers;
+  dst.currentLayer = 0;
+
+  uint16_t off = 2;  // setelah header
+
+  for (uint8_t l = 0; l < nLayers; l++) {
+    // Nama layer [16]
+    memcpy(dst.layerNames[l], cfgStage + off, NAME_LEN);
+    off += NAME_LEN;
+
+    // Keys [9], tiap (u8 type + char value[48])
+    const uint8_t nKeys = (uint8_t)(ROWS * COLS);
+    for (uint16_t k = 0; k < nKeys; k++) {
+      uint8_t ki = (uint8_t)(k / COLS);
+      uint8_t kj = (uint8_t)(k % COLS);
+      dst.layerMap[l][ki][kj].type = (ActionType)cfgStage[off++];
+      memcpy(dst.layerMap[l][ki][kj].value, cfgStage + off, MACRO_MAX_LEN);
+      off += MACRO_MAX_LEN;
+    }
+
+    // Encoders: per knob, CW/CCW/BTN berurutan (sama dengan iterasi cfgSig()).
+    // Urutan di staging: CW[0], CCW[0], BTN[0], CW[1], CCW[1], BTN[1], ...
+    for (uint8_t e = 0; e < NUM_ENCODERS; e++) {
+      dst.encCW[e].type = (ActionType)cfgStage[off++];
+      memcpy(dst.encCW[e].value, cfgStage + off, MACRO_MAX_LEN);
+      off += MACRO_MAX_LEN;
+      dst.encCCW[e].type = (ActionType)cfgStage[off++];
+      memcpy(dst.encCCW[e].value, cfgStage + off, MACRO_MAX_LEN);
+      off += MACRO_MAX_LEN;
+      dst.encBtn[e].type = (ActionType)cfgStage[off++];
+      memcpy(dst.encBtn[e].value, cfgStage + off, MACRO_MAX_LEN);
+      off += MACRO_MAX_LEN;
+    }
+  }
+
+  const uint32_t sig = cfgSig(dst);
+  resp[0] = FA_ERR_NONE;
+  resp[1] = (uint8_t)(sig & 0xFF);
+  resp[2] = (uint8_t)((sig >> 8) & 0xFF);
+  resp[3] = (uint8_t)((sig >> 16) & 0xFF);
+  resp[4] = (uint8_t)((sig >> 24) & 0xFF);
+  resp[5] = cfgStageSlot;
+
+  cfgStageActive = false;
+  cfgStageLen = 0;
+
+  LOGS->printf("[FRAME] CFG_COMMIT ok slot=%u sig=%08lX layers=%u\n",
+               cfgStageSlot, (unsigned long)sig, nLayers);
+}
+
 static void faHandleFrame(const fa_frame_t& f) {
   faRxFrames++;
   switch (f.type) {
     case FA_T_HELLO:        faCmdHello(f.payload, f.len); break;
     case FA_T_CFG_QUERY:    faCmdCfgQuery(f.payload, f.len); break;
     case FA_T_CFG_ACTIVATE: faCmdCfgActivate(f.payload, f.len); break;
+    case FA_T_CFG_BEGIN:    faCmdCfgBegin(f.payload, f.len); break;
+    case FA_T_CFG_WRITE:    faCmdCfgWrite(f.payload, f.len); break;
+    case FA_T_CFG_COMMIT:   (void)f; faCmdCfgCommit(); break;
     case FA_T_LINE:         faCmdLine(f.payload, f.len); break;
     default:
       // Belum diimplementasikan pada fase ini, dan itu dikatakan terus terang

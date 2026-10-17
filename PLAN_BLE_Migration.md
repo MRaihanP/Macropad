@@ -1,7 +1,6 @@
 # PLAN: Migrasi Protokol Companion App → Frame Biner (A) + CFG_SIG (B) + Credit Flow Control (C)
 
-Status: **Fase 3 SELESAI** (2026-10-17). Fase 0–3 beres; jalur cepat frame hidup
-dan sudah diverifikasi di perangkat. Fase 4 (bulk upload) berikutnya.
+Status: **Fase 3 & 4 SELESAI** (2026-10-17). Fase 0–4 beres; fast path frame + bulk upload biner hidup dan teruji. Fase 5 (credit flow control) berikutnya.
 Target repo: `E:\05_Finish_projects\macropad-configurator`
 
 ### Status Fase 3 — SELESAI (2026-10-17)
@@ -185,7 +184,7 @@ Verifikasi: `npm test` 40/40 hijau termasuk `frame-codec-test`, `layer-hold-test
 
 ---
 
-## Fase 4 — Bulk upload (bagian A)
+## Fase 4 — Bulk upload (bagian A) — SELESAI (2026-10-17)
 
 Layout payload (LE, tanpa padding):
 
@@ -200,9 +199,33 @@ u32 crc32 (dari seluruh byte sebelumnya)
 Ukuran: 1 encoder ≈ **4,8 KB**, 3 encoder ≈ **7,2 KB** → **32 frame** @237 B.
 Jalur lama: ~600 baris `SET:` ≈ 21 KB keluar **+ 21 KB `[OK]` kembali = ~42 KB**. Reduksi **~20×**, tanpa `[OK]` per tombol.
 
-Firmware: staging buffer (`heap_caps_malloc`, 8 KB) + state `STAGING`. `CFG_COMMIT` verifikasi CRC32 → wajib `CFG_ACTIVATE` sebelum aktif. Disconnect/boot di tengah transfer → staging dibuang (tidak ada config setengah jadi). `SAVE`/`LOAD`/`RESET` tetap.
+### Checklist berkas Fase 4
 
-App: builder payload biner + validasi CRC sebelum `CFG_COMMIT`.
+| No | Berkas | Status | Verifikasi |
+|---|---|---|---|
+| 1 | `firmware/common/frame_proto.h` | [x] Exist | Handler `faCmdCfgBegin/CfgWrite/CfgCommit` + staging buffer |
+| 2 | `src/cfg-builder.js` | [x] Exist (baru) | `encodePreset()` + `encodePresetBody()` + `chunkPlan()` |
+| 3 | `src/frame-transport.js` | [x] Exist (update) | `uploadPresetBinary()` + `presetToFlat()` + `parseCfgResult()` |
+| 4 | `tests/suites/cfg-builder-test.mjs` | [x] Exist (baru) | 26 assertion: header, CRC32, round-trip, chunkPlan, edge case |
+
+### Detail implementasi
+
+**Firmware (`firmware/common/frame_proto.h`):**
+- Staging buffer: `cfgStage[5120]` + state (`cfgStageLen`, `cfgStageSlot`, `cfgStageActive`)
+- `faCmdCfgBegin(payload, len)`: payload = slotId(u8). Reset staging, simpan slot target.
+- `faCmdCfgWrite(payload, len)`: append ke staging. Jika overflow → `ERR_STAGING_FULL`.
+- `faCmdCfgCommit()`: parse binary field-per-field → `MacroConfig`, verify CRC32 → copy ke `slotCfg[slotId]`, return `FA_T_CFG_RESULT` (code, sig, slot). Layout encoder per-knob (CW, CCW, BTN berurutan) agar konsisten dengan `cfgSig()`.
+
+**App (`src/cfg-builder.js`):**
+- `encodePresetBody(flat, dims)` — encode header + layer data (tanpa CRC32)
+- `encodePreset(flat, dims)` — encodePresetBody + 4 byte CRC32 (LE) di akhir
+- `chunkPlan(payloadLen, maxPayload)` — hitung berapa frame CFG_WRITE dibutuhkan
+- Layout persis sama dengan firmware parser: per-knob encoder grouping
+
+**App (`src/frame-transport.js`):**
+- `presetToFlat(preset, geom)` — transform preset app → bentuk datar (sama dengan `presetSig()`)
+- `uploadPresetBinary(preset, geom, slot, onProgress)` — flow: `CFG_BEGIN` → chunked `CFG_WRITE` → `CFG_COMMIT` → verify `CFG_RESULT`
+- `parseCfgResult(payload)` — parse 6 byte response: code, sig, slot
 
 ---
 
@@ -231,6 +254,14 @@ Hapus `buildPresetLines`, `slotTable`, watchdog `DUMP_STUCK_MS`, pathway `SET:` 
 
 ## 3. Transport loopback + fault injection (L1–L3)
 `tests/virtual-device.mjs` — perangkat BLE simulasi yang menjalankan `frame_asm` (bukan mock asal balas). [x] Exist, 16 self-test assertion hijau.
+
+**`tests/suites/cfg-builder-test.mjs`** — [x] Exist (baru, Fase 4). 26 assertion:
+- Header encode (version, layerCount)
+- CRC32 verification (re-compute & compare)
+- Round-trip decode (semua field cocok)
+- Encoder per-knob grouping (CW, CCW, BTN berurutan)
+- `chunkPlan` untuk berbagai ukuran payload
+- Edge case: nilai kosong, nilai melebihi VALUE_LEN (dipotong)
 
 Fault injection yang tersedia sekarang:
 
