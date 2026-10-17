@@ -28,7 +28,7 @@ import {
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
-  resetAdaptiveRuntimeState, confirmLeavePresetEditor,
+  resetAdaptiveRuntimeState, resetAdaptiveOnConnect, confirmLeavePresetEditor,
 } from "./adaptive.js";
 // Indikator baterai & charger. Angkanya selalu dari firmware lewat EVT:BATT/EVT:CHG.
 import { initBatteryUi, battUI, clearBattery } from "./battery-ui.js";
@@ -166,6 +166,13 @@ setPendingTransportHooks({
   onConnected: () => {
     // deviceWasLost sudah di-reset oleh transport (atau oleh disconnect manual)
     // sebelum hook ini dipanggil - jadi yang perlu dibaca di sini hanya nilainya.
+    //
+    // Reset state adaptif selektif: hanya app-side cache (slotTable,
+    // currentActivePresetId, focusedExeLast) yang mencerminkan RAM device yang
+    // memang hilang tiap (re)connect. frameUsable dan layer terakhir dibiarkan
+    // agar tidak memaksa ulang queryFrameSlots() (yang akan crash pada prototipe
+    // USB karena Tauri serial plugin tidak menerima Uint8Array di sendRaw).
+    resetAdaptiveOnConnect();
     notify(deviceWasLost() ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
     switchPage('home');   // Home selalu tampil saat pertama kali connect
   },

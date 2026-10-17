@@ -558,12 +558,31 @@ async function activatePresetRuntime(preset, exe) {
   // device tidak sempat mengolah perintah switch, dan grid app tidak pernah
   // sempat menampilkan keymap yang benar.
   //
+  // ---- FAST PATH: CFG_SIG + CFG_QUERY + CFG_ACTIVATE ----
+  //
+  // Alurnya: tanya device slot mana yang isinya sudah sama dengan preset ini
+  // (pakai CFG_SIG kanonik yang sama persis dengan firmware). Kalau ada,
+  // cukup SATU frame 8 byte untuk beralih - bukan ratusan baris SET.
+  //
   // Syaratnya device harus sudah mendukung frame. Device baru masuk mode frame
   // setelah menerima SOF 0xA5, jadi deviceSupportsFrame() hanya PETUNJUK -
   // percobaan pertama yang benar-benar membuktikan. Kalau percobaan gagal,
   // jalur teks dipakai dan kegagalan dicatat supaya tidak diulang.
+  //
+  // PENTING (prototipe USB): WHOAMI prototipe kirim proto=line, sehingga
+  // deviceSupportsFrame() salah. Dulu kondisi masuk di sini juga memakai
+  // `frameModeStatus() === null` (untuk memaksa probe per koneksi). Tapi itu
+  // memaksa queryFrameSlots() -> sendFrame() -> sendRaw(Uint8Array), dan
+  // Tauri serial plugin di build ini MENOLAK Uint8Array ("invalid type:
+  // sequence, expected a string"). Akibatnya tiap (re)connect memicu crash
+  // reconnect loop. Karena prototipe tidak pernah mengklaim proto=frame,
+  // cukup pakai deviceSupportsFrame() saja: tidak masuk frame-path kecuali
+  // device benar-benar mengklaimnya. frameUsable=null hanya terjadi pada
+  // sesi yang belum pernah konek — jika sampai di situ berarti device tak pernah
+  // merespon frame sama sekali (atau belum pernah konek), jadi tidak perlu
+  // dipaksa.
   const buktiFrame = deviceSupportsFrame(hooks.getDeviceProfile());
-  if (buktiFrame || frameModeStatus() === null) {
+  if (buktiFrame && frameModeStatus() !== false) {
     const meta = await queryFrameSlots();
     if (meta) {
       const devSlot = findMatchingSlot(sig, meta.slots);
@@ -725,6 +744,37 @@ async function pollFocusedApp() {
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }
+}
+
+// ---- State reset keadaan koneksi ----
+//
+// resetAdaptiveRuntimeState() (milik onDeviceLost) mereset SEMUA termasuk
+// frameUsable -> null. Itu benar saat device benar-benar hilang, tapi SALAH
+// dipakai untuk (re)connect USB manual: frameUsablenull akan memaksa
+// queryFrameSlots() dijalankan kembali di adaptive.js, dan queryFrameSlots
+// memakai sendFrame() -> sendRaw(Uint8Array). Tauri serial plugin di build ini
+// MENOLAK Uint8Array ("invalid type: sequence, expected a string"), jadi tiap
+// (re)connect yang me-reset frameModeMode ke null memicu crash reconnect loop.
+//
+// Di samping itu, frame-mode pada prototipe belum "disambungkan ke app"
+// (lihat komentar di firmware/common/frame_proto.h line 12-14): WHOAMI
+// prototype kirim proto=line, jadi tidak boleh pernah masuk frame-path.
+//
+// resetAdaptiveOnConnect() merupakan reset SELEKTIF: hanya state yang memang
+// hilang dari RAM device (slotTable, currentActivePresetId, dll.) AGAR text
+// path upload penuh dijalankan sekali (cache miss). frameUsable dibiarkan apa
+// adanya supaya tidak memaksa queryFrameSlots yang akan crash, dan tidak
+// memaksa retry frame-path yang prototipe tidak dukung.
+export function resetAdaptiveOnConnect() {
+  lastDeviceLayerEventAt = 0;
+  lastLayerByPreset = new Map();
+  slotTable = Array(APP_SLOTS).fill(null);
+  currentActivePresetId = null;
+  focusedExeLast = null;
+  escapeFrozenForExe = null;
+  pendingFocusSince = 0;
+  autoSwitchBusy = false;
+  updateActivePresetLabel();
 }
 
 export function resetAdaptiveRuntimeState() {
