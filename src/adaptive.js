@@ -22,6 +22,10 @@ import {
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress, handshakePending } from './transport.js';
+import {
+  deviceSupportsFrame, frameModeStatus, resetFrameMode, queryFrameSlots,
+  activateFrameSlot, ensureLineMode, presetSig, findMatchingSlot, sigHex,
+} from './frame-transport.js';
 import { t } from './i18n.js';
 
 // ---- State ----
@@ -78,10 +82,10 @@ let quietOkUntil = 0;
 // baris [OK] yang tidak perlu ditampilkan.
 export function suppressDeviceEcho() { return Date.now() < quietOkUntil; }
 
-// Definisi markBatchSettling ada di upload-state.js - modul itu sengaja
-// dipisah dari adaptive.js supaya backend BLE bisa memakainya tanpa mengimpor
-// modul ini (adaptive -> transport <- BLE transport = siklus import).
-import { markBatchSettling } from './upload-state.js';
+// State upload ada di upload-state.js - modul itu sengaja dipisah dari
+// adaptive.js supaya backend BLE bisa memakainya tanpa mengimpor modul ini
+// (adaptive -> transport <- BLE transport = siklus import).
+import { beginCfgTransfer, endCfgTransfer, noteCfgCommands } from './upload-state.js';
 
 // Dipanggil handleLine untuk notifikasi [LAYER] yang harus menyebut nama preset.
 export function activePresetName() {
@@ -107,6 +111,11 @@ let hooks = {
   // modul ini tidak boleh memanggil fungsi halaman secara langsung, supaya arah
   // ketergantungan tetap satu arah dan tidak muncul siklus import.
   loadLayer: async () => { },
+  // Dipasang main.js dari protocol-parser.js deviceProfile.
+  // Dipakai adaptive.js untuk mengecek apakah device mendukung frame mode
+  // tanpa perlu mengimpor protocol-parser.js langsung (yang akan menutup siklus
+  // import, karena protocol-parser mengimpor adaptive.js).
+  getDeviceProfile: () => null,
 };
 export function initAdaptive(h) { hooks = Object.assign({}, hooks, h); }
 
@@ -500,7 +509,9 @@ async function replayPresetLayers(preset) {
 
 // Versi batch dari hal yang sama: banyak baris dalam sedikit write, karena
 // Set<encoder> untuk 3x3 key x beberapa layer bisa ratusan baris.
-const presetSig = p => JSON.stringify([p.layers, NUM_ENCODERS]);
+//
+// presetSig sekarang diimpor dari frame-transport.js (CRC32 kanonik).
+// Lihat komentar di file tersebut soal perbandingan dengan implementasi C/Rust.
 
 function buildPresetLines(preset, slot) {
   const L = [`SLOT:${slot}:NEW`];
@@ -523,7 +534,9 @@ function buildPresetLines(preset, slot) {
 }
 
 async function activatePresetRuntime(preset, exe) {
-  const sig = presetSig(preset);
+  const dims = { rows: ROWS, cols: COLS, numEncoders: NUM_ENCODERS };
+  const sig = presetSig(preset, dims);
+
   let slot = slotTable.findIndex(s => s && s.id === preset.id);
   const cached = slot >= 0 && slotTable[slot].sig === sig;
   if (slot < 0) {
@@ -532,6 +545,74 @@ async function activatePresetRuntime(preset, exe) {
     slotTable.forEach((s, i) => { const u = s ? s.used : -1; if (u < best) { best = u; slot = i; } });
   }
   quietOkUntil = Date.now() + 500;
+
+  // ---- FAST PATH: CFG_SIG + CFG_QUERY + CFG_ACTIVATE ----
+  //
+  // Alurnya: tanya device slot mana yang isinya sudah sama dengan preset ini
+  // (pakai CFG_SIG kanonik yang sama persis dengan firmware). Kalau ada,
+  // cukup SATU frame 8 byte untuk beralih - bukan ratusan baris SET.
+  //
+  // Ini hemat yang jauh lebih besar daripada kelihatannya: yang dihemat bukan
+  // hanya bandwidth, tapi juga WAKTU. Unggah penuh pada preset besar menulis
+  // ratusan perintah yang device harus proses satu per satu, dan selama itu
+  // device tidak sempat mengolah perintah switch, dan grid app tidak pernah
+  // sempat menampilkan keymap yang benar.
+  //
+  // Syaratnya device harus sudah mendukung frame. Device baru masuk mode frame
+  // setelah menerima SOF 0xA5, jadi deviceSupportsFrame() hanya PETUNJUK -
+  // percobaan pertama yang benar-benar membuktikan. Kalau percobaan gagal,
+  // jalur teks dipakai dan kegagalan dicatat supaya tidak diulang.
+  const buktiFrame = deviceSupportsFrame(hooks.getDeviceProfile());
+  if (buktiFrame || frameModeStatus() === null) {
+    const meta = await queryFrameSlots();
+    if (meta) {
+      const devSlot = findMatchingSlot(sig, meta.slots);
+      if (devSlot >= 0) {
+        const rsp = await activateFrameSlot(devSlot);
+        if (rsp) {
+          // Device sudah pindah slot. Sekarang device masih dalam mode frame,
+          // jadi INFO/DUMPENC berikutnya harus lewat jalur teks - dan perpindahan
+          // itu DIVERIFIKASI, bukan diasumsikan.
+          //
+          // Versi pertama memakai `await sendLine('')` dan langsung melangkah.
+          // Kalau device tidak benar-benar keluar dari mode frame, INFO dan
+          // DUMPENC dibaca device sebagai payload frame rusak: crcErr naik, grid
+          // tidak pernah terisi - gejala "matrix tombol tidak berubah" yang
+          // justru seharusnya diperbaiki oleh fast path ini.
+          if (!await ensureLineMode()) {
+            log(t('adaptive.frameModeStuck'), 'err');
+            // Kembali ke jalur teks sepenuhnya: preset dikirim ulang lewat jalur
+            // yang sudah terbukti bisa jalan, dan grid dibaca ulang dari sana.
+            return await activatePresetRuntimeText(preset, exe, sig, slot, cached);
+          }
+          log(t('adaptive.presetActiveLog', {
+            name: preset.name, exe,
+            cache: t('adaptive.cacheFrame'),
+          }), 'ok');
+          hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
+          currentActivePresetId = preset.id;
+          updateActivePresetLabel();
+          slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
+          await loadActiveLayerDump();
+          return;
+        }
+        log(t('adaptive.frameActivateFail', { name: preset.name }), 'err');
+      } else {
+        log(t('adaptive.frameNoMatch', { sig: sigHex(sig) }), null);
+      }
+    } else {
+      log(t('adaptive.frameQueryFail'), 'err');
+    }
+  }
+  // Tidak ada slot yang cocok, atau percobaan frame gagal: turun ke jalur teks.
+
+  await activatePresetRuntimeText(preset, exe, sig, slot, cached);
+}
+
+// Jalur teks. Dipisah dari activatePresetRuntime supaya ada SATU tempat yang
+// menulis SLOT: dan satu tempat yang mengurus state upload - bukan dua salinan
+// yang bisa mulai berbeda satu sama lain.
+async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
   const lines = cached ? [`SLOT:${slot}:USE`] : buildPresetLines(preset, slot);
   // SLOT:n:USE TIDAK mengirim INFO ke device, dan INFO pun tidak cukup:
   // INFO memicu muat ulang layer dari protocol-parser, tapi pemanggilan itu
@@ -539,26 +620,33 @@ async function activatePresetRuntime(preset, exe) {
   // Akibatnya grid di app tetap menampilkan isi preset LAMA setelah preset
   // berganti - persis gejala "matrix tombol tidak berubah".
   //
-  // Jadi minta dump layer secara eksplisit, terpisah dari batch upload, dan
-  // baru setelah jeda singkat supaya device selesai消化 antrean preset dulu.
+  // Jadi minta dump layer secara eksplisit, terpisah dari batch upload.
   lines.push('INFO', 'DUMPENC');
-  // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di tengah
-  // (kabel dicabut), device punya keymap setengah jadi sementara tabel app
-  // mengira slot itu utuh - berikutnya SLOT:<n>:USE akan mengaktifkan konten rusak.
+
+  // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di
+  // tengah (kabel dicabut), device punya keymap setengah jadi sementara tabel app
+  // mengira slot itu utuh - berikutnya SLOT:<n>:USE akan mengaktifkan isi rusak.
   slotTable[slot] = null;
-  await sendBatch(lines);
-  // Jawaban device masih keluar setelah perintah terakhir terkirim. Jeda ini
-  // yang membuat watchdog dump tahu bahwa "belum ada DUMP_END" itu wajar,
-  // bukan tanda frame hilang.
-  markBatchSettling(4000);
+
+  // Transfer ditandai SEBELUM perintah dikirim, dan ditandai selesai di finally.
+  // Menandainya setelah sendBatch() akan meninggalkan jendela waktu di mana
+  // device sudah menjalankan ratusan SET sementara app masih menganggapnya idle.
+  beginCfgTransfer(lines.length);
+  try {
+    await sendBatch(lines);
+    noteCfgCommands(lines.length);
+  } finally {
+    endCfgTransfer();
+  }
+
   slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
   currentActivePresetId = preset.id;
   updateActivePresetLabel();
   log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
   hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
-  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut
-  // berubah saat preset berganti - tanpa itu, app menampilkan keymap preset
-  // sebelumnya sampai user menekan Refresh secara manual.
+  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut berubah
+  // saat preset berganti - tanpa itu, app menampilkan keymap preset sebelumnya
+  // sampai user menekan Refresh secara manual.
   await loadActiveLayerDump();
 }
 
@@ -617,8 +705,19 @@ async function pollFocusedApp() {
         await activatePresetRuntime(matched, exe);
       } else {
         quietOkUntil = Date.now() + 500;
-        await sendBatch(['CONTEXT:DEFAULT', 'INFO', 'DUMPENC']);
-        markBatchSettling(4000);
+        const lines = ['CONTEXT:DEFAULT', 'INFO', 'DUMPENC'];
+        // Pola yang sama seperti activatePresetRuntimeText: transfer ditandai
+        // sebelum dikirim dan ditutup di finally. Jendela 4000 ms yang lama memakai
+        // konstanta tetap, jadi tiga perintah ini pun menahan watchdog dump
+        // selama 4 detik - hampir 4 detik sia-sia untuk hal yang selesai dalam
+        // hitungan milidetik.
+        beginCfgTransfer(lines.length);
+        try {
+          await sendBatch(lines);
+          noteCfgCommands(lines.length);
+        } finally {
+          endCfgTransfer();
+        }
         currentActivePresetId = null;
         updateActivePresetLabel();
         log(t('adaptive.backDefaultLog'), null);
@@ -636,6 +735,11 @@ export function resetAdaptiveRuntimeState() {
   lastLayerByPreset = new Map();
   slotTable = Array(APP_SLOTS).fill(null);
   currentActivePresetId = null; focusedExeLast = null; escapeFrozenForExe = null; pendingFocusSince = 0;
+  // Keputusan "format frame dipakai atau tidak" juga milik SESI, bukan milik
+  // aplikasi. Kalau tidak dihapus, device yang gagal menjawab frame sekali pun
+  // akan dicatat "tidak mendukung frame" selamanya - termasuk device berikutnya
+  // yang mungkin device yang sama dan sekarang sehat.
+  resetFrameMode();
   updateActivePresetLabel();
 }
 

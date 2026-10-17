@@ -51,6 +51,7 @@ export function setPendingTransportHooks(h) { pendingHooks = h; }
 export function initTransport(h) { backend.initTransport(h); }
 export function sendLine(str) { return backend.sendLine(str); }
 export function sendBatch(lines) { return backend.sendBatch(lines); }
+export function sendRaw(data) { return backend.sendRaw(data); }
 export function connect(arg) { return backend.connect(arg); }
 export function disconnect(manual) { return backend.disconnect(manual); }
 export function autoDetect() { return backend.autoDetect(); }
@@ -99,19 +100,28 @@ export function initActiveBackend() { backend.initTransport(pendingHooks); }
 // Ganti backend runtime. Dipanggil dari UI pemilih transport; setelah hook
 // diinstal ulang, modul lain yang mengimpor dari facade ini otomatis ikut
 // memakai backend baru tanpa perlu diimpor ulang.
+//
+// Catatan soal "negosiasi": yang dinegosiasi di sini HANYA backend fisik
+// (usb atau ble), dan itu tetap pilihan user lewat pemilih - bukan tebakan.
+// App tidak pernah menebak medianya.
+//
+// Yang dinegosiasi OTOMATIS ada di lapis lain: format frame. Apakah device
+// mendukung frame biner ditentukan lewat percobaan nyata, bukan lewat membaca
+// nomor versi firmware. Alasannya, cara lain rapuh - perangkat yang sama bisa
+// punya build berbeda, dan nomor versi tidak menjamin apa pun tentang kemampuan
+// yang diaktifkan.
+//
+// setTransportBackend dengan id yang tidak dikenal tidak mengubah apa pun dan
+// mengembalikan backendId yang sekarang, supaya keadaan internal dan yang
+// tampil di UI tidak berbeda.
 export async function setTransportBackend(id) {
   if (id === backendId) return backendId;
+  if (id !== 'usb' && id !== 'ble') return backendId;
   // Putuskan backend lama DULUAN supaya hook onDisconnected sempat jalan: badge
   // profil dan meter baterai harus ikut kosong, kalau tidak user mengira device
   // lama masih hidup setelah beralih ke backend lain.
   await backend.disconnect(true);
-  if (id === 'usb') {
-    backend = serialBackend;
-  } else if (id === 'ble') {
-    backend = await import('./ble-transport.js');
-  } else {
-    return backendId;
-  }
+  backend = id === 'usb' ? serialBackend : await import('./ble-transport.js');
   backendId = id;
   backend.initTransport(pendingHooks);
   return backendId;

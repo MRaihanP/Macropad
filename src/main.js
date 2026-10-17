@@ -113,6 +113,7 @@ initAdaptive({
   // berubah. Tanpa ini grid tetap menampilkan keymap preset sebelumnya -
   // preset sudah aktif di device, tapi layarnya belum.
   loadLayer,
+  getDeviceProfile: () => deviceProfile,
 });
 // Indikator baterai butuh notify() untuk peringatan ambang (batt-low / batt-crit).
 initBatteryUi(notify);
@@ -156,7 +157,7 @@ initProtocolParser({
 // Backend transport (USB atau BLE) tidak tahu apa pun soal isi config, layer,
 // atau preset, dan juga tidak memanggil fungsi main.js secara langsung. Semua
 // sisi aplikasi disuntikkan di sini - titik pertemuan tunggal antara transport
-// dan app. Hook disimpan dulu di facade supaya backend yang diganti运行时
+// dan app. Hook disimpan dulu di facade supaya backend yang diganti
 // (mis. user pilih BLE) juga menerimanya, bukan cuma backend awal.
 setPendingTransportHooks({
   // Setiap baris dari device berakhir di protocol-parser.js. Transport hanya

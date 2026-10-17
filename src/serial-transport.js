@@ -18,6 +18,7 @@
 import { SerialPort } from "tauri-plugin-serialplugin";
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
+import { feedFrameBytes, resetFrameRx } from './frame-dispatch.js';
 
 const LAST_PORT_KEY = 'macropad.lastPort';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -71,6 +72,10 @@ export function resetParserState() {
   dumpInProgress = false;
   dumpEncInProgress = false;
   namesInProgress = false;
+  // Decoder frame ikut dibersihkan. Kalau tidak, setengah frame dari sesi lama
+  // akan menempel pada byte pertama device berikutnya, dan perakit bisa
+  // menyelesaikan frame yang tidak pernah benar-benar dikirim.
+  resetFrameRx();
 }
 export function setDumpInProgress(v) { dumpInProgress = v; }
 export function setDumpEncInProgress(v) { dumpEncInProgress = v; }
@@ -90,10 +95,23 @@ function releasePortListener() {
 }
 
 // ---- Pengiriman ----
-async function writeRaw(str) {
-  try { await port.write(str); }
-  catch (e) { log(t('transport.sendError', { err: e }), 'err'); await handleDeviceLost(); }
+export async function sendRaw(data) {
+  if (!port) return false;
+  try {
+    if (typeof data === 'string') await port.write(data);
+    else await port.write(new Uint8Array(data));
+    return true;
+  } catch (e) {
+    log(t('transport.sendError', { err: e }), 'err');
+    await handleDeviceLost();
+    return false;
+  }
 }
+
+// Alias lama: writeRaw() diganti jadi sendRaw() sebagai bagian dari kontrak
+// facade transport.js. Alias ini tetap ada supaya no-lost-functions-test
+// tidak melaporkan regresi saat mengekstraksi transport.
+export const writeRaw = sendRaw;
 
 export async function sendLine(str) {
   if (!port) return;
@@ -110,15 +128,32 @@ export async function sendBatch(lines) {
   if (!port) return;
   let chunk = '';
   for (const ln of lines) {
-    if (chunk.length + ln.length + 1 > 900) { await writeRaw(chunk); chunk = ''; }
+    if (chunk.length + ln.length + 1 > 900) { await sendRaw(chunk); chunk = ''; }
     chunk += ln + '\n';
   }
-  if (chunk) await writeRaw(chunk);
+  if (chunk) await sendRaw(chunk);
 }
 
 // ---- Penerimaan ----
 export function handleIncomingChunk(data) {
-  lineBuffer += data;
+  // Byte masuk dialirkan ke DUA jalur sekaligus, bukan salah satu.
+  //
+  // Versi pertama memakai model "ganti": kalau ada yang sedang menunggu jawaban
+  // frame, parser baris dilewati seluruhnya. Itu menghapus event real-time yang
+  // tetap keluar sebagai teks di mode frame - buktinya dari pengujian di
+  // perangkat, device mengirim EVT:LAYER:0 sebagai teks tepat setelah
+  // CFG_ACTIVATE. Akibatnya user menekan knob di device dan app tidak bereaksi.
+  //
+  // Decoder frame hanya bereaksi pada SOF 0xA5, jadi teks ASCII tidak
+  // mempengaruhinya. Beberapa byte UTF-8 bisa memicu percobaan SOF yang gagal,
+  // tapi itu cuma menambah satu counter err_ver - frame utuh tidak rusak,
+  // dan firmware punya sifat yang sama.
+  const bytes = typeof data === 'string'
+    ? new TextEncoder().encode(data)
+    : (data instanceof Uint8Array ? data : new Uint8Array(data));
+  feedFrameBytes(bytes);
+
+  lineBuffer += new TextDecoder().decode(bytes);
   // Kalau tidak ada newline sama sekali, buffer tumbuh tanpa batas dan handleLine
   // tidak pernah dipanggil sehingga tidak ada yang bisa pulih. Buang sisa dan reset
   // parser, lalu lanjut dari newline terakhir agar koneksi berikutnya tetap sinkron.

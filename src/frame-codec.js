@@ -30,6 +30,21 @@ export const T_CFG_ACTIVATE = 0x14;
 export const T_EVT = 0x20;
 export const T_ERR = 0x7f;
 
+// Bit penanda jawaban. Cermin FA_RESP_BIT di firmware/common/frame.h.
+//
+// Tipe jawaban DITURUNKAN dari tipe request, bukan ditulis sebagai angka baru.
+// Versi pertama app menulis T_CFG_META = 0x93 dan T_CFG_ACT_RSP = 0x94 sebagai
+// literal. Angka itu kebetulan benar saat itu, tapi tidak ada yang mengikatnya ke
+// FA_RESP_BIT - kalau bit itu berubah di firmware, app diam-diam menunggu jawaban
+// yang tidak akan pernah datang, dan gejalanya timeout biasa yang sama dengan
+// device yang sedang sibuk.
+export const RESP_BIT = 0x80;
+
+export const T_HELLO_RSP = T_HELLO | RESP_BIT;          // 0x81
+export const T_CFG_RESULT = T_CFG_COMMIT | RESP_BIT;     // 0x92
+export const T_CFG_META = T_CFG_QUERY | RESP_BIT;       // 0x93
+export const T_CFG_ACT_RSP = T_CFG_ACTIVATE | RESP_BIT; // 0x94
+
 // Kode kesalahan. Hanya tiga yang dikeluarkan perakit; sisanya dicadangkan.
 export const ERR_NONE = 0x00;
 export const ERR_BAD_VER = 0x01;

@@ -281,6 +281,11 @@ export const en = {
 
 'adaptive.presetActiveLog': '[ADAPT] Active preset: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
+'adaptive.frameQueryFail': '[ADAPT] CFG_QUERY failed (timeout/no response)',
+'adaptive.frameActivateFail': '[ADAPT] CFG_ACTIVATE failed for preset "{name}"',
+'adaptive.frameNoMatch': '[ADAPT] No device slot with sig {sig} - re-uploading over the text path',
+'adaptive.frameModeStuck': '[ADAPT] Device did not leave frame mode (no PONG) - falling back to the text path',
+'adaptive.cacheFrame': ' · frame',
 'adaptive.presetNotif': 'Preset: {name}',
 'parser.layerNotif': '{from} · {to}',
 

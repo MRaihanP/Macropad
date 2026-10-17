@@ -278,6 +278,11 @@ export const id = {
 
 'adaptive.presetActiveLog': '[ADAPT] Preset aktif: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
+'adaptive.frameQueryFail': '[ADAPT] CFG_QUERY gagal (timeout/brak response)',
+'adaptive.frameActivateFail': '[ADAPT] CFG_ACTIVATE gagal untuk preset "{name}"',
+'adaptive.frameNoMatch': '[ADAPT] Tidak ada slot di device dengan sig {sig} - unggah ulang lewat jalur teks',
+'adaptive.frameModeStuck': '[ADAPT] Device tidak keluar dari mode frame (PONG tidak datang) - fallback ke jalur teks',
+'adaptive.cacheFrame': ' · frame',
 'adaptive.presetNotif': 'Preset: {name}',
 'parser.layerNotif': '{from} · {to}',
 

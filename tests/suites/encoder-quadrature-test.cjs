@@ -64,7 +64,7 @@ console.log('\n--- 2. 5 detent searah = 5 langkah ---');
 }
 
 console.log('\n--- 3. Pantulan (bounce) TIDAK boleh menghasilkan langkah salah ---');
-// bouncing khas: A berayun bolak-balik sebelum B跟着 berubah, dan sebaliknya.
+// bouncing khas: A berayun bolak-balik sebelum B berubah, dan sebaliknya.
 const BOUNCE_PATTERNS = [
   [[0,0],[1,0],[0,0],[1,0],[1,0],[1,1],[1,1],[0,1],[0,0]],   // A bouncing lalu maju
   [[0,0],[0,1],[0,0],[0,1],[1,1],[1,1],[1,0],[1,0],[0,0]],   // B bouncing lalu mundur
@@ -75,7 +75,7 @@ for (const seq of BOUNCE_PATTERNS) {
   const e = makeEnc();
   seq.slice(1).forEach(([a, b]) => edge(e, a, b));
   total++;
-  // arahnya mengikuti最后一个 transisi valid; yang penting tidak ada langkah CAMPUR.
+  // arahnya mengikuti transisi valid; yang penting tidak ada langkah CAMPUR.
   const mixed = e.steps.some(s => s === 'CW') && e.steps.some(s => s === 'CCW');
   if (mixed) wrong++;
   console.log(`    pola bouncing -> ${JSON.stringify(e.steps)}`);

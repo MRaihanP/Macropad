@@ -145,7 +145,7 @@ if (loopHookBody) {
 
 console.log('\n--- F. LED tidak tertimpa init peripheral ---');
 // switchLedAttach() menyalakan pin LED. Kalau dipanggil sebelum
-// hwPeripheralsInit(),后者 menulis LOW dan membatalkan inisialisasi.
+// hwPeripheralsInit(), TIDAK menulis LOW dan membatalkan inisialisasi.
 const setupOrder = core.indexOf('hwPeripheralsInit();');
 const hookOrder = core.indexOf('PROFILE_HOOK_SETUP();');
 ok(setupOrder >= 0 && hookOrder > setupOrder,

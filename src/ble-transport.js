@@ -29,6 +29,7 @@ import { el, log } from './dom.js';
 import { t } from './i18n.js';
 import { batchUploadInFlight, resetBatchUploadState, registerOnBatchStart } from './upload-state.js';
 import { parseKV, renderDiag, rttSummary, diagHasFailure } from './diag-report.js';
+import { feedFrameBytes, resetFrameRx, frameRxStats } from './frame-dispatch.js';
 
 const LAST_DEVICE_KEY = 'macropad.lastBleDevice';
 const LINE_BUFFER_MAX = 64 * 1024;
@@ -214,6 +215,13 @@ export function resetParserState() {
   // flag di sana akan menghapus bukti bahwa device sedang sibuk, sehingga
   // watchdog terus MENYALAKAN dirinya sendiri. Flag batch hanya direset di
   // disconnect(), di mana memang tidak ada lagi yang sedang diunggah.
+  //
+  // State frame RX TIDAK dikecualikan. Berbeda dengan flag batch di atas, state
+  // frame tidak pernah jadi bukti apa pun - kalau perakit masih memegang
+  // setengah frame dari sesi lama, frame itu tidak akan pernah selesai dengan
+  // benar, dan satu frame utuh bisa hilang karena perakit menghitung byte yang
+  // bukan bagiannya.
+  resetFrameRx();
 }
 export function setDumpInProgress(v) { dumpInProgress = v; }
 export function setDumpEncInProgress(v) { dumpEncInProgress = v; }
@@ -360,13 +368,21 @@ export function handleIncomingChunk(data) {
 }
 
 // ---- Pengiriman ----
-async function writeRaw(str) {
-  if (!connected) return;
+export async function sendRaw(data) {
+  if (!connected) return false;
   try {
-    await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str)) });
+    // Dukung baik string maupun binary (Uint8Array/array of bytes).
+    // Frame biner v2 mengirim Uint8Array; perintah teks lama mengirim string.
+    if (typeof data === 'string') {
+      await invoke('ble_write', { data: Array.from(new TextEncoder().encode(data)) });
+    } else {
+      await invoke('ble_write', { data: Array.from(data) });
+    }
+    return true;
   } catch (e) {
     log(t('ble.writeError', { err: e }), 'err');
     await handleDeviceLost();
+    return false;
   }
 }
 
@@ -388,7 +404,7 @@ export async function sendLine(str) {
 export async function sendBatch(lines) {
   if (!connected) return;
   let chunk = '';
-  const flush = async () => { if (chunk) { await writeRaw(chunk); chunk = ''; } };
+  const flush = async () => { if (chunk) { await sendRaw(chunk); chunk = ''; } };
   for (const ln of lines) {
     if (chunk.length + ln.length + 1 > WRITE_CHUNK_MAX) await flush();
     chunk += ln + '\n';
@@ -734,7 +750,18 @@ export async function readIncoming() {
       // penanda ini untuk membedakan "write gagal" dari "write sukses tapi
       // device diam" - dua masalah yang sama sekali punya tindakan berbeda.
       seenResponseAt = Date.now();
-      handleIncomingChunk(new TextDecoder().decode(Uint8Array.from(chunk)));
+      // Byte mentah dipakai untuk frame RX, dan byte yang sama didekode ulang
+      // untuk parser baris.
+      //
+      // PENTING: keduanya harus dapat byte yang sama. Versi pertama memberi
+      // raw bytes ke frame handler lalu langsung melompat ke frameHandler(bytes)
+      // dengan DALAM if - parser baris dilewati, dan event real-time yang tetap
+      // keluar sebagai teks di mode frame ikut hilang. Device terbukti mengirim
+      // EVT:LAYER:0 sebagai teks tepat setelah CFG_ACTIVATE, jadi itu bukan
+      // kasus yang boleh diabaikan.
+      const bytes = Uint8Array.from(chunk);
+      feedFrameBytes(bytes);
+      handleIncomingChunk(new TextDecoder().decode(bytes));
       got += chunk.length;
     }
   } catch (e) {

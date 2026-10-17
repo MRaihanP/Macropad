@@ -61,7 +61,9 @@ registerHooks({
 });
 
 const BLE = await import(`${SRC_URL}/ble-transport.js`);
-const { markBatchSettling, batchUploadInFlight } = await import(`${SRC_URL}/upload-state.js`);
+const { markBatchSettling: _legacy, batchUploadInFlight, beginCfgTransfer,
+        endCfgTransfer, noteCfgCommands, cfgAnswersSettled,
+        resetBatchUploadState } = await import(`${SRC_URL}/upload-state.js`);
 const F = await import(`${SRC_URL}/transport.js`);
 const I = globalThis.__Invoke;
 
@@ -335,7 +337,7 @@ const cBody = fs.readFileSync(`${SRC}/ble-transport.js`, 'utf8')
   .match(/export async function connect[\s\S]*?\n\}/);
 ok(cBody && /setConnected\(true\)/.test(cBody[0]),
   'connect() memanggil setConnected(true) - UI muncul setelah tersambung');
-// onchange harus赋值 nilai awal SEBELUM dipasang, kalau tidak scan dobel.
+// onchange harus membaca nilai awal SEBELUM dipasang, kalau tidak scan
 ok(switchBody && switchBody[1].indexOf('scanAndUpdateSelect') > -1, 'onchange tetap scan');
 const mainCode = fs.readFileSync(`${SRC}/main.js`, 'utf8');
 const valueAt = mainCode.indexOf('transportSel.value = transportId()');
@@ -520,17 +522,42 @@ console.log('\n--- 9h. Watchdog tahan saat batch upload preset sedang jalan ---'
 const uploadSrc = fs.readFileSync(`${SRC}/upload-state.js`, 'utf8');
 ok(/export function batchUploadInFlight/.test(uploadSrc),
   'upload-state.js mengekspor batchUploadInFlight()');
-ok(/export function markBatchSettling/.test(uploadSrc),
-  'upload-state.js mengekspor markBatchSettling()');
+// markBatchSettling(4000) dihapus di Fase 3: jendela 4 detik adalah tebakan
+// waktu yang berbohong di dua arah (batch kecil tertahan 3,95 detik;
+// batch besar lebih lambat dari 4 detik lalu watchdog salah melapor).
+// Yang menggantikannya adalah flag eksplisit + jendela yang diturunkan dari
+// jumlah perintah. Assertion di bawah menjaga agar penggantinya tidak
+// hilang - kalau helper ini dihapus, watchdog kembali tidak tahu device sibuk.
+ok(/export function beginCfgTransfer/.test(uploadSrc),
+  'upload-state.js mengekspor beginCfgTransfer()');
+ok(/export function endCfgTransfer/.test(uploadSrc),
+  'upload-state.js mengekspor endCfgTransfer()');
+ok(/export function noteCfgCommands/.test(uploadSrc),
+  'upload-state.js mengekspor noteCfgCommands()');
+ok(!/markBatchSettling/.test(uploadSrc.replace(/^\s*\/\/.*$/gm, '')),
+  'upload-state.js tidak lagi punya markBatchSettling()');
+// Jendela jawaban harus DIPERHITUNGAN dari pekerjaan, bukan konstanta. Kalau
+// WINDOW_BASE_MS sendirian yang menentukan, ini kembali jadi tebakan.
+ok(/pendingCommands\s*\/\s*CMD_PER_MS/.test(uploadSrc),
+  'jendela jawaban diturunkan dari jumlah perintah (bukan konstanta)');
 // PENTING: tidak boleh menaruh flag ini di adaptive.js. adaptive mengimpor
 // transport, dan backend BLE mengimpor adaptive = siklus import runtime.
 ok(/from '\.\/upload-state\.js'/.test(bleSrc2),
   'backend BLE membaca flag dari upload-state.js, bukan adaptive.js');
 ok(!/from '\.\/adaptive\.js'/.test(bleSrc2),
   'backend BLE TIDAK mengimpor adaptive.js (hindari siklus import)');
-ok(/import \{ markBatchSettling \} from '\.\/upload-state\.js'/.test(
-    fs.readFileSync(`${SRC}/adaptive.js`, 'utf8')),
-  'adaptive.js menandai batch lewat upload-state.js');
+ok(/beginCfgTransfer/.test(fs.readFileSync(`${SRC}/adaptive.js`, 'utf8')),
+  'adaptive.js menandai transfer lewat upload-state.js');
+// Sisa tebakan waktu harus benar-benar hilang dari pemanggil, bukan hanya dari
+// upload-state.js. Selama markBatchSettling(4000) masih dipanggil di adaptive.js,
+// semua perbaikan di modul itu tidak akan pernah terpakai.
+//
+// Yang dicek adalah PANGGILAN, bukan kata: komentar yang menjelaskan kenapa
+// helper itu dihapus tetap boleh menyebut namanya. Kalau yang dicek kata,
+// menambah satu kalimat penjelasan akan menggagalkan test tanpa alasan.
+const adaptiveBatchSrc = fs.readFileSync(`${SRC}/adaptive.js`, 'utf8');
+ok(!/markBatchSettling\s*\(/.test(adaptiveBatchSrc),
+  'adaptive.js tidak lagi menebak 4000 ms lewat markBatchSettling');
 ok(/batchUploadInFlight\(\)\) continue;/.test(bleSrc2),
   'watchdog DITAHAN saat batch upload sedang jalan');
 // resetParserState() SENGAJA tidak mereset flag batch. Watchdog memanggilnya
@@ -572,7 +599,12 @@ BLE.initTransport({ onLine() { }, onDumpStuck() { stuckWarned = true; },
 // memang harus terdeteksi). Reset di sini, kalau tidak assertion di bawah
 // selalu gagal bukan karena bug, tapi karena sisa section sebelumnya.
 stuckWarned = false;
-markBatchSettling(6000);
+// 120 perintah lewat CMD_PER_MS 0,05 -> jendela 150 + 2400 ms, jadi masih
+// terbuka setelah 2400 ms tunggu di bawah. Dipakai BEGIN + NOTE supaya jalur
+// yang diuji adalah jalur yang dipakai adaptive.js sungguhan: flag aktif
+// selama transfer, lalu jendela jawaban yang bertahan setelah transfer ditutup.
+beginCfgTransfer(120);
+noteCfgCommands(120);
 ok(batchUploadInFlight(), 'flag batch aktif sebelum test');
 BLE.setDumpInProgress(true);
 I.readQueue = [['0,0,0,1,1', '0,0,1,1,2']];
@@ -582,9 +614,14 @@ await new Promise(r => setTimeout(r, 2400));
 ok(batchUploadInFlight(), 'flag batch masih aktif selama tunggu (dasar test)');
 eq(stuckWarned, false, 'batch upload aktif -> watchdog tidak salah melapor');
 
-// Setelah jeda settling habis, deteksi harus hidup kembali.
+// Setelah transfer ditutup DAN jendela jawaban habis, deteksi harus hidup lagi.
+// Dua langkah dipisah karena itu memang dua kondisi berbeda: endCfgTransfer()
+// hanya menutup flag, jendela jawaban masih berjalan karena device masih punya
+// antrean. Menghapus keduanya dalam satu aksi akan membuat selisihnya hilang dari
+// pandangan test.
 BLE.setDumpInProgress(false);
-markBatchSettling(0);
+endCfgTransfer();
+cfgAnswersSettled();
 BLE.setDumpInProgress(true);
 I.readQueue = [['0,0,0,1,1']];
 await BLE.readIncoming();

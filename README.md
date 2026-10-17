@@ -185,6 +185,58 @@ Perhitungannya diuji silang di C dan JS dari berkas vektor yang sama
 kedua sisi menghitung sidik jari yang berbeda, app akan mengunggah ulang preset
 yang sebenarnya sudah identik - setiap kali.
 
+**Encoder dihitung dari layer terakhir, bukan layer pertama.** Ini bukan pilihan
+gaya. `SETENC` di firmware menulis ke `activeCfg->encCW[encIdx]` yang global,
+tanpa indeks layer sama sekali. Unggah preset mengirim `SETENC` untuk setiap layer
+berurutan, jadi lapisan terakhir menimpa semuanya dan device menyimpan satu set
+binding saja. `cfgSig()` juga hanya membaca `c.encCW[0]` satu kali, di luar loop
+layer. Kalau app menghitung sidik jari dari layer pertama, kedua angka itu tidak
+akan pernah sama - dan preset yang sebenarnya sudah ada akan selalu diunggah
+ulang, persis cacat yang seharusnya dihilangkan oleh CFG_SIG. Test
+`tests/suites/frame-transport-test.mjs` mengunci perilaku ini ke baris `SETENC`
+yang sesungguhnya di firmware.
+
+### Lapisan frame di sisi app (Fase 3)
+
+App sudah memakai frame untuk jalur cepat preset switch. Berkasnya:
+
+| Berkas | Isi |
+|---|---|
+| `src/frame-codec.js` | encoder/decoder biner; tipe jawaban diturunkan dari `RESP_BIT`, bukan literal |
+| `src/cfg-layout.js` | konstanta layout yang **harus** sama dengan `firmware/common/limits.h` |
+| `src/frame-dispatch.js` | decoder persisten + antrean penunggu per tipe frame |
+| `src/frame-transport.js` | percakapan frame: `sendFrame`, `queryFrameSlots`, `activateFrameSlot`, `ensureLineMode` |
+| `src/pong-probe.js` | registry probe PONG (satu slot) |
+
+**Byte masuk dialirkan ke dua jalur sekaligus** - perakit frame dan parser baris.
+Model "ganti" (alihkan seluruh byte ke frame decoder begitu ada yang menunggu)
+salah: device tetap mengirim event **teks** di mode frame, dan `EVT:LAYER:0` yang
+keluar tepat setelah `CFG_ACTIVATE` ikut hilang kalau parser baris dimatikan.
+Decoder frame hanya bereaksi pada `0xA5`, jadi teks tidak merusaknya.
+
+**Kembali ke jalur teks diverifikasi, bukan diasumsikan.** Setelah frame
+selesai, app mengirim newline lalu **`PING` dan menunggu `PONG`**. Versi pertama
+mengirim baris kosong lalu langsung melangkah; kalau device ternyata tidak keluar
+dari mode frame, `INFO` dan `DUMPENC` dibaca sebagai payload frame rusak,
+`crcErr` naik, dan grid tidak pernah terisi.
+
+**Format frame dinegosiasi, bukan dibaca dari nomor versi.** `proto=frame` pada
+jawaban `WHOAMI` hanya PETUNJUK: device baru masuk mode frame setelah menerima
+SOF `0xA5`, jadi `WHOAMI` pertama hampir selalu melaporkan `proto=line` bahkan
+pada device yang mendukung frame. Kalau jawaban itu dipakai sebagai gerbang,
+fast path tidak akan pernah terpakai. App mencoba frame; kalau gagal, jalur teks
+dipakai dan kegagalan dicatat per sesi supaya tidak diulang.
+
+**`batchUploadInFlight()` bukan lagi tebakan waktu.** `markBatchSettling(4000)`
+dihapus: jendela tetap 4 detik itu menahan watchdog dump hampir 4 detik sia-sia
+untuk batch kecil, dan habis terlalu cepat untuk batch besar pada link lambat -
+dua-duanya berbohong. Penggantinya flag eksplisit (`beginCfgTransfer` /
+`endCfgTransfer`) plus jendela yang diturunkan dari jumlah perintah nyata.
+
+Yang **belum** ada: `CFG_BEGIN`/`CFG_WRITE`/`CFG_COMMIT` (bulk upload, Fase 4)
+dan credit flow control (Fase 5). Minta keduanya sekarang dijawab `ERR`
+`UNSUPPORTED`.
+
 ### Baris dari device
 
 | Awalan | Arti |

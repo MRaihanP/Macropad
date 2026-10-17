@@ -38,6 +38,7 @@ import {
   setDumpInProgress, setDumpEncInProgress, setNamesInProgress, eventsSuppressed,
 } from './transport.js';
 import { handleRgbLine } from './rgb-page.js';
+import { reportPong } from './pong-probe.js';
 import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from './battery-ui.js';
 import {
   suppressDeviceEcho, activePresetName, activePresetLayers,
@@ -144,7 +145,7 @@ export function handleLine(line) {
   // dump" lalu ditolak - jadi notifikasi overlay hilang tepat saat user
   // menekan tombol, dan meter baterai berhenti bergerak.
   //
-  // Dua alasan ini harus演出 di depan semua branch frame:
+  // Dua alasan ini harus diperiksa di depan semua branch frame:
   //   1. Kehilangan event - notifikasi tombol tidak pernah muncul.
   //   2. Menajamkan noise - device mengirim EVT:BATT tiap ~1 detik, jadi satu
   //      dump yang panjang bisa menghasilkan ratusan "Invalid DUMP line" yang
@@ -213,7 +214,7 @@ function handleRealtimeLine(line) {
     noteDeviceLayerEvent();
     // Berlaku juga di jalur ini (bukan hanya saat dump): device bisa memindah
     // layer sendiri kapan saja. Kalau dump sedang berjalan, tunda lalu terapkan
-    // setelah selesai - kalau tidak则 currentLayer berubah di tengah dump dan waiter
+    // setelah selesai - kalau tidak, currentLayer berubah di tengah dump dan waiter
     // DUMP_END me-resolve layer yang salah.
     if (dumpInProgress()) {
       pendingLayerAfterDump = n;
@@ -387,9 +388,27 @@ function handleFrameLine(line) {
   if (line.startsWith('WHOAMI:')) {
     const parts = line.split(':');
     el('deviceNameLabel').textContent = parts[1] || 'MacroPad';
+    // WHOAMI:MacroPad:v1:fw=X,rows=Y,cols=Z,encoders=N,proto=line|frame,frame=0xA5
+    // Bagian ketiga dan seterusnya berisi KV pair yang dipisah koma.
+    // Simpan proto dan frame ke deviceProfile supaya frame-transport.js
+    // tahu apakah boleh pakai protoframe biner v2.
+    const kvStr = parts.slice(3).join(':');
+    kvStr.split(',').forEach(p => {
+      const eq = p.indexOf('=');
+      if (eq < 0) return;
+      const k = p.substring(0, eq), v = p.substring(eq + 1);
+      if (k === 'proto' || k === 'frame') deviceProfile[k] = v;
+    });
     return;
   }
-  if (line === 'PONG') return;   // sembunyikan PONG dari log
+  if (line === 'PONG') {
+    // PONG adalah bukti device masih hidup dan masih menjawab SEBAGAI TEKS.
+    // ensureLineMode() memakainya untuk membuktikan device sudah keluar dari mode
+    // frame. Kalau tidak ada probe yang menunggu, reportPong() mengembalikan
+    // false dan baris ini tetap disembunyikan seperti sebelumnya.
+    reportPong();
+    return;
+  }
 
   if (line.startsWith('[ERROR]')) log(line, 'err');
   else if (line.startsWith('[OK]')) log(line, 'ok');
