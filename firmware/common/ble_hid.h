@@ -155,7 +155,7 @@ inline uint16_t bleNusMtu() { return bleAttMtu; }
 
 // Suffix log, biar jelas baris log itu datang dari BLE atau USB.
 static void bleLog(const char* msg) {
-  DBG("[BLE] %s\n", msg);
+  LOGS->printf("[BLE] %s\n", msg);
 }
 
 // 6e400002: app menulis perintah ke sini.
@@ -199,7 +199,7 @@ class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {
 public:
   void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) override {
     do { uint16_t tmp = bleNusSubCount + 1; bleNusSubCount = tmp; } while (0);
-    DBG("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
+    LOGS->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
   }
 };
 
@@ -212,7 +212,7 @@ static BleNusRxCallbacks bleNusRxCb;
 static void bleAdvCheck(bool ok, const char* what) {
   if (ok) return;
   bleAdvOk = false;
-  DBG("[BLE] ADV GAGAL: %s\n", what);
+  LOGS->printf("[BLE] ADV GAGAL: %s\n", what);
 }
 
 static void bleAdvReport() {
@@ -225,7 +225,7 @@ static void bleAdvReport() {
   // 1 byte type + isi nama. Fungsionalitasnya tidak terpengaruh.
   bleScanSize = (uint16_t)(2 + strlen(BLE_HID_DEVICE_NAME));
   int sisa = (int)BLE_HS_ADV_MAX_SZ - (int)bleAdvSize;
-  DBG("[BLE] adv ok: adv=%u/%d (sisa %d) scan=%u/%d%s\n",
+  LOGS->printf("[BLE] adv ok: adv=%u/%d (sisa %d) scan=%u/%d%s\n",
                  (unsigned)bleAdvSize, (int)BLE_HS_ADV_MAX_SZ, sisa,
                  (unsigned)bleScanSize, (int)BLE_HS_ADV_MAX_SZ,
                  bleAdvOk ? "" : " ADA YANG GAGAL");
@@ -317,7 +317,7 @@ static void bleAdvReport() {
 // berlaku. Kehilangan request lebih baik daripada crash.
 static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
   if (server == nullptr) {
-    DBG("[BLE] param: dilewati (server null)\n");
+    LOGS->printf("[BLE] param: dilewati (server null)\n");
     return;
   }
   server->updateConnParams(ci.getConnHandle(),
@@ -325,7 +325,7 @@ static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
                            BLE_CONN_INTERVAL_MAX_MS,
                            BLE_CONN_LATENCY,
                            BLE_SUPERVISION_TIMEOUT_10MS);
-  DBG("[BLE] param diminta: itvl=%u-%ums lat=%d timeout=%ums (PC yang memutuskan)\n",
+  LOGS->printf("[BLE] param diminta: itvl=%u-%ums lat=%d timeout=%ums (PC yang memutuskan)\n",
                (unsigned)BLE_CONN_INTERVAL_MIN_MS,
                (unsigned)BLE_CONN_INTERVAL_MAX_MS,
                (int)BLE_CONN_LATENCY,
@@ -340,7 +340,7 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
     // yang baru connect akan melihat device "tidak menjawab apa-apa".
     bleNusClear();
     PROTO_LINK_RESET();
-    DBG("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
+    LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
     bleHidApplyConnParams(server, ci);
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& ci) override {
@@ -353,7 +353,7 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
   }
   void onAuthenticationComplete(NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
-    DBG("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
+    LOGS->printf("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
                    ci.getConnHandle(), ci.isBonded());
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
@@ -367,7 +367,7 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
     // Sesi protokol (mode frame + baris teks) juga dinormalkan. Lihat
     // PROTO_LINK_RESET di transport.h untuk alasannya.
     PROTO_LINK_RESET();
-    DBG("[BLE] Putus (reason=0x%X)\n", reason);
+    LOGS->printf("[BLE] Putus (reason=0x%X)\n", reason);
   }
 };
 

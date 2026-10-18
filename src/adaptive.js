@@ -19,6 +19,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
   mapping, encConfig, layerNames, layerCount, currentLayer,
+  encConfigCached,
 } from './device-state.js';
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress, handshakePending } from './transport.js';
@@ -466,7 +467,7 @@ export async function openPresetEditor(id) {
 
   await sendLine('LAYER:' + targetLayer);
   await sendLine('INFO');
-  await sendLine('DUMPENC');
+  if (!encConfigCached) await sendLine('DUMPENC');  // hanya 1x per session
 }
 
 export async function exitPresetEditor() {
@@ -477,7 +478,7 @@ export async function exitPresetEditor() {
   hooks.resetEditorState();
   await sendLine('CONTEXT:DEFAULT');
   await sendLine('INFO');
-  await sendLine('DUMPENC');
+  if (!encConfigCached) await sendLine('DUMPENC');  // hanya 1x per session
   hooks.switchPage('adaptive');
   renderPresetList();
 

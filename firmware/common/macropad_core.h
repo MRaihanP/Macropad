@@ -847,7 +847,18 @@ void handleSerialCommand(const String& cmd) {
     return;
   }
 
-  if (cmd == "DUMPENC") { dumpEncoderConfig(); return; }
+  // DUMPENC: hanya kirim sekali per session. Encoder config statis,
+  // tidak berubah kecuali SETENC. App cache setelah handshake pertama.
+  static bool encoderConfigDumped = false;
+  if (cmd == "DUMPENC") {
+    if (!encoderConfigDumped) {
+      dumpEncoderConfig();
+      encoderConfigDumped = true;
+    } else {
+      SERIAL->println("[ERROR] DUMPENC sudah dikirim, gunakan cache");
+    }
+    return;
+  }
 
   if (cmd.startsWith("SETENC:")) {
     // Format: SETENC:<idx>:<CW|CCW|BTN>:<type>:<value>
@@ -874,6 +885,7 @@ void handleSerialCommand(const String& cmd) {
     else { SERIAL->println("[ERROR] Target SETENC harus CW/CCW/BTN"); return; }
 
     SERIAL->printf("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
+    encoderConfigDumped = false;  // reset agi DUMPENC bisa dikirim lagi
     return;
   }
 

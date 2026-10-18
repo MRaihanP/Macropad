@@ -170,7 +170,7 @@ public:
         // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
         // tapi setidaknya caller tahu ada masalah lewat return value < len.
         naikkan(bleNusNotifyFail);
-        DBG("[BLE] notify gagal total setelah %ux retry, %u byte tertinggal\n",
+        LOGS->printf("[BLE] notify gagal total setelah %ux retry, %u byte tertinggal\n",
                      (unsigned)BLE_NOTIFY_MAX_RETRY, (unsigned)(len - sent));
         return sent;  // return byte yang sukses, caller bisa cek return < len
       }

@@ -24,8 +24,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
   ROWS, COLS, NUM_ENCODERS, currentLayer, layerNames, encConfig, encParseIdx,
+  encConfigCached,
   setNumEncoders, applyInfo, applyDumpRow, applyEncRow, applyName,
-  applyLayerEvent, applyEncCount, applyEncIdx,
+  applyLayerEvent, applyEncCount, applyEncIdx, setEncConfigCached,
 } from './device-state.js';
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
@@ -323,7 +324,12 @@ function handleFrameLine(line) {
     if (m && applyEncCount(parseInt(m[1]), log)) el('deviceEncLabel').textContent = String(NUM_ENCODERS);
     return;
   }
-  if (line === 'ENC_END') { setDumpEncInProgress(false); hooks.renderEncoderList(); return; }
+  if (line === 'ENC_END') {
+    setDumpEncInProgress(false);
+    setEncConfigCached(true);  // encoder config sudah dicache
+    hooks.renderEncoderList();
+    return;
+  }
   if (dumpEncInProgress()) {
     if (line.startsWith('IDX:')) { applyEncIdx(parseInt(line.substring(4))); return; }
     const p = line.split(',');

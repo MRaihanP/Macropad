@@ -27,6 +27,7 @@ export let mapping = Array.from({ length: CAP_LAYERS }, () => Array.from({ lengt
 export let layerNames = Array(CAP_LAYERS).fill(null);
 export let encConfig = [{ CW: null, CCW: null, BTN: null }];
 export let encParseIdx = 0;
+export let encConfigCached = false;  // true setelah menerima ENC_BEGIN/END sekali
 
 // ---- Akses untuk pengujian ----
 // Life bindings (export let) bersifat read-only dari luar modul, jadi test butuh
@@ -47,6 +48,7 @@ export function resetForTest() {
   layerNames = Array(CAP_LAYERS).fill(null);
   encConfig = [{ CW: null, CCW: null, BTN: null }];
   encParseIdx = 0;
+  encConfigCached = false;
 }
 
 // ---- Setter ----
@@ -57,6 +59,7 @@ export function setMaxLayers(n) { maxLayers = n; }
 export function setLayerNames(names) { layerNames = names; }
 export function setEncConfig(c) { encConfig = c; }
 export function setEncParseIdx(i) { encParseIdx = i; }
+export function setEncConfigCached(v) { encConfigCached = v; }
 export function setMapping(m) { mapping = m; }
 
 export function setNumEncoders(n) {
