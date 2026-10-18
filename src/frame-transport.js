@@ -35,6 +35,7 @@ import { encodePreset, chunkPlan } from './cfg-builder.js';
 import { waitForFrame } from './frame-dispatch.js';
 import { registerPongProbe, clearPongProbe } from './pong-probe.js';
 import { sendRaw, sendRawNoAck, sendLine, isConnected } from './transport.js';
+import { beginCfgTransfer, endCfgTransfer, noteCfgCommands } from './upload-state.js';
 
 // Kode hasil CFG_ACT_RSP. 0 = sukses; selain itu device menolak.
 // Kode hasil CFG_COMMIT. 0 = sukses; selain itu error names.
@@ -562,11 +563,33 @@ export async function uploadPresetBinary(preset, geom, slot, onProgress) {
     return { ok: false, reason: 'slot tidak valid' };
   }
 
+  // Tandai transfer aktif. Ini penting agar:
+  //  - PING di ble-transport.js diperlangka (batchUploadInFlight() = true)
+  //    sehingga tidak kompetisi dengan CFG_WRITE no-ack writes
+  //  - watchdog dump tidak menyala tengah upload yang sehat
+  //  - drain loop di readIncoming/readLoop mengetahui ini adalah fase bulk
+  // beginCfgTransfer menghitung jendela jawaban dari jumlah frame yang
+  // dikirim, bukan dari konstanta waktu — jadi tidak perlu diperkirakan.
+  const maxChunk = 237;
   const dims = cfgSigDims(geom);
   const flat = presetToFlat(preset, geom);
   const payload = encodePreset(flat, dims);
+  const numFrames = Math.ceil(payload.length / maxChunk);
+  beginCfgTransfer(numFrames);
 
-  const maxChunk = 237; // maxPayload from frame.h, minus overhead
+  try {
+    return await _doUploadPresetBinary(preset, geom, slot, onProgress, payload, maxChunk);
+  } finally {
+    endCfgTransfer();
+  }
+}
+
+/** Implementasi sebenarnya dari uploadPresetBinary, dipisahkan agar try/finally
+ *  di atas dapat memastikan endCfgTransfer() selalu dipanggil bahkan saat
+ *  terjadi error. Parameter `payload` dan `maxChunk` diterima dari wrapper
+ *  untuk menghindari perhitungan berulang.
+ */
+async function _doUploadPresetBinary(preset, geom, slot, onProgress, payload, maxChunk) {
   const { chunkSize: defaultChunk } = chunkPlan(payload.length, maxChunk);
 
   // ---- 1. CFG_BEGIN → CFG_READY{credit u16} ----

@@ -911,6 +911,13 @@ enum BleRequest {
         resp: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     Disconnect(tokio::sync::oneshot::Sender<Result<(), String>>),
+    /// Hard-reset BLE adapter state. Dipanggil saat reconnect gagal berulang
+    /// akibat GATT cache corruption (sering setelah burst notifikasi gagal
+    /// pada Windows). Ini melakukan:
+    /// 1. Disconnect paksa (jika masih terhubung)
+    /// 2. Clear semua internal state (service, chars, buffer)
+    /// 3. Tunggu 3 detik agar Windows dapat melepas link dengan sempurna
+    ResetAdapter(tokio::sync::oneshot::Sender<Result<(), String>>),
     Write {
         data: Vec<u8>,
         resp: tokio::sync::oneshot::Sender<Result<usize, String>>,
@@ -1081,6 +1088,20 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                 let st = transport.as_ref().map(|t| t.stats()).unwrap_or_default();
                 let _ = resp.send(st);
             }
+            BleRequest::ResetAdapter(resp) => {
+                // Hard-reset: lepas koneksi paksa, clear semua state internal,
+                // lalu tunggu agar Windows melepas link GATT dengan sempurna.
+                //
+                // Ini dipanggil setelah burst error baca/notifikasi gagal,
+                // biasanya disebabkan oleh GATT cache corruption di Windows
+                // yang tidak bisa diperbarui dengan disconnect biasa.
+                transport.take();
+                // Tunggu 3 detik agar Windows benar-benar melepas semua handle.
+                // Tanpa jeda ini, connect berikutnya bisa gagal dengan
+                // "service not found" atau "TX characteristic not registered".
+                std::thread::sleep(std::time::Duration::from_millis(3000));
+                let _ = resp.send(Ok(()));
+            }
         }
     }
 }
@@ -1164,6 +1185,25 @@ async fn ble_stats() -> BleStats {
     rx.await.unwrap_or_default()
 }
 
+#[tauri::command]
+async fn ble_reset_adapter() -> Result<(), String> {
+    // Hard-reset BLE adapter: lepas semua handle GATT dan tunggu Windows
+    // melepas link dengan sempurna. Dipanggil setelah burst notifikasi gagal
+    // untuk membersihkan GATT cache yang corrupt.
+    //
+    // Di Windows, disconnect biasa (ble_disconnect) tidak selalu melepas semua
+    // handle WinRT — BluetoothLEDevice, GattDeviceService, GattCharacteristic
+    // bisa tetap tertinggal, dan connect berikutnya dapat gagal dengan
+    // "service not found" atau "TX characteristic not registered".
+    //
+    // Ini mengambil transport.take() (membuang semua handle) dan menunggu
+    // 3 detik agar Windows dapat menyelesaikan proses internal cleanup.
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::ResetAdapter(resp))
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
 #[tauri::command]
 async fn ble_switch_interface(iface: String) -> Result<(), String> {
     // Kirim perintah IFACE:USB atau IFACE:BLE ke firmware.
@@ -1294,6 +1334,7 @@ pub fn run() {
             ble_is_connected,
             ble_switch_interface,
             ble_stats,
+            ble_reset_adapter,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

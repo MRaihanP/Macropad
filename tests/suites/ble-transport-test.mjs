@@ -175,6 +175,30 @@ for (const c of I.calls) {
   ok(c.args.data.length <= 512, `write ${c.args.data.length} byte <= 512 (batas NUS)`);
 }
 
+console.log('\n--- 6b. sendRawNoAck ada dan memakai ble_write_no_ack ---');
+// BUG: sendRawNoAck tidak didefinisikan di ble-transport.js, jadi uploadPresetBinary
+// (fast path frame v2) crash dengan TypeError. Tanpa guard ini, regresi bisa
+// kembali tanpa terdeteksi karena test lama tidak pernah memanggil path ini.
+ok(typeof BLE.sendRawNoAck === 'function', 'ble-transport.js mengekspor sendRawNoAck');
+I.calls = [];
+BLE.initTransport(HOOKS);
+eq(await BLE.connect('zz:11'), true, 'connect untuk uji sendRawNoAck');
+BLE.stopPing(); BLE.stopAllBleTimers();
+I.calls = [];
+await BLE.sendRawNoAck(new Uint8Array([0xa5, 0x02, 0x11, 0x00, 0x00, 0xab, 0xcd]));
+ok(I.calls.length > 0, 'sendRawNoAck benar-benar menulis ke device');
+ok(I.calls.every(c => c.cmd === 'ble_write_no_ack'), 'memakai ble_write_no_ack (WriteWithoutResponse)');
+// Payload binary harus sampai utuh.
+const lastCall = I.calls[I.calls.length - 1];
+ok(Array.isArray(lastCall.args.data), 'payload berupa array of byte');
+ok(lastCall.args.data.length > 0, 'payload tidak kosong');
+// Tulis gagal diperlakukan sebagai device hilang (sama seperti sendRaw).
+I.failOn = new Set(['ble_write_no_ack']);
+ev = { connected: 0, disconnected: 0, deviceLost: 0, clearDirty: 0 };
+await BLE.sendRawNoAck(new Uint8Array([1, 2, 3]));
+eq(ev.deviceLost, 1, 'deviceLost dipanggil saat sendRawNoAck gagal');
+I.failOn = new Set();
+
 console.log('\n--- 7. Tulis gagal diperlakukan sebagai device hilang ---');
 I.calls = [];
 // Tulis hanya dicoba kalau sedang tersambung - kalau tidak, sendLine() keluar

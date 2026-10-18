@@ -436,6 +436,67 @@ export async function sendRaw(data) {
   }
 }
 
+// WriteWithoutResponse — untuk CFG_WRITE bulk (Fase 5). Device tidak
+// memberi ack per-frame; back-pressure ditangani oleh credit flow control.
+// Tanpa path ini, uploadPresetBinary() akan crash dengan TypeError karena
+// transport.js facade memanggil backend.sendRawNoAck yang undefined.
+//
+// PENTING: WriteWithoutResponse di Windows ( WinRT GattWriteOption::
+// WriteWithoutResponse) tidak pernah mengembalikan error — ia langsung
+// return S_OK ke app meskipun buffer internal Windows penuh. Error
+// 0x80650011 (Insufficient Resources) hanya muncul DI SINI, di boundary
+// antara WinRT dan driver, ketika GATT send queue overflow. Ini tanda app
+// mengirim lebih cepat dari yang device/Windows bisa proses.
+//
+// Solusi: pacing delay kecil antar write. 5ms cukup untuk memberi Windows
+// dan device memproses satu frame sebelum frame berikutnya. Pada link BLE
+// 2Mbps dengan rtt 76ms, 5ms pacing hampir tidak terasa — tapi cukup untuk
+// mencegah buffer overflow pada link lambat. Nilai ini dipertahankan di
+// satu tempat supaya bisa di-tune.
+// Pacing delay between WriteWithoutResponse calls. Windows GATT send queue
+// can hold ~20 packets before returning 0x80650011 (Insufficient Resources).
+// 10ms per write = max 100 writes/sec, safe for 2Mbit BLE links.
+const CFG_WRITE_PACING_MS = 10;
+// NOTE: sendRawNoAck does NOT call noteBusy() intentionally.
+// Binary upload traffic is already tracked by beginCfgTransfer/noteCfgCommands.
+// Adding noteBusy() here would interfere with adaptive.js's own beginCfgTransfer
+// tracking for the text path. The frame transport manages its own pacing.
+export async function sendRawNoAck(data) {
+  if (!connected) return false;
+  try {
+    await invoke('ble_write_no_ack', { data: Array.from(data) });
+    // Pacing delay — memberi Windows/GATT stack untuk mengirim sebelum
+    // app membanjiri dengan frame berikutnya. Tanpa ini, pada link lambat
+    // Windows buffer overflow → 0x80650011 → device disconnected.
+    if (data.length > 0) await sleep(CFG_WRITE_PACING_MS);
+    return true;
+  } catch (e) {
+    // 0x80650011 (Insufficient Resources) adalah tanda GATT send queue
+    // penuh sementara. Coba sekali lagi setelah 50ms — ini sering berhasil
+    // karena device baru saja memproses packet sebelumnya.
+    // Jika gagal lagi, baru anggap device lost.
+    const msg = String(e);
+    if (msg.includes('0x80650011') || msg.includes('Insufficient Resources')) {
+      await sleep(50);
+      try {
+        await invoke('ble_write_no_ack', { data: Array.from(data) });
+        if (data.length > 0) await sleep(CFG_WRITE_PACING_MS);
+        return true;
+      } catch (e2) {
+        // Retry kedua juga gagal — sekarang baru tear down koneksi.
+      }
+    }
+    // Track write errors untuk burst backoff detection.
+    readErrorCount++;
+    if (readErrorCount > 5) {
+      burstBackoffActive = true;
+    }
+    log(t('ble.writeErrorNoAck', { err: e }), 'err');
+    await handleDeviceLost();
+    return false;
+  }
+}
+
 export async function sendLine(str) {
   if (!connected) return;
   try {
@@ -630,6 +691,8 @@ export async function connect(deviceIdArg) {
   deviceId = id;
   lastGoodDeviceId = id;
   clearTimeout(retryTimer);
+  readErrorCount = 0;
+  burstBackoffActive = false;
   try { localStorage.setItem(LAST_DEVICE_KEY, id); } catch (e) { }
   hooks.onConnected();
   deviceWasLost = false;
@@ -703,7 +766,7 @@ export async function handleDeviceLost() {
   connected = false;
   deviceId = null;
   hooks.notify(t('transport.notifDeviceLost'), 'disconnect');
-  hooks.clearDirty();   // RAM device hilang; tidak ada yang tertunda untuk di-save
+  hooks.clearDirty();   // RAM device hilang; tidak ada yang tertunda untuk di/save
   resetParserState();
   hooks.onDeviceLost();
   stopPing();
@@ -714,6 +777,18 @@ export async function handleDeviceLost() {
   // ada, dan auto-switch preset tidak akan pernah jalan lagi.
   handshakeInProgress = false;
   setConnected(false);
+
+  // Jika ini disebabkan oleh burst error baca (readError > 5 dalam sesi
+  // sebelumnya), aktifkan burst backoff dan hard reset adapter pada retry
+  // pertama. Ini penting karena Windows BLE stack perlu waktu untuk memulihkan
+  // GATT cache yang corrupt setelah burst seperti yang terlihat di log DIAG:
+  // "notify gagal 52x setelah semua retry" — ini tanda adapter Windows,
+  // bukan masalah parser atau firmware.
+  if (readErrorCount > 5) {
+    burstBackoffActive = true;
+  }
+  readErrorCount = 0;
+
   if (autoReconnect && wasId) scheduleRetry([wasId]);
 }
 
@@ -723,15 +798,54 @@ const RETRY_BASE_MS = 2500;
 const RETRY_MAX_MS = 20000;
 const retryDelay = (n) => Math.min(RETRY_BASE_MS * n, RETRY_MAX_MS);
 
+// Hitungan read error berturuh. Setelah burst error baca, adapter
+// Windows perlu waktu ekstra untuk pulih — reconnect langsung setelah burst
+// sering dapat 0x800704C7 (operation canceled) atau GATT cache corrupt.
+// Backoff eksponensial ekstra (max 2x) diterapkan pada attempt pertama setelah
+// burst error baca. Ini tidak memengaruhi reconnect normal — hanya saat
+// readIncoming() atau poll() gagal berulang kali berturut-turut.
+let readErrorCount = 0;
+let burstBackoffActive = false;
+
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
-  if (attempt > RETRY_MAX_ATTEMPTS) return;
+  if (attempt > RETRY_MAX_ATTEMPTS) {
+    burstBackoffActive = false;
+    readErrorCount = 0;
+    return;
+  }
+  // Hitung delay. Jika burst backoff aktif (notifyFail > 30 dalam sesi
+  // sebelumnya), delay pertama dinaikkan 2x + hard reset adapter.
+  const baseDelay = retryDelay(attempt);
+  const delay = burstBackoffActive && attempt === 1
+    ? Math.min(baseDelay * 2 + 2000, RETRY_MAX_MS)
+    : baseDelay;
   retryTimer = setTimeout(async () => {
     if (connected || !autoReconnect) return;
+    // Hard reset adapter Windows sebelum reconnect pertama setelah burst.
+    // Ini membersihkan GATT cache yang corrupt dan memaksa Windows melepas
+    // link yang terjebak di state CLOSING. Tanpa ini, reconnect pertama
+    // sering dapat 0x800704C7 atau "service not found" karena cache lama.
+    if (burstBackoffActive && attempt === 1) {
+      log(t('ble.adapterResetForReconnect'), 'info');
+      try { await invoke('ble_reset_adapter'); } catch (e2) { /* best-effort */ }
+      // Windows butuh waktu untuk melepas GATT cache setelah reset.
+      // 2 detik tidak cukup di semua mesin — beri 3 detik yang aman.
+      await sleep(3000);
+    }
     const targets = only && only.length ? only : (lastGoodDeviceId ? [lastGoodDeviceId] : null);
     const ok = await tryAutoConnect(false, targets);
-    if (!ok) scheduleRetry(only, attempt + 1);
-  }, retryDelay(attempt));
+    if (!ok) {
+      // Jika ini adalah attempt pertama dan masih gagal, perpanjang backoff.
+      if (burstBackoffActive && attempt === 1) {
+        burstBackoffActive = true; // tetap aktif untuk attempt berikutnya
+      }
+      scheduleRetry(only, attempt + 1);
+    } else {
+      burstBackoffActive = false;
+      readErrorCount = 0;
+    }
+  }, delay);
 }
 
 export async function tryAutoConnect(verbose, only) {
@@ -792,8 +906,19 @@ export async function readIncoming() {
   let got = 0;
   try {
     // Baca ulang sampai buffer kosong. Satu panggilan saja akan tertinggal
-    // data kalau device mengirim lebih cepat dari satu iterasi poll.
-    for (let i = 0; i < 4; i++) {
+    // data kalai device mengirim lebih cepat dari satu iterasi poll.
+    //
+    // Nilai 8 (bukan 4) karena satu DUMP 3x3+encoder pada link lambat bisa
+    // muncul sebagai 3-4 notifikasi berturut-turut, dan setiap notifikasi
+    // berupa satu invoke() round-trip. Dengan hanya 4 iterasi, satu tick poll
+    // (40 ms) tidak cukup untuk menguras semua notifikasi — sisanya
+    // ditangkap oleh drainFast(), tapi itu menambah latency satu tick lagi.
+    //
+    // 8 iterasi = max 32 KB per tick (8 * 4096), masih jauh di bawah batas
+    // 256 KB buffer Rust — cukup untuk burst paling ekstrem tanpa menambah
+    // jeda berarti. drainFast() tetap menjadi safety net untuk yang masih
+    // tersisa.
+    for (let i = 0; i < 8; i++) {
       const chunk = await invoke('ble_read', { maxLen: READ_CHUNK_MAX });
       if (!chunk || chunk.length === 0) break;
       // Tandai bahwa device MEMANG menjawab. afterConnectHandshake memakai
@@ -818,6 +943,12 @@ export async function readIncoming() {
   } catch (e) {
     // invoke gagal = GATT sudah turun. Perlakukan sebagai putus supaya
     // poll berikutnya tidak mencoba menarik data dari koneksi mati.
+    readErrorCount++;
+    // Burst error baca (>5 dalam sesi sebelumnya) -> butuh backoff ekstra
+    // saat reconnect karena Windows BLE stack perlu waktu untuk pulih.
+    if (readErrorCount > 5) {
+      burstBackoffActive = true;
+    }
     log(t('ble.readError', { err: e }), 'err');
     await handleDeviceLost();
   }
@@ -850,12 +981,26 @@ export function startPing() {
   stopPing();
   const tick = () => {
     if (!connected) return;
-    // Waktu kirim dicatat supaya PONG bisa dihitung jadi latensi. Hanya satu
-    // sampel "terkirim terakhir" yang disimpan: device menjawab PING satu per
-    // satu, jadi satu stempel sudah cukup dan tidak bisa tertukar antar sampel.
+    // Jeda PING lebih lama saat batch upload berlangsung.
+    //
+    // CFG_WRITE memakai WriteWithoutResponse — setiap PING write kompetisi
+    // dengan frame CFG_WRITE untuk bandwidth GATT yang sama. Pada link lambat
+    // (rtt p50=237ms) ini bisa menambah 1-2 round-trip per burst notify,
+    // yang cukup untuk memicu supervision timeout (0x208) pada preset
+    // besar yang sudah memakan puluhan frame.
+    //
+    // Saat batch aktif, PING diperlangka agar device fokus pada pemrosesan
+    // perintah. Batch saja yang menentukan — jika tidak aktif, PING idle
+    // kembali berjalan normal. Jeda ini tidak memengaruhi kegagalan link:
+    // supervision timeout device adalah 10 detik (di-etch), jauh di atas
+    // PING_MS_IDLE (5 detet), jadi satu-satu lagi 5 detik tidak masalah.
+    const batchActive = batchUploadInFlight();
+    const interval = batchActive
+      ? PING_MS_IDLE   // 5s: cukup untuk keepalive, tidak kompetisi dengan upload
+      : (Date.now() < pingBusyUntil ? PING_MS_BUSY : PING_MS_IDLE);
     pingSentAt = Date.now();
     sendLine('PING');
-    pingTimer = setTimeout(tick, Date.now() < pingBusyUntil ? PING_MS_BUSY : PING_MS_IDLE);
+    pingTimer = setTimeout(tick, interval);
   };
   pingTimer = setTimeout(tick, PING_MS_IDLE);
 }
@@ -906,8 +1051,13 @@ function drainFast() {
   if (drainScheduled || !connected) return;
   drainScheduled = true;
   queueMicrotask(async () => {
-    drainScheduled = false;
+    // Reset drainScheduled hanya setelah yakin tidak ada drain paralel lain.
+    // Jika interval tick sedang berjalan (readBusy = true), biarkan flag tetap
+    // true supaya interval tidak merancak drainFast() lagi. Flag akan direset
+    // di finally{} di akhir masing-masing drain, memastikan selalu ada drain
+    // yang benar-benar berjalan ketika flag false.
     if (readBusy || !connected) return;
+    drainScheduled = false;
     readBusy = true;
     try {
       let guard = 0;
@@ -920,7 +1070,7 @@ function drainFast() {
       }
     }
     catch (e) { /* readIncoming sudah menangani */ }
-    finally { readBusy = false; }
+    finally { readBusy = false; drainScheduled = false; }
   });
 }
 
