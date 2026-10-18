@@ -33,7 +33,24 @@ import { feedFrameBytes, resetFrameRx, frameRxStats } from './frame-dispatch.js'
 
 const LAST_DEVICE_KEY = 'macropad.lastBleDevice';
 const LINE_BUFFER_MAX = 64 * 1024;
-const PING_MS = 1500;
+// Jeda PING, dalam dua tingkat.
+//
+// Nilai lama 1500 ms dipilih tanpa angka yang jelas, dan_short_ebook itu mahal
+// dari yang terlihat: tiap PING adalah satu write + satu PONG (write + notify),
+// jadi 1500 ms berarti ~80 pasang PING/PONG per 2 menit - traffic tetap yang
+//CCEKER memakai link yang sama dengan upload preset. Di link lambat itu bukan
+// noise, itu kapasitas yang tersedot.
+//
+// Yang sebenarnya dijaga PING adalah "link masih hidup", dan dafür supervision
+// timeout 10 detik adalah batasnya - bukan 1,5 detik. Jadi:
+//
+//   PING_MS_IDLE - saat tidak ada yang harus diukur. Masih jauh di bawah
+//                  supervision timeout, jadi keepalive tetap terpenuhi.
+//   PING_MS_BUSY - sesaat setelah ada aktivitas (setelah device mengirim apa
+//                  pun, atau setelah app menulis). Di sini latensi terdekat yang
+//                  berguna untuk DIAG, jadi frekuensi dinaikkan.
+const PING_MS_IDLE = 5000;
+const PING_MS_BUSY = 1500;
 // Batas per write. Characteristic NUS hanya 512 byte; menulis lebih dari itu
 // di-potong diam-diam oleh stack dan menyisakan separuh baris di device.
 const WRITE_CHUNK_MAX = 400;
@@ -402,6 +419,7 @@ export function handleIncomingChunk(data) {
 // ---- Pengiriman ----
 export async function sendRaw(data) {
   if (!connected) return false;
+  noteBusy();
   try {
     // Dukung baik string maupun binary (Uint8Array/array of bytes).
     // Frame biner v2 mengirim Uint8Array; perintah teks lama mengirim string.
@@ -782,6 +800,7 @@ export async function readIncoming() {
       // penanda ini untuk membedakan "write gagal" dari "write sukses tapi
       // device diam" - dua masalah yang sama sekali punya tindakan berbeda.
       seenResponseAt = Date.now();
+      noteBusy();
       // Byte mentah dipakai untuk frame RX, dan byte yang sama didekode ulang
       // untuk parser baris.
       //
@@ -820,16 +839,25 @@ export async function poll() {
 }
 
 // ---- Ping ----
+// Saat link terakhir terlihat sibuk, PING lebih sering selama 6 detik.
+let pingBusyUntil = 0;
+const PING_BUSY_LINGER_MS = 6000;
+
+/** Tandai link sedang sibuk supaya PING berikutnya datang lebih cepat. */
+export function noteBusy() { pingBusyUntil = Date.now() + PING_BUSY_LINGER_MS; }
+
 export function startPing() {
   stopPing();
-  pingTimer = setInterval(() => {
+  const tick = () => {
     if (!connected) return;
     // Waktu kirim dicatat supaya PONG bisa dihitung jadi latensi. Hanya satu
-    // amostra "terkirim terakhir" yang disimpan: device menjawab PING satu per
+    // sampel "terkirim terakhir" yang disimpan: device menjawab PING satu per
     // satu, jadi satu stempel sudah cukup dan tidak bisa tertukar antar sampel.
     pingSentAt = Date.now();
     sendLine('PING');
-  }, PING_MS);
+    pingTimer = setTimeout(tick, Date.now() < pingBusyUntil ? PING_MS_BUSY : PING_MS_IDLE);
+  };
+  pingTimer = setTimeout(tick, PING_MS_IDLE);
 }
 
 // ---- Loop pembacaan ----
@@ -908,7 +936,10 @@ registerOnBatchStart(() => { cancelDumpWatchdog(); });
 
 // Ekspor untuk test; dipakai juga oleh disconnect().
 export function stopAllBleTimers() { stopPing(); stopReadLoop(); stopDiag(); }
-export function stopPing() { if (pingTimer) clearInterval(pingTimer); pingTimer = null; }
+// clearTimeout dipakai karena pingTimer dischedule dengan setTimeout (interval
+// ping berubah-ubah antara idle dan busy). clearInterval bekerja pada timeout juga
+// di browser, tapi menyebut yang benar membuat niatnya jelas.
+export function stopPing() { if (pingTimer) clearTimeout(pingTimer); pingTimer = null; }
 
 // Ekspor untuk test dan untuk alat diagnosa on-device (tools/ble-diag.js):
 // membaca laporan terakhir tanpa perlu menunggu interval 30 detik.

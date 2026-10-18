@@ -310,6 +310,67 @@ Compile Arduino dan uji di device tetap wajib.
 
 ## Changelog
 
+### v0.6.6 (perbaikan)
+
+#### Switch preset tidak konsisten ("tidak selalu berhasil")
+
+Akar masalahnya satu keputusan yang salah tempat di `frame-transport.js`:
+
+```js
+if (!r.ok) { frameUsable = false; return null; }   // timeout biasa
+```
+
+Dua masalah sekaligus:
+
+1. Timeout 2 detik — hal **normal** di link dengan `rtt p50=293ms` — langsung
+   mematikan fast path.
+2. "Mati" berarti **permanen** sampai disconnect.
+
+Efeknya berantai: fast path mati → semua switch berikutnya jatuh ke jalur teks
+yang mengirim ratusan baris `SET:` → link makin jenuh → RTT naik → timeout makin
+sering → fast path makin sering mati.
+
+Perbaikannya:
+
+- Timeout sesaat **tidak lagi** mematikan fast path. Hanya 3 kegagalan
+  berturut-turut, atau bukti nyata (`ERR UNSUPPORTED`), yang mematikannya.
+- Fast path yang mati diberi **jeda 4 detik** lalu dicoba lagi, bukan mati
+  permanen sampai disconnect.
+- Jalur teks (ratusan `SET:`) punya **cooldown 8 detik** — jadi tidak lagi
+  dipakai sebagai respons otomatis setiap frame timeout.
+- `RTT_MS` 2 → 6 detik. 2 detik terlalu pendek untuk link yang RTT-nya 293ms,
+  jadi setiap jawaban yang masih dalam perjalanan dianggap gagal.
+
+#### Di mana RTT 293ms berasal
+
+Firmware meminta `BLE_CONN_INTERVAL_MIN/MAX_MS 50/100`. Pada interval itu satu
+hop = satu connection event = sampai 100ms, dan satu round trip = 2 hop. Angka
+yang terukur persis di rentang itu.
+
+Firmware sekarang meminta **15/30 ms**. Supervision timeout 10 detik memberi
+ruang yang sangat lapang untuk connection event yang hilang, dan perangkat ini
+USB-powered sehingga konsekuensi dayanya tidak terasa.
+
+> Catatan: angka ini hanya *permintaan*; Windows yang memutuskan. Kalau setelah
+> flash RTT tetap ~300ms, berarti Windows mengabaikan permintaan itu.
+
+#### PING adaptif
+
+PING 1500ms adalah ~80 pasang PING/PONG per 2 menit — traffic tetap yang memakai
+link yang sama dengan upload preset. Sekarang: **idle 5 detik** (supervision
+timeout 10 detik, jadi keepalive tetap aman), **1,5 detik** selama 6 detik
+setelah ada aktivitas.
+
+#### DIAG: lapis L5 LOSS
+
+`notifyOk` (L4) menghitung chunk yang diterima stack BLE device, sedangkan
+`notify_events` (L1) menghitung notifikasi yang sampai di host. Keduanya
+menghitung hal **berbeda**, jadi tidak boleh dibandingkan — kesalahan baca ini
+sudah menyesatkan sekali.
+
+L5 LOSS sekarang melaporkan `rx_dropped_bytes`, satu-satunya angka lintas-lapis
+yang benar-benar bisa dipercaya: kalau nol, link **tidak** dropping di host.
+
 ### v0.6.6
 
 Migrasi protokol ke **frame biner v2** (Fase 0-5 `PLAN_BLE_Migration.md`).

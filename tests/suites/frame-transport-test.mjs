@@ -606,6 +606,92 @@ ok(/adaptive\.frameSwitchStart/.test(idSrc) && /adaptive\.frameSwitchStart/.test
   'locale frameSwitchStart ada di id dan en');
 
 // ===================================================================
+// ===================================================================
+const adaptiveSrc = fs.readFileSync(path.join(REPO, 'src', 'adaptive.js'), 'utf8');
+const diagSrc = fs.readFileSync(path.join(REPO, 'src', 'diag-report.js'), 'utf8');
+const bleSrc2 = fs.readFileSync(path.join(REPO, 'src', 'ble-transport.js'), 'utf8');
+console.log('--- H2. Regresi: switch preset TIDAK KONSISTEN ---');
+// ===================================================================
+//
+// Gejala: "tidak selalu berhasil berpindah preset". Switch pertama jalan,
+// switch berikutnya tidak - atau sebaliknya berulang-ulang.
+//
+// Akar masalahnya satu keputusan yang salah tempat. Versi lama:
+//
+//   if (!r.ok) { frameUsable = false; return null; }   // timeout biasa
+//
+// (a) timeout 2 detik - hal NORMAL di link rtt p50=293ms - langsung mematikan
+//     fast path, dan
+// (b) "mati" berarti PERMANEN sampai disconnect.
+//
+// Efeknya berantai: fast path mati -> semua switch berikutnya jatuh ke jalur
+// teks yang mengirim ratusan baris SET -> link makin jenuh -> RTT naik ->
+// timeout makin sering -> fast path makin sering mati.
+//
+// Test ini mengunci (a) dan (b) lewat API publik.
+eq(typeof FT.framePathAvailable, 'function',
+  'framePathAvailable() tersedia untuk gate di adaptive.js');
+
+FT.resetFrameMode();
+eq(FT.framePathAvailable(), true,
+  'sesi baru: fast path boleh dicoba');
+
+for (let i = 0; i < 3; i++) {
+  FT.__noteFrameAttemptForTest(false, false);
+  if (i < 2) {
+    eq(FT.framePathAvailable(), true,
+      `timeout ke-${i + 1} TIDAK mematikan fast path (gangguan sesaat)`);
+  }
+}
+eq(FT.framePathAvailable(), false,
+  'setelah 3 timeout berturut-turut, fast path berhenti dan diberi jeda');
+
+FT.__advanceFrameRetryForTest(5000);
+eq(FT.framePathAvailable(), true,
+  'setelah jeda, fast path dicoba lagi (tidak mati permanen sampai disconnect)');
+
+FT.resetFrameMode();
+FT.__noteFrameAttemptForTest(false, true);
+eq(FT.framePathAvailable(), false,
+  'ERR UNSUPPORTED mematikan fast path langsung (bukti nyata, bukan timeout)');
+
+FT.resetFrameMode();
+FT.__noteFrameAttemptForTest(false, false);
+FT.__noteFrameAttemptForTest(false, false);
+FT.__noteFrameAttemptForTest(true, false);
+FT.__noteFrameAttemptForTest(false, false);
+eq(FT.framePathAvailable(), true,
+  'streak direset setelah sukses - satu timeout lalu tidak mematikan fast path');
+
+// Jalur teks harus DILINDUNGI: ratusan baris SET berulang adalah pemicu
+// spiral, bukan obatnya.
+ok(/TEXT_PATH_COOLDOWN_MS\s*=\s*8000/.test(adaptiveSrc),
+  'jalur teks punya cooldown 8 detik');
+ok(/if \(!textPathAllowed\(\)\)/.test(adaptiveSrc),
+  'upload penuh jalur teks bisa dilewati saat fast path baru saja gagal');
+ok(/textPathSkipped/.test(adaptiveSrc),
+  'pelewatan jalur teks dicatat, bukan diam-diam');
+
+ok(/RTT_MS\s*=\s*6000/.test(ftSrc),
+  'RTT_MS 6 detik - menutup p95 ~900ms, bukan 2 detik yang memicu timeout palsu');
+
+const hidSrc = fs.readFileSync(path.join(REPO, 'firmware', 'common', 'ble_hid.h'), 'utf8');
+ok(/define BLE_CONN_INTERVAL_MIN_MS 15/.test(hidSrc),
+  'connection interval min 15 ms (50 ms membuat tiap hop 50 ms = rtt 293 ms)');
+ok(/define BLE_CONN_INTERVAL_MAX_MS 30/.test(hidSrc),
+  'connection interval max 30 ms');
+
+ok(/PING_MS_IDLE\s*=\s*5000/.test(bleSrc2),
+  'PING idle 5 detik (supervision timeout 10 detik, jadi keepalive tetap aman)');
+ok(/PING_MS_BUSY\s*=\s*1500/.test(bleSrc2),
+  'PING busy 1,5 detik - hanya saat link sedang ada lalu lintas');
+ok(/noteBusy\(\)/.test(bleSrc2),
+  'noteBusy() dipanggil saat ada aktivitas supaya PING naik frekuensinya');
+
+ok(/L5 LOSS/.test(diagSrc),
+  'DIAG punya lapis L5 LOSS yang bisa dipercaya (rx_dropped_bytes)');
+
+
 console.log('--- I. Ringkasan ---');
 // ===================================================================
 console.log(`\n${lulus} assertion lulus, ${gagal.length} gagal`);

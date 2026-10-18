@@ -23,7 +23,7 @@ import {
 import { el, log, escapeHtml } from './dom.js';
 import { sendLine, sendBatch, isConnected, dumpInProgress, handshakePending } from './transport.js';
 import {
-  deviceSupportsFrame, frameModeStatus, resetFrameMode, queryFrameSlots,
+  deviceSupportsFrame, frameModeStatus, framePathAvailable, resetFrameMode, queryFrameSlots,
   activateFrameSlot, ensureLineMode, presetSig, findMatchingSlot, sigHex,
 } from './frame-transport.js';
 import { t } from './i18n.js';
@@ -623,7 +623,7 @@ async function activatePresetRuntime(preset, exe) {
   // membanjiri, switch berikutnya lebih cepat karena profil sudah terisi.
   const buktiFrame = deviceSupportsFrame(hooks.getDeviceProfile())
     || !!hooks.getFrameCapability?.();
-  if (buktiFrame && frameModeStatus() !== false) {
+  if (buktiFrame && framePathAvailable()) {
     const meta = await queryFrameSlots();
     if (meta) {
       const devSlot = findMatchingSlot(sig, meta.slots);
@@ -705,8 +705,44 @@ async function activatePresetRuntime(preset, exe) {
   }
   // Tidak ada slot yang cocok, atau percobaan frame gagal: turun ke jalur teks.
 
+  // Sebelum mengorbankan link: jalur teks berarti ratusan baris SET. Kalau
+  // fast path BARU SAJA dicoba (dan gagal karena timeout), mengulang sekarang
+  // hanya memperburuk - device jadi makin sibuk, RTT makin tinggi, dan
+  // percobaan berikutnya pasti gagal lagi. Itu persis pola yang membuat
+  // switch terasa "tidak selalu berhasil".
+  if (!textPathAllowed()) {
+    log(t('adaptive.textPathSkipped', { name: preset.name }), 'err');
+    return;
+  }
+  noteTextPath();
   await activatePresetRuntimeText(preset, exe, sig, slot, cached);
 }
+
+// Pelindung jalur teks.
+//
+// Jalur teks mengirim RATUSAN baris SET (buildPresetLines). Pada link lambat
+// itu butuh belasan detik dan membuat device kewalahan - dan device yang
+// kewalahan lebih liable membuat frame timeout, yang memicu jalur teks lagi.
+// Jadi jalur teks sendiri adalah pemicu spiral, bukan hanya gejalanya.
+//
+// Aturannya: jalur teks hanya boleh jalan kalau fast path memang TIDAK
+// tersedia (device tidak mendukung frame), atau sudah lama tidak dicoba.
+// Kalau fast path baru saja gagal karena timeout, LEWATI upload penuh - log
+// dengan jujur dan coba lagi nanti. Preset yang gagal switch sekali lebih baik
+// daripada membanjiri link sampai tidak ada switch yang berhasil.
+//
+// Nilai 8 detik: cukup pendek supaya user tidak menunggu lama, cukup panjang
+// supaya fast path sempat dicoba lagi sebelum link didiamkan.
+const TEXT_PATH_COOLDOWN_MS = 8000;
+let lastTextPathAt = 0;
+
+/** Apakah upload penuh jalur teks boleh dicoba sekarang? */
+function textPathAllowed() {
+  return (Date.now() - lastTextPathAt) >= TEXT_PATH_COOLDOWN_MS;
+}
+
+/** Catat bahwa jalur teks dipakai, untuk menghormati cooldown berikutnya. */
+function noteTextPath() { lastTextPathAt = Date.now(); }
 
 // Jalur teks. Dipisah dari activatePresetRuntime supaya ada SATU tempat yang
 // menulis SLOT: dan satu tempat yang mengurus state upload - bukan dua salinan

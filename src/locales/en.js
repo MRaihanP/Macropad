@@ -280,6 +280,7 @@ export const en = {
 'adaptive.noMatch': 'No matches.',
 
 'adaptive.frameSwitchStart': '[ADAPT] Switching to "{name}" ({exe})...',
+'adaptive.textPathSkipped': '[ADAPT] Skipping full upload of "{name}" (hundreds of commands) - the binary path just failed, retrying shortly',
 'adaptive.dumpWaitTimeout': '[ADAPT] DUMP of layer {layer} did not finish within 8s - grid may be out of sync',
 'adaptive.frameUploadStart': '[ADAPT] Uploading "{name}" to slot {slot} (binary)',
 'adaptive.frameUploadFail': '[ADAPT] Binary upload of "{name}" failed: {reason}',

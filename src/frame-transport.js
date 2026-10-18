@@ -60,10 +60,18 @@ const MAX_WRITE_BYTES = 244;
 // plus trailer CRC 2 byte. Cermin encode() di frame-codec.js.
 const FRAME_OVERHEAD = 7;
 
-// Batas menunggu jawaban frame. PING/PONG bolak-balik satu baris dan device
-// tidak punya pekerjaan lain saat itu, jadi ini harus jauh di bawah RTT device
-// yang lambat - 2 detik sudah longgar.
-const RTT_MS = 2000;
+// Batas menunggu jawaban frame.
+//
+// 2 detik pertama ditulis saat diasumsikan link punya latency ~200ms. Pada link
+// lambat dengan rtt p50=293ms dan p95=896ms (lihat DIAG: L0 RADIO), plus antrean
+// device yang kadang sedang sibuk menjawab permintaan lain, jawaban yang SEDANG
+// dalam perjalanan tapi belum sampai sering dianggap gagal - lalu fast path
+// dimatikan, dan switch berikutnya turun ke jalur teks yang jauh lebih lambat.
+//
+// Jadi batasnya harus menutup RTT yang SEBENARNYA terjadi di link lambat, dengan
+// ruang untuk device yang sedang sibuk. 6 detik menutup p99 pada rtt ~900ms
+// dengan faktor 6, dan masih jauh lebih cepat dari "preset tidak pernah berganti".
+const RTT_MS = 6000;
 // Verifikasi mode baris lebih pendek: PING hanya bolak-balik satu baris, tidak
 // ada pekerjaan device di belakangnya.
 const LINE_PROBE_MS = 1200;
@@ -86,19 +94,106 @@ const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Keputusan format untuk SESI INI.
 //
-// null = belum ada bukti. true = device terbukti menjawab frame. false = sudah
-// mencoba dan gagal, jadi jangan coba lagi sampai koneksi berikutnya.
+// null = belum ada bukti. true = device terbukti menjawab frame. false = device
+// menyatakan frame sebagai tidak didukung.
 //
 // Kenapa perlu: tanpa flag ini, setiap activatePresetRuntime() akan membayar
 // timeout 2 detik penuh pada device yang tidak mendukung frame - dan preset
 // switch yang gagal akan terasa seperti app macet setiap kali.
+//
+// BUKAN "sudah mencoba dan gagal". Perbedaannya menentukan apakah switch
+// konsisten atau tidak, dan versi lama membuat app BERHENTI
+// memakai frame terlalu cepat lalu tidak pernah kembali:
+//
+//   1. Timeout 2 detik saja - yang di link lambat dengan rtt p95 ~900ms dan
+//      antrean device yang sibuk itu hal NORMAL, bukan bukti device tidak
+//      mendukung frame - langsung men-set frameUsable = false.
+//   2. False berarti PERMANEN sampai disconnect. Jadi satu timeout yang tidak
+//      beruntung membuat SEMUA switch berikutnya turun ke jalur teks.
+//   3. Jalur teks mengirim ratusan baris SET. Link jadi jenuh, RTT membengkak,
+//      dan timeout berikutnya makin mungkin - dan frameUsable tetap false.
+//
+// Hasilnya spiral: switch #1 pakai frame (cepat, benar), switch #2 timeout
+// sekali, lalu #3 dan seterusnya pakai jalur teks yang lambat dan membanjiri
+// link. Persis gejala "tidak selalu berhasil berpindah preset".
+//
+// Jadi kegagalAN SEMENTARA (timeout, link kelewat) tidak lagi mematikan fast
+// path. Yang mematikan fast path hanya bukti nyata: device menjawab ERR
+// UNSUPPORTED, atau kegagalan beruntun berkali-kali.
 let frameUsable = null;
+
+// Kegagalan berturut-turut. Hanya menyentuh batas inilah yang benar-benar
+// mematikan fast path. Satu timeout tidak cukup - itu gangguan sesaat.
+let frameFailStreak = 0;
+const FRAME_FAIL_STREAK_MAX = 3;
+
+// Setelah fast path dimatikan, jangan mencoba selamanya. Device yang benar-benar
+// tidak mendukung frame akan membuat app membayar timeout penuh di setiap switch
+// kalau tidak ada jeda. Empat detik cukup untuk membuat device tetap bisa
+// dicoba tanpa setiap switch membayar timeout.
+let frameDisabledUntil = 0;
+const FRAME_RETRY_AFTER_MS = 4000;
 
 /** Status keputusan format sesi ini, untuk log dan test. */
 export function frameModeStatus() { return frameUsable; }
 
 /** Buang keputusan format. Dipanggil saat disconnect. */
-export function resetFrameMode() { frameUsable = null; }
+export function resetFrameMode() {
+  frameUsable = null;
+  frameFailStreak = 0;
+  frameDisabledUntil = 0;
+}
+
+/**
+ * Catat hasil satu percobaan frame.
+ *
+ * Dipisah dari call site supaya aturan "kapan fast path boleh mati" hanya ada
+ * di SATU tempat - bukan tersebar di lima fungsi yang bisa mulai berbeda.
+ *
+ * @param {boolean} ok percobaan berhasil
+ * @param {boolean}Unsupported device secara eksplisit bilang tidak mendukung
+ */
+function noteFrameAttempt(ok, unsupported = false) {
+  if (ok) {
+    frameFailStreak = 0;
+    frameUsable = true;
+    return;
+  }
+  // Device menjawab ERR UNSUPPORTED: ini bukti nyata, bukan gangguan. Matikan
+  // fast path untuk sesi ini - tapi tetap beri jeda supaya masih bisa dicoba
+  // nanti, karena device yang sama bisa di-flash ulang saat app terbuka.
+  if (unsupported) {
+    frameUsable = false;
+    frameFailStreak = FRAME_FAIL_STREAK_MAX;
+    frameDisabledUntil = Date.now() + FRAME_RETRY_AFTER_MS;
+    return;
+  }
+  // Kegagalan sesaat (timeout, link pelan, device sibuk). Hitung, tapi jangan
+  // langsung mematikan fast path.
+  frameFailStreak++;
+  if (frameFailStreak >= FRAME_FAIL_STREAK_MAX) {
+    frameUsable = false;
+    frameDisabledUntil = Date.now() + FRAME_RETRY_AFTER_MS;
+  }
+}
+
+/** Fast path boleh dicoba sekarang? Jeda setelah dimatikan sudah lewat? */
+export function framePathAvailable() {
+  if (frameUsable === false && Date.now() < frameDisabledUntil) return false;
+  return true;
+}
+
+// Hook untuk test suite.
+//
+// Dipakai supaya test bisa membuktikan aturan "timeout tidak mematikan fast
+// path" tanpa harus REALLY menunggu jeda 4 detik. Produksi tidak pernah
+// memanggilnya - kalau iya, jeda itu jadi tidak berguna.
+export function __noteFrameAttemptForTest(ok, unsupported) {
+  noteFrameAttempt(ok, unsupported);
+}
+export function __advanceFrameRetryForTest(ms) {
+  frameDisabledUntil -= ms;
+}
 
 /**
  * Apakah device ini MAMPU menjawab frame biner?
@@ -234,7 +329,26 @@ export async function requestFrame(type, expectType, payload, timeoutMs = RTT_MS
   if (race.kind === 'ok') errWaiter.cancel(); else waiter.cancel();
   return race.kind === 'ok'
     ? { ok: race.payload !== null, payload: race.payload, reason: race.payload === null ? 'timeout' : null }
-    : { ok: false, err: parseErr(race.payload), reason: 'ditolak device' };
+    : { ok: false, err: parseErr(race.payload), reason: 'ditolak device', unsupported: isUnsupported(race.payload) };
+}
+
+/**
+ * Apakah ERR yang baru saja diterima berarti "device tidak mendukung frame".
+ *
+ * Bedanya penting dan menentukan perilaku selama sisa sesi:
+ *
+ *   - UNSUPPORTED -> bukti nyata. Fast path layak dimatikan.
+ *   - timeout / ERR lain -> gangguan sesaat. Fast path harus tetap hidup.
+ *
+ * Tanpa pemisahan ini, satu timeout di link yang lambat akan mematikan fast
+ * path untuk seluruh sesi - dan semua switch berikutnya jatuh ke jalur teks
+ * yang mengirim ratusan baris SET. Gejalanya persis "tidak selalu berhasil
+ * berpindah preset", dan worsens seiring link makin jenuh.
+ */
+function isUnsupported(payload) {
+  if (!payload || payload.length < 2) return false;
+  const info = parseErr(payload);
+  return info.code === ERR_UNSUPPORTED;
 }
 
 /**
@@ -243,8 +357,8 @@ export async function requestFrame(type, expectType, payload, timeoutMs = RTT_MS
  */
 export async function queryFrameSlots() {
   const r = await requestFrame(T_CFG_QUERY, T_CFG_META, []);
-  if (!r.ok) { frameUsable = false; return null; }
-  frameUsable = true;
+  noteFrameAttempt(r.ok, !!r.unsupported);
+  if (!r.ok) return null;
   return parseCfgMeta(r.payload);
 }
 
@@ -257,11 +371,14 @@ export async function queryFrameSlots() {
 export async function activateFrameSlot(slot) {
   if (!(slot >= 0 && slot < APP_SLOTS)) return null;
   const r = await requestFrame(T_CFG_ACTIVATE, T_CFG_ACT_RSP, [slot & 0xff]);
-  if (!r.ok) { frameUsable = false; return null; }
+  noteFrameAttempt(r.ok, !!r.unsupported);
+  if (!r.ok) return null;
   const rsp = parseCfgActRsp(r.payload);
-  if (!rsp) { frameUsable = false; return null; }
+  if (!rsp) return null;
+  // Device menjawab, tapi dengan kode error. Ini device yang SEHAT yang
+  // menolak operasi ini - bukan device yang tidak mendukung frame. Jadi
+  // fast path tetap hidup; yang gagal cuma slot yang diminta.
   if (rsp.code !== ACT_OK) return null;
-  frameUsable = true;
   return rsp;
 }
 
@@ -272,7 +389,7 @@ export async function activateFrameSlot(slot) {
  */
 export async function frameHello() {
   const r = await requestFrame(T_HELLO, T_HELLO_RSP, []);
-  frameUsable = r.ok ? true : frameUsable;
+  noteFrameAttempt(r.ok, !!r.unsupported);
   return r.ok ? r.payload : null;
 }
 

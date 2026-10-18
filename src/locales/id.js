@@ -277,6 +277,7 @@ export const id = {
 'adaptive.noMatch': 'Tidak ada yang cocok.',
 
 'adaptive.frameSwitchStart': '[ADAPT] Beralih ke "{name}" ({exe})…',
+'adaptive.textPathSkipped': '[ADAPT] Lewati upload "{name}" (ratusan perintah) - jalur biner baru saja gagal, coba lagi sebentar lagi',
 'adaptive.dumpWaitTimeout': '[ADAPT] DUMP layer {layer} tidak selesai dalam 8 detik - grid mungkin belum sinkron',
 'adaptive.frameUploadStart': '[ADAPT] Mengunggah "{name}" ke slot {slot} (biner)',
 'adaptive.frameUploadFail': '[ADAPT] Unggah biner "{name}" gagal: {reason}',

@@ -277,14 +277,35 @@ static void bleAdvReport() {
 #define BLE_SUPERVISION_TIMEOUT_10MS 1000
 #endif
 
-// Interval koneksi. Baikan dibiarkan longgar: makin sering paket dikirim,
-// makin besar chances ada yang hilang - dan yang hilang itu yang menghabiskan
-// supervision timeout. Nilai default NimBLE adalah 30 ms (min) dan 50 ms (max).
+// Interval koneksi.
+//
+// NILAI INI SETENGAH-BESAR DARI YANG SEBELUMNYA, DAN ITU SENGAJA.
+//
+// Nilai lama 50-100 ms ditulis dengan alasan "makin sering paket dikirim, makin
+// besar chances ada yang hilang". Asumsi itu terbukti salah di lapangan: pada
+// interval 50-100 ms, satu hop data = satu connection event = sampai 100 ms, dan
+// satu round trip = 2 hop. Di laptop Windows pengukuran nyata menunjukkan
+// RTT p50 = 293 ms dan p95 = 896 ms - bandingkan dengan BLE normal 10-30 ms.
+//
+// Ya, interval lebih rapat menambah chances packet hilang. Tapi tradeoff-nya
+// lebih besar dari itu: dengan interval 50-100 ms, SETIAP round trip switch
+// preset membayar sekitar 200 ms, dan switch butuh 3-5 round trip. Memperketat
+// ke 15-30 ms membagi latency itu ~3x, sementara supervision timeout 10 detik
+// memberi ruang yang sangat lapang untuk connection event yang hilang.
+//
+// Tradeoff daya: interval lebih rapat berarti radio menyala lebih sering.
+// Ini tidak terlalu terasa untuk macro pad desktop yang USB-powered (profil
+// FINAL punya deteksi VBUS; PROTOTYPE juga disambungkan lewat USB). Kalau
+// perangkat ini KAPAN-KAPAN harus berjalan lama dengan baterai, angka ini perlu
+// dikembalikan ke 50-100.
+//
+// Perhatikan bahwa angka ini hanya PERMINTAAN. Windows yang memutuskan; log
+// "[BLE] param diminta" hanya mencatat apa yang kita minta, bukan yang dipakai.
 #ifndef BLE_CONN_INTERVAL_MIN_MS
-#define BLE_CONN_INTERVAL_MIN_MS 50
+#define BLE_CONN_INTERVAL_MIN_MS 15
 #endif
 #ifndef BLE_CONN_INTERVAL_MAX_MS
-#define BLE_CONN_INTERVAL_MAX_MS 100
+#define BLE_CONN_INTERVAL_MAX_MS 30
 #endif
 
 // Latency 0 = central tidak boleh tidur, selalu ada koneksi. Itu yang kita mau:

@@ -155,6 +155,27 @@ export function renderDiag(proto, media, link, rtt) {
       `ringDropped=${num(media, 'ringDropped')} ` +
       `noConn=${num(media, 'noConn')} noSub=${num(media, 'noSub')}`
     : 'tidak ada jawaban DIAGMEDIA (NUS tidak dikompilasi atau perintah tidak dikenal)'));
+
+  // Rasio delivery - satu-satunya angka lintas-lapis yang SAH untuk dibandingkan.
+  //
+  // PERINGATAN yang harus ditulis di sini, karena sudah menyesatkan sekali:
+  // `notifyOk` (L4) menghitung CHUNK yang diterima stack BLE device, sedangkan
+  // `notify_events` (L1) menghitung notifikasi yang benar-benar sampai di host.
+  // KeduanyaJUMLAH kumulatif sejak boot, TAPI keduanya menghitung hal yang
+  // BERBEDA: satu chunk adalah "percobaan kirim", satu event adalah "yang
+  // sampai". Mengbagi keduanya dan menyimpulkan "92% hilang" adalah kesalahpahaman
+  // yang sudah terjadi sekali di sesi ini.
+  //
+  // Yang Benar-benar bisa dipercaya: `rx_dropped_bytes` (L1) - byte yang host
+  // sudah terima tapi dibuang karena buffer penuh. Kalau nol, link TIDAK dropping
+  // di host, dan notifyFail yang tinggi berarti device yang gagal mengirim, bukan
+  // data yang hilang di jalan.
+  if (link && media) {
+    const dropped = num(link, 'rx_dropped_bytes');
+    lines.push('L5 LOSS   ' +
+      `rxDropped=${dropped}B ` +
+      `rxFull=${dropped > 0 ? 'YA - host membuang byte, link terlalu cepat dibaca' : 'tidak - tidak ada byte host yang hilang'}`);
+  }
   lines.push('VERDICT: ' + diagVerdict(proto, media, link));
   return lines.join('\n');
 }
