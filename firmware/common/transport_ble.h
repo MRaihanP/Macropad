@@ -86,6 +86,59 @@ static void protoDiagMediaReset() {
 // perlu dikosongkan.
 #define PROTO_LINK_DRAIN_RX()  bleNusClear()
 
+
+// ---- Antrean TX notify (hanya diakses dari task loop Arduino) ----
+#define BLE_NUS_TX_RING 4096
+static uint8_t  bleNusTxBuf[BLE_NUS_TX_RING];
+static uint16_t bleNusTxHead = 0, bleNusTxTail = 0;   // head=tulis, tail=baca
+
+static inline uint16_t bleNusTxUsed() {
+  return (uint16_t)((bleNusTxHead - bleNusTxTail + BLE_NUS_TX_RING) % BLE_NUS_TX_RING);
+}
+
+static size_t bleNusTxEnqueue(const uint8_t* data, size_t len) {
+  if (len == 0) return 0;
+  if (len > (size_t)(BLE_NUS_TX_RING - 1 - bleNusTxUsed())) {   // tidak muat -> buang SELURUHNYA
+    naikkan(bleNusNotifyFail);
+    return 0;
+  }
+  for (size_t i = 0; i < len; i++) {
+    bleNusTxBuf[bleNusTxHead] = data[i];
+    bleNusTxHead = (uint16_t)((bleNusTxHead + 1) % BLE_NUS_TX_RING);
+  }
+  return len;
+}
+
+// Kirim paling banyak 3 chunk per panggilan supaya loop() tidak tertahan.
+// Chunk yang ditolak TIDAK dibuang: offset tidak maju, dicoba lagi next loop.
+static void bleNusTxPump() {
+  if (bleNusTxDrop) {                       // sesi berubah: antrean lama tidak berlaku
+    bleNusTxDrop = false;
+    bleNusTxHead = bleNusTxTail = 0;
+    return;
+  }
+  if (bleNusTxHead == bleNusTxTail) return;
+  uint16_t h = bleHidConnHandle;
+  if (h == BLE_HID_NO_HANDLE || bleNusSubCount == 0 || bleNusRx == nullptr) {
+    bleNusTxHead = bleNusTxTail = 0;        // peer hilang / tidak subscribe
+    return;
+  }
+  const uint16_t chunkMax = bleNusChunkLimit();
+  for (uint8_t k = 0; k < 3 && bleNusTxHead != bleNusTxTail; k++) {
+    uint16_t n = bleNusTxUsed();
+    if (n > chunkMax) n = chunkMax;
+    if ((uint16_t)(BLE_NUS_TX_RING - bleNusTxTail) < n) n = (uint16_t)(BLE_NUS_TX_RING - bleNusTxTail);  // jangan lewati ujung ring
+    naikkan(bleNusNotifyChunk);
+    if (bleNusRx->notify(bleNusTxBuf + bleNusTxTail, n, h)) {
+      bleNusTxTail = (uint16_t)((bleNusTxTail + n) % BLE_NUS_TX_RING);
+      naikkan(bleNusNotifyOk);
+    } else {
+      naikkan(bleNusNotifyRetry);           // dicoba lagi di loop berikutnya
+      return;
+    }
+  }
+}
+
 // ---- Transport ----
 class BleNusTransport : public TransportBase {
 public:
@@ -95,6 +148,7 @@ public:
     // terputus) akan tinggal di buffer dan terbaca sebagai baris lengkap di
     // sesi berikutnya - perintahsetengah jadi perintah salah.
     bleNusClear();
+    bleNusTxHead = bleNusTxTail = 0;
     return true;
   }
 
@@ -107,81 +161,19 @@ public:
     return bleNusPop(&b) ? (int)b : -1;
   }
 
-// Dikirim lewat notify ke 6e400003 (RX characteristic). WAJIB chunking:
-// satu baris protokol yang panjang - misalnya jawaban DUMP: untuk 9 tombol
-// atau RGB:DUMP - bisa melebihi batas satu notifikasi ATT.
-//
-// Batas chunk diambil dari bleNusChunkLimit() (MTU hasil negosiasi - 3),
-// BUKAN konstanta 244. Kalau Windows menawar MTU < 247, notify dengan
-// 244 byte akan gagal diam-diam dan jawaban terpotong.
+// write() HANYA mengantre (satu write = satu baris utuh, atomik). Pengiriman
+// sebenarnya dilakukan bleNusTxPump() dari loop(), tanpa delay() blocking.
+// Notify yang ditolak (antrean mbuf penuh) dicoba lagi di putaran loop berikutnya
+// - setelah satu connection event - bukan setelah 1-4 ms seperti dulu.
+// Antrean penuh = SELURUH write dibuang (tidak pernah setengah baris), jadi
+// parser app tidak menerima baris yang menempel.
   size_t write(const uint8_t* data, size_t len) override {
     if (!isConnected()) { naikkan(bleNusWriteNoConn); return 0; }
-    if (bleNusSubCount == 0) { naikkan(bleNusWriteNoSub); return 0; }  // tanpa subscriber notify diabaikan
-
-    uint16_t h = bleHidConnHandle;
-    if (h == BLE_HID_NO_HANDLE) return 0;
-
-    const uint16_t chunkMax = bleNusChunkLimit();
-
-    size_t sent = 0;
-    while (sent < len) {
-      size_t n = len - sent;
-      if (n > chunkMax) n = chunkMax;
-
-      // Retry notify dengan backoff eksponensial.
-      //
-      // Batas keras waktu yang boleh diSpend di sini, bukan jumlah percobaan.
-      // Setiap percobaan gagal memakai delay() BLOKKING, dan ini dipanggil dari
-      // loop() - jadi selama backoff berjalan, loop() buta: matriks tidak
-      // discan, encoder tidak dibaca, dan perintah inbound tidak diproses.
-      //
-      // Versi lama memakai 5 percobaan dengan delay(6 << retry), yaitu
-      // 6+12+24+48+96 = 186 ms PER CHUNK. Untuk satu dump yang terpecah jadi
-      // banyak chunk, totalnya bisa detik - dan itu salah satu alasan device
-      // sering hilang tepat saat companion app sedang mengirim data paling
-      // banyak (ganti preset).
-      //
-      // Jadi sekarang: paling banyak 3 percobaan, jeda pendek. Notify yang
-      // gagal dicatat lewat bleNusNotifyFail / bleNusNotifyRetry dan dilaporkan
-      // di DIAGMEDIA, jadi angka yang dipangkas bukan informasi yang hilang -
-      // dan sisa payload tetap dikembalikan ke caller lewat nilai balik,
-      // bukan di-drop diam-diam.
-      const uint8_t BLE_NOTIFY_MAX_RETRY = 3;
-      uint8_t retries = 0;
-      bool sentOk = false;
-      naikkan(bleNusNotifyChunk);
-      while (retries < BLE_NOTIFY_MAX_RETRY) {
-        if (bleNusRx->notify(data + sent, n, h)) {
-          sentOk = true;
-          break;
-        }
-        // Gagal: delay backoff pendek (1, 2, 4 ms).
-        naikkan(bleNusNotifyRetry);
-        delay(1 << retries);
-        retries++;
-        h = bleHidConnHandle;
-        // Peer hilang = tidak akan pernah berhasil. Retry lagi hanya menambah
-        // loop() buta tanpa peluang sukses.
-        if (h == BLE_HID_NO_HANDLE) break;
-      }
-
-      if (!sentOk) {
-        // Semua retry gagal: catat log, return byte yg sudah terkirim.
-        // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
-        // tapi setidaknya caller tahu ada masalah lewat return value < len.
-        naikkan(bleNusNotifyFail);
-        LOGS->printf("[BLE] notify gagal total setelah %ux retry, %u byte tertinggal\n",
-                     (unsigned)BLE_NOTIFY_MAX_RETRY, (unsigned)(len - sent));
-        return sent;  // return byte yang sukses, caller bisa cek return < len
-      }
-
-      naikkan(bleNusNotifyOk);
-      sent += n;
-    }
-    return sent;
+    if (bleNusSubCount == 0) { naikkan(bleNusWriteNoSub); return 0; }
+    return bleNusTxEnqueue(data, len);
   }
 
-  void flush() override {}
+  void flush() override { bleNusTxPump(); }
 
   TransportType type() const override { return TransportType::TP_BLE; }
 };

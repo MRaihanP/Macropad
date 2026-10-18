@@ -178,6 +178,34 @@ volatile uint16_t bleNusSubCount   = 0;
 volatile uint32_t bleNusWriteCount = 0;
 char bleNusLastWrite[64] = {0};
 
+// Permintaan dari callback host NimBLE agar loop() mengosongkan antrean TX notify
+// (sesi berubah). Didefinisikan di sini karena dipakai ble_hid.h dan transport_ble.h.
+volatile bool bleNusTxDrop = false;
+
+// ---- State link untuk diagnostik 0x208 & penundaan conn-param ----
+// Ditulis callback host NimBLE (satu penulis per field), dibaca/dicetak loop().
+// Callback TIDAK boleh mencetak ke USB CDC (bisa memblokir task host sampai
+// timeout); mereka hanya mengisi field ini dan menaikkan flag log.
+#define BLE_PARAM_DELAY_MS 3000
+volatile bool     bleParamArmed   = false;
+volatile uint16_t bleParamHandle  = 0xFFFF;
+volatile uint32_t bleParamDueAt   = 0;
+volatile uint32_t bleConnAtMs     = 0;
+volatile uint16_t bleLinkItvl     = 0;   // satuan 1.25 ms
+volatile uint16_t bleLinkLat      = 0;
+volatile uint16_t bleLinkTo       = 0;   // satuan 10 ms
+volatile int8_t   bleLastRssi     = 0;
+volatile uint32_t bleMaxLoopGapUs = 0;   // selisih terpanjang antar putaran loop() selama link hidup
+volatile bool     bleLogConnect   = false;
+volatile bool     bleLogAuth      = false;
+volatile bool     bleLogParams    = false;
+volatile bool     bleLogDisc      = false;
+volatile bool     bleAuthBonded   = false;
+volatile int      bleDiscReason   = 0;
+volatile uint32_t bleDiscDurMs    = 0;
+volatile uint32_t bleDiscMaxGapUs = 0;
+volatile int8_t   bleDiscRssi     = 0;
+
 // ---- NUS characteristic pointers ----
 NimBLECharacteristic* bleNusTx = nullptr;
 NimBLECharacteristic* bleNusRx = nullptr;

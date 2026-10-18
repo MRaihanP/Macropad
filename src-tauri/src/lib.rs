@@ -965,6 +965,8 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
     };
 
     let mut transport: Option<BleTransport> = None;
+    let shared_stats: std::sync::Arc<std::sync::Mutex<BleStats>> =
+        std::sync::Arc::new(std::sync::Mutex::new(BleStats::default()));
     // DeviceInformation tidak Send, jadi tidak bisa disimpan di static atau
     // dikirim lewat channel ke thread lain. Tapi ia HARUS disimpan di thread
     // ini: connect() butuh DeviceInformation, dan tanpa cache satu-satunya
@@ -1034,7 +1036,7 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                         if let Some(mut lama) = transport.take() {
                             lama.disconnect();
                         }
-                        let mut t = BleTransport::new();
+                        let mut t = BleTransport::with_stats(shared_stats.clone());
                         match t.connect(&device_info) {
                             Ok(()) => {
                                 transport = Some(t);
@@ -1085,7 +1087,7 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                 // Angka DEFAULT kalau transport sudah lepas: laporan harus
                 // tetap bisa diambil setelah disconnect, justru di saat itulah
                 // angka terakhir paling dibutuhkan.
-                let st = transport.as_ref().map(|t| t.stats()).unwrap_or_default();
+                let st = shared_stats.lock().map(|s| s.clone()).unwrap_or_default();
                 let _ = resp.send(st);
             }
             BleRequest::ResetAdapter(resp) => {

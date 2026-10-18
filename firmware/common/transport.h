@@ -77,7 +77,10 @@ public:
     // mudah dilihat daripada menabrak stack.
     if (len > 0) {
       size_t n = (size_t)len;
-      if (n >= sizeof(buffer)) n = sizeof(buffer) - 1;
+      if (n >= sizeof(buffer)) {
+        n = sizeof(buffer) - 1;
+        buffer[n - 1] = '\n';   // baris terpotong tetap berakhir newline
+      }
       write((const uint8_t*)buffer, n);
     }
   }

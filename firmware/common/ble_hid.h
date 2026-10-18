@@ -197,9 +197,29 @@ public:
 // benar-benar sampai ke companion app.
 class BleNusRxCallbacks : public NimBLECharacteristicCallbacks {
 public:
-  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t) override {
-    do { uint16_t tmp = bleNusSubCount + 1; bleNusSubCount = tmp; } while (0);
-    LOGS->printf("[BLE] NUS subscribe (total=%u)\n", (unsigned)bleNusSubCount);
+  // subValue: bit0 = notify aktif, 0 = unsubscribe. Versi lama mengabaikannya
+  // sehingga UNSUBSCRIBE (app disconnect -> CCCD=None) ikut dihitung sebagai
+  // subscribe, dan reset sesi hanya jalan di onConnect/onDisconnect - padahal
+  // Windows menahan link HID, jadi reconnect app tidak pernah memicunya.
+  // Tidak ada LOGS->printf di sini: callback ini berjalan di task host NimBLE.
+  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
+    const bool on = (subValue & 1) != 0;
+    bleNusSubCount = on ? 1 : 0;
+    // Setiap sesi app baru = state bersih: ring RX, mode frame, baris parsial,
+    // QUIET, antrean TX, dan counter DIAG (verdict per-sesi, bukan sejak boot).
+    bleNusClear();
+    PROTO_LINK_RESET();
+    bleNusTxDrop = true;                       // loop() mengosongkan antrean TX
+    // Permintaan conn-param HANYA setelah app aktif subscribe (pairing & discovery
+    // HID Windows sudah lewat), tidak pernah di tengah pairing.
+    bleParamHandle = bleHidConnHandle;
+    bleParamDueAt  = millis() + BLE_PARAM_DELAY_MS;
+    bleParamArmed  = on;
+    if (on) {
+      bleNusNotifyOk = 0; bleNusNotifyFail = 0; bleNusNotifyChunk = 0;
+      bleNusNotifyRetry = 0; bleNusPushDropped = 0; bleNusRingHigh = 0;
+      bleNusWriteNoConn = 0; bleNusWriteNoSub = 0;
+    }
   }
 };
 
@@ -315,6 +335,7 @@ static void bleAdvReport() {
 // Dipanggil dari onConnect(). Pointer server boleh null (tidak semua callback
 // memberikannya) - kalau null, permintaan dilewati dan nilai bawaan tetap
 // berlaku. Kehilangan request lebih baik daripada crash.
+
 static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
   if (server == nullptr) {
     LOGS->printf("[BLE] param: dilewati (server null)\n");
@@ -333,53 +354,50 @@ static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
 }
 
 class BleHidServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer* server, NimBLEConnInfo& ci) override {
+  static void snapshot(NimBLEConnInfo& ci) {
+    bleLinkItvl = ci.getConnInterval();
+    bleLinkLat  = ci.getConnLatency();
+    bleLinkTo   = ci.getConnTimeout();
+  }
+  void onConnect(NimBLEServer*, NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
-    // Host yang baru naik dimulai dari keadaan bersih. Tanpa ini device bisa
-    // membawa sisa mode frame / baris parsial dari sesi SEBELUMNYA, dan app
-    // yang baru connect akan melihat device "tidak menjawab apa-apa".
+    // Host yang baru naik dimulai dari keadaan bersih.
     bleNusClear();
     PROTO_LINK_RESET();
-    LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
-    // Coba set 2M PHY untuk throughput ~2x (755→1350 kbps). Best-effort:
-    // bila central tidak support 2M, ia otomatis turun ke 1M.
-    // Konstanta yang dikenali ESP-IDF di ESP32 Arduino 3.3.x:
-    //   BLE_GAP_LE_PHY_1M=1, BLE_GAP_LE_PHY_2M=2, BLE_GAP_LE_PHY_CODED=3
-    // Preference: 2M, fallback 1M, coded hanya untuk long-range (tidak dipakai)
-    if (server != nullptr) {
-      server->updatePhy(bleHidConnHandle,
-                        BLE_GAP_LE_PHY_2M,
-                        BLE_GAP_LE_PHY_2M,
-                        BLE_GAP_LE_PHY_CODED);
-      LOGS->printf("[BLE] PHY set ke 2M (best-effort)\n");
-    }
-    bleHidApplyConnParams(server, ci);
+    bleConnAtMs = millis();
+    bleMaxLoopGapUs = 0;
+    bleLastRssi = 0;
+    snapshot(ci);
+    bleParamArmed = false;       // diarm saat NUS subscribe, bukan di sini
+    bleLogConnect = true;        // dicetak loop(), bukan di task host
+    // Tidak ada PHY update / conn-param update di sini: PHY tetap 1M dan
+    // tidak ada LL procedure tambahan yang bertabrakan dengan pairing Windows.
+  }
+  void onConnParamsUpdate(NimBLEConnInfo& ci) override {
+    snapshot(ci);
+    bleLogParams = true;
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& ci) override {
-    // Windows tidak selalu memanggil onConnect; event ini sering yang pertama.
     bleHidConnHandle = ci.getConnHandle();
-    // MTU hasil negosiasi DISIMPAN, bukan dibuang. Dipakai transport_ble.h
-    // sebagai batas atas chunk notify - kalau Windows menawar MTU < 247,
-    // notify dengan 244 byte akan gagal diam-diam dan jawaban DUMP terpotong.
-    bleAttMtu = mtu;
+    bleAttMtu = mtu;             // dipakai bleNusChunkLimit()
   }
   void onAuthenticationComplete(NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
-    LOGS->printf("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
-                   ci.getConnHandle(), ci.isBonded());
+    bleAuthBonded = ci.isBonded();
+    bleLogAuth = true;
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+    bleDiscReason   = reason;
+    bleDiscDurMs    = millis() - bleConnAtMs;
+    bleDiscMaxGapUs = bleMaxLoopGapUs;
+    bleDiscRssi     = bleLastRssi;
     bleHidConnHandle = BLE_HID_NO_HANDLE;
-    // Subscriber lama sudah tidak berlaku. Kalau dibiarkan, bleNusSubCount
-    // hanya bertambah selamanya, dan penjaga `if (bleNusSubCount == 0)` di
-    // BleNusTransport::write() mati permanent - notify lalu tetap dicoba ke link
-    // yang sudah tidak ada peer, dan retry ladder (delay blocking 186 ms)
-    // berjalan penuh di dalam loop().
-    bleNusSubCount = 0;
-    // Sesi protokol (mode frame + baris teks) juga dinormalkan. Lihat
-    // PROTO_LINK_RESET di transport.h untuk alasannya.
+    bleParamArmed = false;
+    bleAttMtu = 23;              // MTU lama tidak berlaku di link berikutnya
+    bleNusTxDrop = true;
+    bleNusSubCount = 0;          // subscriber lama tidak berlaku
     PROTO_LINK_RESET();
-    LOGS->printf("[BLE] Putus (reason=0x%X)\n", reason);
+    bleLogDisc = true;
   }
 };
 
@@ -703,4 +721,64 @@ inline bool bleHidAdvertising() {
 
 inline bool bleHidConnected() {
   return bleHidConnHandle != BLE_HID_NO_HANDLE;
+}
+
+// Dipanggil SEKALI per putaran loop() (profileLoopHook). Tugasnya:
+//  1. mengukur selisih antar putaran loop (bukti firmware memblokir atau tidak),
+//  2. mencetak log yang diminta callback host (tidak boleh dicetak di sana),
+//  3. mengambil sampel RSSI,
+//  4. menjalankan permintaan conn-param yang ditunda.
+inline void bleHidServiceDeferred() {
+  static uint32_t lastUs = 0, nextRssiMs = 0;
+  const uint32_t nowUs = micros();
+  if (lastUs != 0 && bleHidConnHandle != BLE_HID_NO_HANDLE) {
+    const uint32_t gap = nowUs - lastUs;
+    if (gap > bleMaxLoopGapUs) bleMaxLoopGapUs = gap;
+  }
+  lastUs = nowUs;
+
+  if (bleLogConnect) {
+    bleLogConnect = false;
+    LOGS->printf("[BLE] Connect (handle=%u) itvl=%ums lat=%u timeout=%ums\n",
+                 (unsigned)bleHidConnHandle, (unsigned)(bleLinkItvl * 125u / 100u),
+                 (unsigned)bleLinkLat, (unsigned)(bleLinkTo * 10u));
+  }
+  if (bleLogAuth) {
+    bleLogAuth = false;
+    LOGS->printf("[BLE] Pairing selesai (handle=%u, bonded=%d)\n",
+                 (unsigned)bleHidConnHandle, (int)bleAuthBonded);
+  }
+  if (bleLogParams) {
+    bleLogParams = false;
+    LOGS->printf("[BLE] Param berlaku: itvl=%ums lat=%u timeout=%ums\n",
+                 (unsigned)(bleLinkItvl * 125u / 100u), (unsigned)bleLinkLat,
+                 (unsigned)(bleLinkTo * 10u));
+  }
+  if (bleLogDisc) {
+    bleLogDisc = false;
+    // maxLoopGap kecil (<<1000 ms) = firmware TIDAK memblokir; 0x208 berarti
+    // paket dari PC berhenti datang (radio/adapter), bukan loop yang macet.
+    LOGS->printf("[BLE] Putus (reason=0x%X) hidup=%lums maxLoopGap=%luus rssi=%ddBm itvl=%ums timeout=%ums\n",
+                 (unsigned)bleDiscReason, (unsigned long)bleDiscDurMs,
+                 (unsigned long)bleDiscMaxGapUs, (int)bleDiscRssi,
+                 (unsigned)(bleLinkItvl * 125u / 100u), (unsigned)(bleLinkTo * 10u));
+  }
+
+  if (bleHidConnHandle != BLE_HID_NO_HANDLE && (int32_t)(millis() - nextRssiMs) >= 0) {
+    nextRssiMs = millis() + 2000;
+    int8_t r = 0;
+    if (ble_gap_conn_rssi(bleHidConnHandle, &r) == 0) bleLastRssi = r;
+  }
+
+  if (!bleParamArmed) return;
+  if ((int32_t)(millis() - bleParamDueAt) < 0) return;
+  bleParamArmed = false;
+  uint16_t h = bleParamHandle;
+  if (h == BLE_HID_NO_HANDLE || h != bleHidConnHandle) return;
+  // Interval sudah cukup rapat -> jangan memicu LL procedure yang tidak perlu.
+  if (bleLinkItvl != 0 && (uint32_t)bleLinkItvl * 125u / 100u <= BLE_CONN_INTERVAL_MAX_MS) return;
+  NimBLEServer* srv = NimBLEDevice::getServer();
+  if (srv == nullptr) return;
+  srv->updateConnParams(h, BLE_CONN_INTERVAL_MIN_MS, BLE_CONN_INTERVAL_MAX_MS,
+                        BLE_CONN_LATENCY, BLE_SUPERVISION_TIMEOUT_10MS);
 }

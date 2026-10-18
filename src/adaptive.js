@@ -712,7 +712,10 @@ async function activatePresetRuntime(preset, exe) {
           //
           // Menandainya setelah dump berarti switch berikutnya selalu punya
           // kesempatan mencoba lagi kalau grid memang belum sinkron.
-          await loadActiveLayerDump();
+          if (!(await loadActiveLayerDump())) {
+            slotTable[slot] = null;
+            return;   // belum terbukti sinkron: jangan klaim aktif, poll berikutnya mencoba lagi
+          }
           currentActivePresetId = preset.id;
           updateActivePresetLabel();
           return;
@@ -732,12 +735,12 @@ async function activatePresetRuntime(preset, exe) {
   // hanya memperburuk - device jadi makin sibuk, RTT makin tinggi, dan
   // percobaan berikutnya pasti gagal lagi. Itu persis pola yang membuat
   // switch terasa "tidak selalu berhasil".
-  if (!textPathAllowed()) {
+  if (!textPathAllowed(cached)) {
     log(t('adaptive.textPathSkipped', { name: preset.name }), 'err');
     return;
   }
-  noteTextPath();
-  await activatePresetRuntimeText(preset, exe, sig, slot, cached);
+  const textOk = await activatePresetRuntimeText(preset, exe, sig, slot, cached);
+  if (!textOk) noteTextPath();
 }
 
 // Pelindung jalur teks.
@@ -756,14 +759,20 @@ async function activatePresetRuntime(preset, exe) {
 // Nilai 8 detik: cukup pendek supaya user tidak menunggu lama, cukup panjang
 // supaya fast path sempat dicoba lagi sebelum link didiamkan.
 const TEXT_PATH_COOLDOWN_MS = 8000;
-let lastTextPathAt = 0;
+let lastTextPathAt = 0;   // waktu upload teks TERAKHIR YANG GAGAL (bukan yang berhasil)
 
-/** Apakah upload penuh jalur teks boleh dicoba sekarang? */
-function textPathAllowed() {
-  return (Date.now() - lastTextPathAt) >= TEXT_PATH_COOLDOWN_MS;
+/**
+ * Apakah jalur teks boleh dicoba sekarang?
+ * - SLOT:n:USE (cached) hanya satu baris: selalu boleh.
+ * - Upload penuh diblokir hanya kalau upload sebelumnya GAGAL < 8 detik lalu.
+ *   Versi lama menghitung setiap upload (juga yang sukses), sehingga switch
+ *   berikutnya dalam 8 detik dilewati dengan pesan "binary path just failed".
+ */
+function textPathAllowed(cached) {
+  return !!cached || (Date.now() - lastTextPathAt) >= TEXT_PATH_COOLDOWN_MS;
 }
 
-/** Catat bahwa jalur teks dipakai, untuk menghormati cooldown berikutnya. */
+/** Catat bahwa upload teks GAGAL, untuk menghormati cooldown berikutnya. */
 function noteTextPath() { lastTextPathAt = Date.now(); }
 
 // Jalur teks. Dipisah dari activatePresetRuntime supaya ada SATU tempat yang
@@ -778,7 +787,9 @@ async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
   // berganti - persis gejala "matrix tombol tidak berubah".
   //
   // Jadi minta dump layer secara eksplisit, terpisah dari batch upload.
-  lines.push('INFO', 'DUMPENC');
+  // QUIET: device tidak membalas [OK] per SET selama batch (macropad_core.h).
+  lines.unshift('QUIET:1');
+  lines.push('QUIET:0', 'INFO', 'DUMPENC');
 
   // Anggap slot tidak valid sampai write benar-benar sukses. Kalau gagal di
   // tengah (kabel dicabut), device punya keymap setengah jadi sementara tabel app
@@ -805,9 +816,16 @@ async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
   // preset ditandai aktif sebelum grid benar-benar sinkron, switch berikutnya
   // akan melihat "sudah di preset ini" lalu tidak melakukan apa pun. Lihat
   // catatan yang sama di activatePresetRuntime.
-  await loadActiveLayerDump();
+  const synced = await loadActiveLayerDump();
+  if (!synced) {
+    // Device tidak menjawab DUMP: jangan klaim preset aktif. Slot dianggap tidak
+    // valid supaya switch berikutnya upload penuh, bukan SLOT:USE.
+    slotTable[slot] = null;
+    return false;
+  }
   currentActivePresetId = preset.id;
   updateActivePresetLabel();
+  return true;
 }
 
 // Minta dump layer aktif dari device supaya grid ikut berubah saat preset
@@ -932,10 +950,7 @@ async function pollFocusedApp() {
         } finally {
           endCfgTransfer();
         }
-        currentActivePresetId = null;
-        updateActivePresetLabel();
-        log(t('adaptive.backDefaultLog'), null);
-        hooks.notify(t('adaptive.defaultNotif'), 'preset');
+        // Label "Default" HANYA setelah device terbukti menjawab (DUMP di bawah).
         // Muat ulang grid. Tanpa ini, kekacauan yang dilaporkan terjadi:
         // "pindah ke aplikasi lain, key masih nyangkut di preset app
         // sebelumnya". Device sudah benar (CONTEXT:DEFAULT sudah sampai),
@@ -947,7 +962,14 @@ async function pollFocusedApp() {
         // kalau ada frame atau dump lain yang sedang berjalan - dan tepat
         // setelah switch ke preset(frame) itu memang sedang berjalan.
         // Jadi dump layer aktif diminta eksplisit di sini.
-        await loadActiveLayerDump();
+        if (await loadActiveLayerDump()) {
+          currentActivePresetId = null;
+          updateActivePresetLabel();
+          log(t('adaptive.backDefaultLog'), null);
+          hooks.notify(t('adaptive.defaultNotif'), 'preset');
+        }
+        // Kalau tidak terbukti, app tetap menganggap preset lama aktif ->
+        // poll berikutnya mengirim CONTEXT:DEFAULT lagi.
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }

@@ -53,7 +53,9 @@ const PING_MS_IDLE = 5000;
 const PING_MS_BUSY = 1500;
 // Batas per write. Characteristic NUS hanya 512 byte; menulis lebih dari itu
 // di-potong diam-diam oleh stack dan menyisakan separuh baris di device.
-const WRITE_CHUNK_MAX = 400;
+// <= MTU-3 (247-3=244). Lebih besar memaksa Windows memakai long write
+// (prepare+execute) yang menekan antrean mbuf device.
+const WRITE_CHUNK_MAX = 240;
 // Tarikan per panggilan ble_read. Rust clamps ke 1..4096, jadi nilai di sini
 // cukup besar untuk membaca buffer 256 KiB dalam beberapa iterasi poll.
 const READ_CHUNK_MAX = 4096;
@@ -139,6 +141,21 @@ let deviceId = null;
 let lastGoodDeviceId = null;
 try { lastGoodDeviceId = localStorage.getItem(LAST_DEVICE_KEY); } catch (e) { }
 let connected = false;
+// Tulis dengan retry: satu kegagalan TIDAK langsung dianggap link putus.
+// Cek status link sungguhan, tunggu sebentar, coba sekali lagi.
+async function writeResilient(bytes) {
+  try {
+    await invoke('ble_write', { data: bytes });
+    return;
+  } catch (e1) {
+    let up = false;
+    try { up = await invoke('ble_is_connected'); } catch (_) { up = false; }
+    if (!up) throw e1;
+    await new Promise(r => setTimeout(r, 300));
+    await invoke('ble_write', { data: bytes });   // gagal lagi -> lempar ke pemanggil
+  }
+}
+
 let notifySubscribed = false;  // true setelah read loop pertama sukses
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
@@ -427,9 +444,9 @@ export async function sendRaw(data) {
     // Dukung baik string maupun binary (Uint8Array/array of bytes).
     // Frame biner v2 mengirim Uint8Array; perintah teks lama mengirim string.
     if (typeof data === 'string') {
-      await invoke('ble_write', { data: Array.from(new TextEncoder().encode(data)) });
+      await writeResilient(Array.from(new TextEncoder().encode(data)));
     } else {
-      await invoke('ble_write', { data: Array.from(data) });
+      await writeResilient(Array.from(data));
     }
     return true;
   } catch (e) {
@@ -540,7 +557,7 @@ export async function sendLine(str) {
     }
   }
   try {
-    await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str + '\n')) });
+    await writeResilient(Array.from(new TextEncoder().encode(str + '\n')));
   } catch (e) {
     log(t('ble.writeError', { err: e }), 'err');
     // Tulis gagal = koneksi sudah putus; jangan tunggu polling 2 detik.
@@ -698,7 +715,7 @@ export async function connect(deviceIdArg) {
           return false;
         },
       ),
-      new Promise((r) => setTimeout(() => r(false), 10000)),
+      new Promise((r) => setTimeout(() => r(false), 25000)),
     ]);
   } catch (e) {
     // Menangkap apa pun yang lolos dari handler di atas (mis. invoke()
@@ -728,6 +745,9 @@ export async function connect(deviceIdArg) {
   connectBusy = false;
   log(t('ble.traceConnected', { id }));
   connected = true;
+  // ble_connect baru resolve SETELAH CCCD=Notify sukses (status dicek di ble.rs),
+  // jadi subscribe terbukti di sini - bukan ditebak dari tick baca pertama.
+  notifySubscribed = true;
   deviceId = id;
   lastGoodDeviceId = id;
   clearTimeout(retryTimer);
@@ -898,6 +918,14 @@ export async function tryAutoConnect(verbose, only) {
     let targets = devices;
     if (only && only.length) targets = devices.filter(d => only.includes(d.id));
     if (targets.length === 0) return false;
+    // Koneksi OTOMATIS hanya ke device yang sudah paired di Windows. Kalau app
+    // ikut membuka GATT ke device yang sedang dalam proses pairing, pairing dari
+    // Pengaturan Windows terganggu dan link putus berulang (0x208) sampai
+    // akhirnya bond tersimpan. Klik Connect manual (verbose) tetap boleh.
+    if (!verbose) {
+      targets = targets.filter(d => d.isPaired);
+      if (targets.length === 0) return false;
+    }
     // Device terakhir yang berhasil selalu dicoba lebih dulu.
     targets = [...targets].sort((a, b) => (b.id === lastGoodDeviceId) - (a.id === lastGoodDeviceId));
 
@@ -1065,7 +1093,6 @@ function startReadLoop() {
       const got = await readIncoming();
       // Set flag subscribe setelah read loop pertama sukses. Ini membuktikan
       // BLE notify sudah ter-subscribe dan perintah berikutnya aman dikirim.
-      if (!notifySubscribed) notifySubscribed = true;
       // LANJUTKAN LANGSUNG kalau masih ada data.
       //
       // Ini yang menutup 668 notifikasi hilang yang terlihat di DIAG

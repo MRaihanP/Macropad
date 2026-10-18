@@ -722,7 +722,15 @@ void dumpEncoderConfig() {
 // cmd tidak pernah dimutasi di dalam fungsi ini (semua pemakaiannya hanya ==,
 // startsWith, indexOf, substring, c_str), jadi diambil lewat const reference untuk
 // memangkas satu alokasi String per perintah.
+// QUIET:1 menekan balasan "[OK] ..." per perintah selama batch upload. Tiap SET
+// dulu menghasilkan satu notify sendiri -> ratusan notify beruntun yang
+// menghabiskan antrean mbuf. Direset otomatis saat sesi link baru.
+static bool protoQuiet = false;
+#define OK_PRINTF(...) do { if (!protoQuiet) SERIAL->printf(__VA_ARGS__); } while (0)
+
 void handleSerialCommand(const String& cmd) {
+  if (cmd == "QUIET:1") { protoQuiet = true;  return; }
+  if (cmd == "QUIET:0") { protoQuiet = false; return; }
   if (cmd.length() == 0) return;
 
   lastHostSeenMs = millis();
@@ -810,7 +818,7 @@ void handleSerialCommand(const String& cmd) {
     else if (op != "USE") { SERIAL->println("[ERROR] Op SLOT harus NEW/USE"); return; }
     slotCfg[n].currentLayer = 0;
     activeCfg = &slotCfg[n];
-    SERIAL->printf("[OK] Context: SLOT %d (%s)\n", n, op.c_str());
+    OK_PRINTF("[OK] Context: SLOT %d (%s)\n", n, op.c_str());
     return;
   }
 
@@ -827,7 +835,7 @@ void handleSerialCommand(const String& cmd) {
         activeCfg->layerMap[activeCfg->layerCount][r][c] = {ACTION_NONE, ""};
     snprintf(activeCfg->layerNames[activeCfg->layerCount], NAME_LEN, "Layer %d", activeCfg->layerCount);
     activeCfg->layerCount++;
-    SERIAL->printf("[OK] Layer ditambah, total sekarang %d\n", activeCfg->layerCount);
+    OK_PRINTF("[OK] Layer ditambah, total sekarang %d\n", activeCfg->layerCount);
     return;
   }
 
@@ -842,7 +850,7 @@ void handleSerialCommand(const String& cmd) {
     }
     activeCfg->layerCount--;
     if (activeCfg->currentLayer >= activeCfg->layerCount) activeCfg->currentLayer = activeCfg->layerCount - 1;
-    SERIAL->printf("[OK] Layer %d dihapus, total sekarang %d, currentLayer=%d\n", idx, activeCfg->layerCount, activeCfg->currentLayer);
+    OK_PRINTF("[OK] Layer %d dihapus, total sekarang %d, currentLayer=%d\n", idx, activeCfg->layerCount, activeCfg->currentLayer);
     broadcastLayerChanged();
     return;
   }
@@ -884,7 +892,7 @@ void handleSerialCommand(const String& cmd) {
     else if (which == "BTN") activeCfg->encBtn[encIdx] = newAction;
     else { SERIAL->println("[ERROR] Target SETENC harus CW/CCW/BTN"); return; }
 
-    SERIAL->printf("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
+    OK_PRINTF("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
     encoderConfigDumped = false;  // reset agi DUMPENC bisa dikirim lagi
     return;
   }
@@ -910,7 +918,7 @@ void handleSerialCommand(const String& cmd) {
     strncpy(activeCfg->layerNames[target], tmpName, NAME_LEN);
 
     activeCfg->currentLayer = (uint8_t)target;
-    SERIAL->printf("[OK] Layer digeser ke posisi %d\n", activeCfg->currentLayer);
+    OK_PRINTF("[OK] Layer digeser ke posisi %d\n", activeCfg->currentLayer);
     broadcastLayerChanged();
     return;
   }
@@ -924,7 +932,7 @@ void handleSerialCommand(const String& cmd) {
     String name = cmd.substring(idx1 + 1);
     strncpy(activeCfg->layerNames[layer], name.c_str(), NAME_LEN - 1);
     activeCfg->layerNames[layer][NAME_LEN - 1] = '\0';
-    SERIAL->printf("[OK] Layer %d diganti nama jadi \"%s\"\n", layer, activeCfg->layerNames[layer]);
+    OK_PRINTF("[OK] Layer %d diganti nama jadi \"%s\"\n", layer, activeCfg->layerNames[layer]);
     return;
   }
 
@@ -977,7 +985,7 @@ void handleSerialCommand(const String& cmd) {
     strncpy(activeCfg->layerMap[layer][row][col].value, value.c_str(), MACRO_MAX_LEN - 1);
     activeCfg->layerMap[layer][row][col].value[MACRO_MAX_LEN - 1] = '\0';
 
-    SERIAL->printf("[OK] Set L%d R%d C%d -> %s : %s\n", layer, row, col, typeStr.c_str(), value.c_str());
+    OK_PRINTF("[OK] Set L%d R%d C%d -> %s : %s\n", layer, row, col, typeStr.c_str(), value.c_str());
     return;
   }
 
@@ -1035,7 +1043,7 @@ void handleSerialCommand(const String& cmd) {
       rgbState.enabled = (en == 1);
       rgbState.dirty = true;
       rgbApplyState();
-      SERIAL->printf("[OK] RGB %s\n", rgbState.enabled ? "on" : "off");
+      OK_PRINTF("[OK] RGB %s\n", rgbState.enabled ? "on" : "off");
       return;
     }
     if (cmd.startsWith("RGB:BRI:")) {
@@ -1044,7 +1052,7 @@ void handleSerialCommand(const String& cmd) {
       rgbState.bri = (uint8_t)bL;
       rgbState.dirty = true;
       rgbApplyState();
-      SERIAL->printf("[OK] RGB brightness %d\n", rgbState.bri);
+      OK_PRINTF("[OK] RGB brightness %d\n", rgbState.bri);
       return;
     }
     if (cmd.startsWith("RGB:ALL:")) {
@@ -1071,7 +1079,7 @@ void handleSerialCommand(const String& cmd) {
       rgbState.keys[row][col][2] = (uint8_t)b;
       rgbState.dirty = true;
       rgbApplyState();
-      SERIAL->printf("[OK] RGB %d (R%d C%d) diset\n", (int)RGB_INDEX[row][col] + 1, row, col);
+      OK_PRINTF("[OK] RGB %d (R%d C%d) diset\n", (int)RGB_INDEX[row][col] + 1, row, col);
       return;
     }
     if (cmd.startsWith("RGB:MODE:")) {
@@ -1088,7 +1096,7 @@ void handleSerialCommand(const String& cmd) {
       rgbState.speed = (uint8_t)speed;
       rgbState.dirty = true;
       rgbApplyState();
-      SERIAL->printf("[OK] RGB mode %d\n", rgbState.mode);
+      OK_PRINTF("[OK] RGB mode %d\n", rgbState.mode);
       return;
     }
     if (cmd == "RGB:SAVE") {
@@ -1248,6 +1256,7 @@ void checkSerialInput() {
   // yang datang saat reset berjalan tidak langsung dihapus tanpa efek.
   if (protoLinkResetPending) {
     protoLinkResetPending = false;
+    protoQuiet = false;
     faResetSession();
   }
 

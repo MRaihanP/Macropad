@@ -162,14 +162,15 @@ impl Drop for BleTransport {
 }
 
 impl BleTransport {
-    pub fn new() -> Self {
+    /// Statistik dibagi antar-sesi supaya histori error tidak hilang tiap reconnect.
+    pub fn with_stats(stats: Arc<Mutex<BleStats>>) -> Self {
         Self {
             device: None,
             service: None,
             tx_char: None,
             rx_char: None,
             rx_buffer: Arc::new(Mutex::new(VecDeque::new())),
-            stats: Arc::new(Mutex::new(BleStats::default())),
+            stats,
             connected: false,
             value_changed_token: None,
         }
@@ -472,13 +473,18 @@ impl BleTransport {
         let token = rx_char
             .ValueChanged(&handler)
             .map_err(|e| format!("Gagal register value changed: {}", e))?;
-        block_on_winrt(
+        let cccd = block_on_winrt(
             rx_char
                 .WriteClientCharacteristicConfigurationDescriptorAsync(
                     GattClientCharacteristicConfigurationDescriptorValue::Notify,
                 ),
         )
         .map_err(|e| format!("Gagal enable notify: {}", e))?;
+        // Status WAJIB dicek: Ok(status != Success) berarti device TIDAK subscribe.
+        if cccd != GattCommunicationStatus::Success {
+            let _ = rx_char.RemoveValueChanged(token);
+            return Err(format!("Gagal enable notify: status {:?}", cccd));
+        }
         // Titik paling penting untuk diagnostik: kalau baris ini tidak muncul,
         // masalahnya DI BAWAH companion app (pairing/CCCD/stack BT), dan tidak
         // ada yang bisa diperbaiki di repo ini. Kalau muncul tapi baris NOTIFY
@@ -497,15 +503,6 @@ impl BleTransport {
 
         ble_log!("Connected to MacroPad");
         Ok(())
-    }
-
-    /// Snapshot penghitung L1 untuk ditampilkan di panel log aplikasi.
-    ///
-    /// Sengaja-readonly: laporan harus bisa diambil KAPAN SAJA tanpa mengubah
-    /// state koneksi. Kalau ini ikut disconnect, angka terakhir hilang tepat di
-    /// saat paling dibutuhkan yaitu setelah link putus.
-    pub fn stats(&self) -> BleStats {
-        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     pub fn disconnect(&mut self) {

@@ -389,6 +389,10 @@ void profileSetupHook() {
 }
 
 void profileLoopHook() {
+  // Kuras antrean notify BLE dan jalankan conn-param tertunda.
+  // WAJIB sebelum return awal di bawah.
+  bleNusTxPump();
+  bleHidServiceDeferred();
   // Switch USB<->BLE lewat tombol BOOT. WAJIB dipanggil SEBELUM return
   // pertama di bawah: animasi LED harus tetap jalan walau device sedang
   // tersambung BLE - justru di mode itu tombol switch paling mungkin dipakai
