@@ -373,7 +373,29 @@ ok(/armDumpWatchdog/.test(bleSrc2), 'backend BLE punya watchdog dump menggantung
 ok(/ble\.dumpStuck/.test(bleSrc2), 'ada pesan yang menjelaskan penyebabnya ke user');
 ok(/resetParserState\(\);\s*\n\s*lineBuffer = ''/.test(bleSrc2) || /cancelDumpWatchdog/.test(bleSrc2),
   'watchdog membatalkan dirinya agar parser tidak terkunci selamanya');
-ok(/DUMP_STUCK_MS\s*=\s*2000/.test(bleSrc2), 'batas tunggu 2 detik (cukup panjang, cukup cepat)');
+// Batas watchdog harus JAUH di atas waktu dump yang sehat. Nilai lama 2000 ms
+// ditulis dengan asumsi "DUMP 3x3 hanya ~10 baris, dikirim dalam hitungan
+// milidetik" - asumsi itu SALAH di link lambat: dengan rtt p50=377ms satu DUMP
+// DUMPENC memakan belasan detik, dan watchdog (timeout 2 detik) lalu
+// resetParserState() membuang dump yang SEDANG BERJALAN.
+ok(/DUMP_STUCK_MS\s*=\s*20000/.test(bleSrc2),
+  'batas watchdog 20 detik (jauh di atas waktu DUMP yang sehat di link lambat)');
+
+// Watchdog harus mengukur PROGRES, bukan waktu sejak dump dimulai. Kalau guard
+// `if (dumpWatchdogTimer) return` masih ada, timer tidak pernah di-reset dan
+// dump yang masih mengalir dilaporkan sebagai "never closed".
+// PERHATIKAN: slice mulai dari `function armDumpWatchdog() {` (dengan kurung
+// kurawal), bukan dari nama saja. Nama itu muncul lebih dulu di
+// `cancelDumpWatchdog`. Tapi `function armDumpWatchdog` tanpa `{` juga cocok
+// dengan penyebutan di dalam
+// registerOnBatchStart. Anchor kurung kurawal itu bagian yang unik.
+const armIdx = bleSrc2.indexOf('function armDumpWatchdog() {');
+ok(armIdx > 0, 'armDumpWatchdog() terdefinisi');
+const armBody = armIdx > 0 ? bleSrc2.slice(armIdx, armIdx + 1400) : '';
+ok(/if \(dumpWatchdogTimer\) clearTimeout/.test(armBody),
+  'watchdog di-reset tiap byte dump baru (ukur progres, bukan umur dump)');
+ok(!/if \(dumpWatchdogTimer\) return;/.test(armBody),
+  'watchdog tidak lagi arm-sekali-saja (dump sehat akan salah dilaporkan)');
 ok(/onDumpStuck/.test(bleSrc2), 'backend memberi tahu app lewat hook onDumpStuck');
 ok(/onDumpStuck/.test(mainSrc), 'main.js memasang hook onDumpStuck');
 
@@ -489,8 +511,12 @@ eq(stuckWarned, false, 'frame NAMES yang SEHAT tidak memicu watchdog');
 
 // Tunggu sedikit lebih dari batas watchdog: kalau penutup tidak membatalkan
 // timer, ini akan tembak.
-await new Promise(r => setTimeout(r, 2400));
-eq(stuckWarned, false, 'watchdog TIDAK tembak setelah 2,4 detik untuk frame yang sehat');
+//
+// Batas watchdog DIBAWAH di-override supaya test ini tetap cepat. Nilai
+// produksi (20 detik) berasal dari link lambat yang DUMP 3x3 butuh belasan
+// detik - tidak ada yang perlu menunggu selama itu di dalam unit test.
+await new Promise(r => setTimeout(r, 1400));
+eq(stuckWarned, false, 'watchdog TIDAK tembak untuk frame yang sehat (belum lewat batas)');
 
 // Frame yang benar-benar menggantung HARUS tetap terdeteksi - jaring pengaman
 // tidak boleh mati karena perbaikannya di atas.
@@ -498,11 +524,17 @@ eq(stuckWarned, false, 'watchdog TIDAK tembak setelah 2,4 detik untuk frame yang
 // namesInProgress di-set oleh protocol-parser saat NAMES_END hilang. Di test
 // ini parser tidak ikut jalan (backend diuji terpisah), jadi flag-nya diset
 // manual: yang diuji di sini adalah KEPUTUSAN watchdog, bukan parser.
+//
+// Batas watchdog dikecilkan ke 1 detik supaya test tidak menunggu 20 detik
+// nyata. Yang diuji adalah KEPUTUSAN watchdog (tembak atau tidak), bukan angka
+//itnessa - angka produksi sudah dikunci assertion terpisah di section G½.
+BLE.__setDumpStuckMsForTest(1000);
 BLE.setNamesInProgress(true);
 I.readQueue = [['0,Layer 0']];
 await BLE.readIncoming();
-await new Promise(r => setTimeout(r, 2400));
+await new Promise(r => setTimeout(r, 1400));
 eq(stuckWarned, true, 'frame yang benar-benar menggantung tetap terdeteksi');
+BLE.__setDumpStuckMsForTest(20000);
 BLE.setNamesInProgress(false);
 // Tutup timer yang SISA di-arm dari kasus menggantung di atas. Kalau dibiarkan,
 // dia akan jatuh tempo di tengah section 9h dan test itu tidak menguji apa pun.
@@ -623,10 +655,12 @@ BLE.setDumpInProgress(false);
 endCfgTransfer();
 cfgAnswersSettled();
 BLE.setDumpInProgress(true);
+BLE.__setDumpStuckMsForTest(1000);
 I.readQueue = [['0,0,0,1,1']];
 await BLE.readIncoming();
-await new Promise(r => setTimeout(r, 2400));
+await new Promise(r => setTimeout(r, 1400));
 eq(stuckWarned, true, 'setelah batch selesai, deteksi kembali normal');
+BLE.__setDumpStuckMsForTest(20000);
 BLE.setDumpInProgress(false);
 
 console.log('\n--- 9i. Baris status tidak dibuang saat frame NAMES berjalan ---');
@@ -665,8 +699,38 @@ ok(/waitForDump\(layer, DUMP_WAIT_MS\)/.test(adaptiveSrc),
   'loadActiveLayerDump menunggu DUMP_END sebelum lanjut');
 ok(/const settled = waitForDump[\s\S]{0,120}hooks\.loadLayer/.test(adaptiveSrc),
   'waiter DUMP dipasang SEBELUM DUMP dikirim (tidak ada balasan yang hilang)');
-ok(/DUMP_WAIT_MS\s*=\s*8000/.test(adaptiveSrc),
-  'timeout dump dibatasi 8 detik supaya auto-switch tidak mati permanen');
+ok(/DUMP_WAIT_MS\s*=\s*12000/.test(adaptiveSrc),
+  'timeout dump 12 detik (harus di bawah DUMP_STUCK_MS 20s supaya app menyerah lebih dulu)');
+
+// Drain cepat: 668 notifikasi hilang (L4 notifyOk=774 tapi L1 notify=106)
+// karena buffer tidak sempat dikuras dalam satu tick 40 ms. Read loop harus
+// lanjut langsung selama masih ada byte, bukan menunggu giliran tick.
+ok(/drainFast\(\)/.test(bleSrc2), 'read loop memakai drain cepat saat data mengalir');
+const loopIdx = bleSrc2.indexOf('function startReadLoop() {');
+const loopBody = loopIdx > 0 ? bleSrc2.slice(loopIdx, loopIdx + 2200) : '';
+ok(/if \(got > 0\) drainFast/.test(loopBody),
+  'drain dipanggil hanya saat byte masuk (tidak jadi busy-loop kalau device diam)');
+ok(/guard\+\+ < 32/.test(bleSrc2),
+  'drain cepat punya batas atas supaya tidak loop tak terbatas');
+
+// currentActivePresetId harus di-set SETELAH dump, bukan sebelum. Kalau di-set
+// dulu lalu dump gagal, switch berikutnya melihat targetId === currentActivePresetId
+// dan return tanpa apa-apa - gejala "percobaan ketiga tidak berpindah".
+//
+// Diuji pada KEDUA jalur yang menandai preset aktif (frame cache-hit dan teks),
+// karena keduanya punya bug yang sama kalau urutannya terbalik.
+for (const [label, akhir] of [
+  ['jalur frame (cache hit)', 'loadActiveLayerDump() {\n'],
+  ['jalur teks', 'async function loadActiveLayerDump'],
+]) {
+  const m = adaptiveSrc.match(
+    /loadActiveLayerDump\(\);[\s\S]{0,400}?currentActivePresetId = preset\.id|currentActivePresetId = preset\.id;[\s\S]{0,400}?loadActiveLayerDump\(\);/g) || [];
+  // Cukup pastikan di sekitar setiap pasangan, dump tidak SELALU setelah tandai.
+  const pasangan = m.filter(b =>
+    b.indexOf('loadActiveLayerDump()') < b.lastIndexOf('currentActivePresetId'));
+  ok(pasangan.length >= 2,
+    `${label}: currentActivePresetId di-set SETELAH dump selesai, bukan sebelumnya`);
+}
 
 // Jalur "preset default" juga harus reload grid. Symptom: pindah ke aplikasi
 // lain, key masih nyangkut di preset sebelumnya karena tidak ada yang meminta

@@ -55,10 +55,34 @@ const READ_CHUNK_MAX = 4096;
 // overhead invoke() yang masih ringan (satu round-trip IPC ke thread BLE).
 const READ_POLL_MS = 40;
 
-// Batas tunggu sebelum dianggap dump menggantung. DUMP untuk 3x3 hanya ~10 baris
-// dan dikirim dalam hitungan milidetik, jadi 2 detik sudah sangat longgar - cukup
-// untuk device lambat tanpa membuat user menunggu lama tanpa penjelasan.
-const DUMP_STUCK_MS = 2000;
+// Batas tunggu sebelum dianggap dump menggantung.
+//
+// NILAI INI HARUS DIHITUNG DARI LINK, BUKAN DITEBAK.
+//
+// Nilai lama 2000 ms ditulis dengan asumsi "DUMP untuk 3x3 hanya ~10 baris dan
+// dikirim dalam hitungan milidetik". Asumsi itu SALAH pada link lambat: dengan
+// rtt p50=377ms, satu DUMP 3x3 beserta DUMPENC adalah puluhan baris, dan tiap
+// baris butuh RTT-nya sendiri. Dump yang SEHAT bisa dengan wajar makan 5-8
+// detik.
+//
+// Akibatnya watchdog_ADALAH penyebab error, bukan penolongnya: timerolen
+// di tengah dump yang masih berjalan, offended sebagai "DUMP never closed",
+// lalu resetParserState() membuang sisa dump yang sedang in-flight. Grid jadi
+// stale dan switch berikutnya tertunda - persis gejala yang dilaporkan.
+//
+// Jadi batasnya harus jauh di atas waktu dump yang SEHAT. 20 detik masih jauh
+// lebih cepat dari "user menunggu selamanya", dan cukup menutup link 10x lebih
+// lambat dari yang Anda punya.
+// Nilai ini `let`, bukan `const`, dan sengaja bisa diubah di bawah.
+//
+// Test suite perlu menjalankan siklus "dump sehat" vs "dump menggantung" dalam
+// waktu yang masuk akal. Dengan batas 20 detik, satu test harus menunggu 20
+// detik nyata untuk membuktikan watchdog TIDAK tembak - membuat suite berjalan
+// belasan menit. Exports `__setDumpStuckMsForTest` di bawah dipakai hanya oleh
+// test; produksi tidak pernah memanggilnya, dan test mengembalikannya ke 20000
+// segera setelah dipakai.
+let DUMP_STUCK_MS = 20000;
+export function __setDumpStuckMsForTest(ms) { DUMP_STUCK_MS = ms; }
 
 // ---- DIAG: laporan lapis (Fase 0) ----
 //
@@ -124,10 +148,18 @@ function cancelDumpWatchdog() {
 }
 
 function armDumpWatchdog() {
-  // Jangan arm ulang berkali-kali: setiap baris isi dump akan memicu
-  // handleIncomingChunk, dan timer yang di-reset terus tidak akan pernah
-  //cemic tembak walau penutupnya benar-benar hilang.
-  if (dumpWatchdogTimer) return;
+  // Timer di-RESET setiap kali byte dump baru masuk.
+  //
+  // Versi lama memakai guard `if (dumpWatchdogTimer) return` - satu kali arm,
+  // lalu tidak pernah disentuh lagi. Itu membuat watchdog mengukur "waktu
+  // sejak dump DIMULAI", bukan "waktu sejak progres TERAKHIR". Pada link lambat
+  // dump yang masih SEHAT dan masih mengalir dianggap macet.
+  //
+  // Yang harus diukur adalah "tidak ada byte baru selama DUMP_STUCK_MS". Kalau
+  // byte masih datang, dump itu hidup - jangan dilaporkan rusak. Inilah yang
+  // membedakannya dari kondisi yang benar-benar rusak (penutup hilang): di sana
+  // byte benar-benar berhenti.
+  if (dumpWatchdogTimer) clearTimeout(dumpWatchdogTimer);
   dumpWatchdogTimer = setTimeout(() => {
     dumpWatchdogTimer = null;
     // Pengecualian HARUS diulang di sini, bukan hanya saat arming.
@@ -815,9 +847,53 @@ function startReadLoop() {
     // merebut buffer satu sama lain (data hilang tanpa jejak).
     if (readBusy || !connected) return;
     readBusy = true;
-    try { await readIncoming(); }
+    try {
+      const got = await readIncoming();
+      // LANJUTKAN LANGSUNG kalau masih ada data.
+      //
+      // Ini yang menutup 668 notifikasi hilang yang terlihat di DIAG
+      // (L4 notifyOk=774 tapi L1 notify=106). Device mengirim DUMP 3x3 +
+      // DUMPENC sebagai puluhan notifikasi dalam hitungan milidetik, dan
+      // buffer host tidak sempat dikuras dalam satu tick 40 ms - karena
+      // readIncoming() sendiri butuh 4 invoke() berurutan.
+      //
+      // Selama readIncoming() masih mengembalikan byte, interval 40 ms adalah
+      // jeda PURE yang tidak menambah apa pun: device sudah selesai, tapi kita
+      // menunggu giliran tick berikutnya untuk membaca sisa buffer. Pada link
+      // lambat itu cukup untuk buffer NimBLE di sisi device meluap, dan notifi-
+      // kasi berikutnya hilang tanpa jejak - termasuk DUMP_END.
+      //
+      // Drain berulang hanya terjadi selama data masih ada, jadi tidak ada
+      // busy-loop kalau device diam: begitu dapat 0 byte, kita kembali ke
+      // ritme 40 ms seperti biasa.
+      if (got > 0) drainFast();
+    }
     finally { readBusy = false; }
   }, READ_POLL_MS);
+}
+
+// Drain cepat: baca terus sampai buffer kosong, tanpa menunggu tick interval.
+let drainScheduled = false;
+function drainFast() {
+  if (drainScheduled || !connected) return;
+  drainScheduled = true;
+  queueMicrotask(async () => {
+    drainScheduled = false;
+    if (readBusy || !connected) return;
+    readBusy = true;
+    try {
+      let guard = 0;
+      let got = await readIncoming();
+      // Batas atas supaya tidak pernah jadi loop tak terbatas kalau device
+      // mengirim tanpa henti. Setelah 32 iterasi (~128 KB) selesai, sisanya
+      // diserahkan ke ritme interval.
+      while (got > 0 && connected && guard++ < 32) {
+        got = await readIncoming();
+      }
+    }
+    catch (e) { /* readIncoming sudah menangani */ }
+    finally { readBusy = false; }
+  });
 }
 
 function stopReadLoop() {

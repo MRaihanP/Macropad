@@ -68,6 +68,20 @@ const FOCUS_POLL_MS = 120;
 // sedang jalan. Tanpa jeda ini, companion app (yang sedang difokuskan) memicu
 // "Back to Default" dan target memicu switch balik - menghasilkan bolak-balik
 // tanpa henti yang membanjiri antrean device.
+//
+// CATATAN PENTING: cooldown ini dihitung dari WAKTU switch DIMULAI, dan switch
+// yang sekarang bisa memakan belasan detik di link lambat (upload + tunggu
+// DUMP_END). Jadi saat switch pertama masih berjalan, cooldown sudah lama
+// terlewati - dan begitu switch pertama selesai, switch kedua langsung boleh
+// jalan. Itu perilaku yang benar: yang dicegah adalah dua switch BERJALAN
+// BERSAMAAN, dan `autoSwitchBusy` sudah menjaganya.
+//
+// Gejala "percobaan ketiga tidak berpindah sama sekali" punya sebab lain:
+// bukan cooldown, tapi `targetId === currentActivePresetId`. Kalau switch
+// sebelumnya sempat menandai preset sebagai aktif lalu grid-nya gagal dimuat,
+// app akan melihat "sudah di preset ini" dan tidak melakukan apa-apa - padahal
+// grid masih menampilkan isi lama. Karena itu penandaan `currentActivePresetId`
+// harus terjadi BERSAMAAN dengan preset benar-benar terpasang di device.
 const SWITCH_COOLDOWN_MS = 2500;
 let lastSwitchAt = 0;
 
@@ -81,7 +95,13 @@ let lastSwitchAt = 0;
 // 8 detik longgar untuk link lambat (rtt p95 bisa ~1 detik di adapter buruk),
 // tapi bukan tanpa batas: kalau device tidak pernah mengirim DUMP_END, switch
 // berikutnya akan terkunci selamanya dan auto-switch mati permanen.
-const DUMP_WAIT_MS = 8000;
+//
+// WAJIB DILEBIHI dari DUMP_STUCK_MS di ble-transport.js (20 detik). Kalau nilai
+// di sini lebih kecil, app akan menyerah dulu dan mencatat error, padahal
+// watchdog di backend belum sempat menyalakan - dan grid tetap stale tanpa
+// penjelasan. Dua batas harus urut: app lebih dulu menyerah, baru backend
+// membersihkan parser sebagai jaring pengaman terakhir.
+const DUMP_WAIT_MS = 12000;
 
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
 let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
@@ -635,7 +655,7 @@ async function activatePresetRuntime(preset, exe) {
             // di sini akan mengirim ulang ratusan baris SET - persis perintah
             // yang membuat device kewalahan dan Windows memutus link.
             //
-            // Dampar sampai DUMP di bawah: kalau device ternyata masih mode
+            // Dampaknya sampai DUMP di bawah: kalau device ternyata masih mode
             // frame, INFO/DUMPENC akan dibaca sebagai payload frame rusak dan
             // DUMP_BEGIN yang menyertainya tidak pernah punya DUMP_END - itu
             // persis error "DUMP never closed" yang muncul di log. Jadi kalau
@@ -657,10 +677,22 @@ async function activatePresetRuntime(preset, exe) {
             cache: t('adaptive.cacheFrame'),
           }), 'ok');
           hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
+          slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
+          // Dump dulu, baru tandai aktif.
+          //
+          // Urutan ini penting dan terbalik di versi lama. Kalau
+          // `currentActivePresetId` di-set SEBELUM dump, lalu dump gagal
+          // (timeout), maka switch berikutnya melihat
+          // `targetId === currentActivePresetId` dan langsung return tanpa
+          // melakukan apa pun. Itulah gejala "percobaan ketiga tidak
+          // berpindah sama sekali": preset-nya ditandai aktif padahal grid
+          // masih menampilkan isi lama dan tidak pernah dicoba lagi.
+          //
+          // Menandainya setelah dump berarti switch berikutnya selalu punya
+          // kesempatan mencoba lagi kalau grid memang belum sinkron.
+          await loadActiveLayerDump();
           currentActivePresetId = preset.id;
           updateActivePresetLabel();
-          slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
-          await loadActiveLayerDump();
           return;
         }
         log(t('adaptive.frameActivateFail', { name: preset.name }), 'err');
@@ -707,14 +739,17 @@ async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
   }
 
   slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
-  currentActivePresetId = preset.id;
-  updateActivePresetLabel();
   log(t('adaptive.presetActiveLog', { name: preset.name, exe, cache: cached ? t('adaptive.cache') : '' }), 'ok');
   hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
-  // Minta ulang isi layer yang sekarang aktif. Ini yang membuat grid ikut berubah
-  // saat preset berganti - tanpa itu, app menampilkan keymap preset sebelumnya
-  // sampai user menekan Refresh secara manual.
+  // Minta ulang isi layer yang sekarang aktif, dan TUNGGU sampai selesai.
+  //
+  // Penandaan `currentActivePresetId` sengaja ada SETELAH baris ini: kalau
+  // preset ditandai aktif sebelum grid benar-benar sinkron, switch berikutnya
+  // akan melihat "sudah di preset ini" lalu tidak melakukan apa pun. Lihat
+  // catatan yang sama di activatePresetRuntime.
   await loadActiveLayerDump();
+  currentActivePresetId = preset.id;
+  updateActivePresetLabel();
 }
 
 // Minta dump layer aktif dari device supaya grid ikut berubah saat preset
@@ -755,6 +790,11 @@ async function loadActiveLayerDump() {
   if (!ok) {
     log(t('adaptive.dumpWaitTimeout', { layer }), 'err');
   }
+  // Status dikembalikan, bukan diabaikan di sini. Pemanggil butuh tahu apakah grid
+  // benar-benar sudah sinkron sebelum menandai preset sebagai aktif - kalau
+  // tidak, switch berikutnya akan mengira sudah di preset yang benar lalu
+  // tidak melakukan apa-apa.
+  return ok;
 }
 
 let pollInFlight = false;
