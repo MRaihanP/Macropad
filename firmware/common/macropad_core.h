@@ -790,6 +790,10 @@ void handleSerialCommand(const String& cmd) {
   // ---- Context switching: App Preset ----
   if (cmd == "CONTEXT:DEFAULT") {
     activeCfg = &cfg;
+    // Sama seperti faCmdCfgActivate: currentLayer di-clamp supaya device tidak
+    // tertinggal di layer terakhir dari preset yang baru saja ditinggalkan.
+    if (activeCfg->currentLayer >= activeCfg->layerCount) activeCfg->currentLayer = 0;
+    broadcastLayerChanged();
     SERIAL->println("[OK] Context: DEFAULT");
     return;
   }
@@ -1226,6 +1230,21 @@ static void handleInboundByte(uint8_t b) {
 // objek yang sama (g_transport == g_logTransport saat lewat CDC). Membaca
 // keduanya tanpa pengecekan akan membaca tiap byte dua kali.
 void checkSerialInput() {
+  // Reset sesi protokol SELALU didahulukan, sebelum satu byte pun dibaca.
+  //
+  // Callback BLE (ble_hid.h) tidak boleh menyentuh faSt / serialLine secara
+  // langsung: ia berjalan di task host NimBLE, sedangkan keduanya milik task
+  // loop Arduino. Yang dilakukan callback hanya menandai lewat
+  // protoLinkResetPending; penyusunannya terjadi di sini.
+  //
+  // Ini satu-satunya tempat yang aman untuk itu, dan hanya boleh dieksekusi satu
+  // kali per permintaan: flag dibersihkan SEBELUM reset dijalankan, supaya callback
+  // yang datang saat reset berjalan tidak langsung dihapus tanpa efek.
+  if (protoLinkResetPending) {
+    protoLinkResetPending = false;
+    faResetSession();
+  }
+
   while (SERIAL->available()) handleInboundByte((uint8_t)SERIAL->read());
 
   if (g_transport != g_logTransport) {

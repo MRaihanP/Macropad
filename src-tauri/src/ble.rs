@@ -102,6 +102,16 @@ pub struct BleStats {
     pub write_calls: u64,
     pub write_bytes: u64,
     pub write_errors: u64,
+    /// WriteWithoutResponse: dikirim ke characteristic TX tanpa menunggu
+    /// ack firmware. Dipakai Fase 5 untuk CFG_WRITE sehingga host tidak
+    /// menunggu ack per chunk (setiap ack = satu notifikasi RX yang
+    /// memaksa device menyiapkan buffer, dan pada link BLE flak itu justru
+    /// memicu 0x80650011 "Insufficient Resources" pada host).
+    pub write_no_ack: u64,
+    /// WriteWithoutResponse yang GAGAL — biasanya karena device buffer
+    /// penuh atau link tidak sehat. Karena WWNOR tidak ada balasannya,
+    /// counter ini adalah satu-satunya bukti bahwa byte tidak sampai.
+    pub write_no_ack_dropped: u64,
     pub connect_count: u64,
     pub disconnect_count: u64,
     /// Notifikasi diterima saat buffer sudah >= batas. Indikasi app menarik
@@ -126,6 +136,29 @@ pub struct BleTransport {
     connected: bool,
     // WinRT event token di windows 0.61 bertipe i64 (bukan EventRegistrationToken).
     value_changed_token: Option<i64>,
+}
+
+// Membersihkan handle WinRT saat object di-drop.
+//
+// Tanpa ini, BleTransport yang diganti (mis. pada reconnect yang menyalakan
+// transport baru SEBELUM yang lama diruntuhkan) meninggalkan semuanya:
+//
+//   - handler ValueChanged yang masih terpasang pada characteristic
+//   - CCCD yang masih bernilai "notify" - device masih push ke characteristic
+//     yang tidak lagi punya handler
+//   - handle GATT service yang belum di-Close, sehingga Windows menahan
+//     session dan connect berikutnya bisa gagal dengan sharing violation
+//
+// Semuanya menumpuk tiap reconnect, dan gejalanya muncul sebagai connect
+// gagal dengan 0x800704C7 / "TX characteristic not registered" - pola yang
+// persis sama dengan yang dicatat sebagai "racun Windows".
+//
+// Penting: disconnect() dipanggil DULU pada jalur normal, jadi pemanggilannya
+// kedua di sini tidak merusak apa pun - field-nya sudah None.
+impl Drop for BleTransport {
+    fn drop(&mut self) {
+        self.disconnect();
+    }
 }
 
 impl BleTransport {
@@ -608,10 +641,42 @@ impl BleTransport {
         }
     }
 
-    // Disiapkan supaya BleTransport lengkap sebagai transport
-    // (USB memakai flush untuk mengosongkan buffer TX serial).
-    #[allow(dead_code)]
-    pub fn flush(&mut self) {
-        // BLE tidak butuh flush eksplisit
+    pub fn write_no_ack(&mut self, data: &[u8]) -> Result<usize, String> {
+        // WriteWithoutResponse: tidak ada ack, jadi kegagalan biasanya
+        // berarti link/device yang tidak sehat - bukan koneksi yang benar-benar
+        // putus. Jangan biarkan satu write WWNOR gagal menghancurkan sesi;
+        // cukup catat ke counter dan beri tahu app supaya ia bisa throttle.
+        if let Ok(mut st) = self.stats.lock() {
+            st.write_no_ack += 1;
+            st.write_bytes += data.len() as u64;
+        }
+        if let Some(tx_char) = &self.tx_char {
+            let writer = DataWriter::new().map_err(|e| format!("Gagal create DataWriter: {}", e))?;
+            writer
+                .WriteBytes(data)
+                .map_err(|e| format!("Gagal write bytes: {}", e))?;
+            let buffer = writer
+                .DetachBuffer()
+                .map_err(|e| format!("Gagal detach buffer: {}", e))?;
+            // WriteWithoutResponse tidak mengharapkan GattCommunicationStatus
+            // success sebagai konfirmasi - pada banyak stack, operasi ini
+            // "berhasil" walhasil link sudah mulai putus asal queue host masih
+            // menerima. Yang dibedakan di sini adalah apakah WinRT menolak
+            // packet SEKALI LANGKAH (Insufficient Resources / link down).
+            let result = block_on_winrt(
+                tx_char.WriteValueWithOptionAsync(&buffer, GattWriteOption::WriteWithoutResponse),
+            )
+            .map_err(|e| format!("BLE write no-ack failed: {}", e))?;
+            if result == GattCommunicationStatus::Success {
+                Ok(data.len())
+            } else {
+                if let Ok(mut st) = self.stats.lock() {
+                    st.write_no_ack_dropped += 1;
+                }
+                Err(format!("BLE write no-ack failed: {:?}", result))
+            }
+        } else {
+            Err("Not connected".to_string())
+        }
     }
 }

@@ -79,6 +79,13 @@ static void protoDiagMediaReset() {
 // payload maksimum 0 padahal devicenya sebenarnya punya NUS.
 #define PROTO_FRAME_MTU()   ((uint32_t)bleNusMtu())
 
+// Buang sisa byte inbound dari link yang sudah tidak berlaku.
+//
+// Dipanggil dari faResetSession() (frame_proto.h) saat BLE connect/disconnect.
+// Hook, karena profil FINAL tidak punya NUS sama sekali dan tidak punya yang
+// perlu dikosongkan.
+#define PROTO_LINK_DRAIN_RX()  bleNusClear()
+
 // ---- Transport ----
 class BleNusTransport : public TransportBase {
 public:
@@ -121,21 +128,40 @@ public:
       size_t n = len - sent;
       if (n > chunkMax) n = chunkMax;
 
-      // Retry notify dengan backoff eksponensial. Maks 5 percobaan per chunk.
-      // Hindari break diam-diam yang membuat sisa data (termasuk DUMP_END) hilang.
+      // Retry notify dengan backoff eksponensial.
+      //
+      // Batas keras waktu yang boleh diSpend di sini, bukan jumlah percobaan.
+      // Setiap percobaan gagal memakai delay() BLOKKING, dan ini dipanggil dari
+      // loop() - jadi selama backoff berjalan, loop() buta: matriks tidak
+      // discan, encoder tidak dibaca, dan perintah inbound tidak diproses.
+      //
+      // Versi lama memakai 5 percobaan dengan delay(6 << retry), yaitu
+      // 6+12+24+48+96 = 186 ms PER CHUNK. Untuk satu dump yang terpecah jadi
+      // banyak chunk, totalnya bisa detik - dan itu salah satu alasan device
+      // sering hilang tepat saat companion app sedang mengirim data paling
+      // banyak (ganti preset).
+      //
+      // Jadi sekarang: paling banyak 3 percobaan, jeda pendek. Notify yang
+      // gagal dicatat lewat bleNusNotifyFail / bleNusNotifyRetry dan dilaporkan
+      // di DIAGMEDIA, jadi angka yang dipangkas bukan informasi yang hilang -
+      // dan sisa payload tetap dikembalikan ke caller lewat nilai balik,
+      // bukan di-drop diam-diam.
+      const uint8_t BLE_NOTIFY_MAX_RETRY = 3;
       uint8_t retries = 0;
       bool sentOk = false;
       naikkan(bleNusNotifyChunk);
-      while (retries < 5) {
+      while (retries < BLE_NOTIFY_MAX_RETRY) {
         if (bleNusRx->notify(data + sent, n, h)) {
           sentOk = true;
           break;
         }
-        // Gagal: delay backoff eksponensial (6, 12, 24, 48, 96 ms)
+        // Gagal: delay backoff pendek (1, 2, 4 ms).
         naikkan(bleNusNotifyRetry);
-        delay(6 * (1 << retries));
+        delay(1 << retries);
         retries++;
         h = bleHidConnHandle;
+        // Peer hilang = tidak akan pernah berhasil. Retry lagi hanya menambah
+        // loop() buta tanpa peluang sukses.
         if (h == BLE_HID_NO_HANDLE) break;
       }
 
@@ -144,8 +170,8 @@ public:
         // PENTING: JANGAN break diam-diam - sisa data (incl DUMP_END) tidak akan terkirim
         // tapi setidaknya caller tahu ada masalah lewat return value < len.
         naikkan(bleNusNotifyFail);
-        LOGS->printf("[BLE] notify gagal total setelah 5x retry, %u byte tertinggal\n",
-                     (unsigned)(len - sent));
+        LOGS->printf("[BLE] notify gagal total setelah %ux retry, %u byte tertinggal\n",
+                     (unsigned)BLE_NOTIFY_MAX_RETRY, (unsigned)(len - sent));
         return sent;  // return byte yang sukses, caller bisa cek return < len
       }
 

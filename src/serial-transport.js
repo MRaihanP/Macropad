@@ -113,6 +113,13 @@ export async function sendRaw(data) {
 // tidak melaporkan regresi saat mengekstraksi transport.
 export const writeRaw = sendRaw;
 
+// Pada transport serial, tidak ada konsep "WriteWithoutResponse" (BLE).
+// Kirim mentah tanpa menunggu ack — untuk serial tetap pakai sendRaw() yang
+// sama, karena serial tidak membedakan confirmed vs. unconfirmed write.
+export async function sendRawNoAck(data) {
+  return sendRaw(data);
+}
+
 export async function sendLine(str) {
   if (!port) return;
   try { await port.write(str + "\n"); }
@@ -169,8 +176,11 @@ export function handleIncomingChunk(data) {
   }
   let idx;
   while ((idx = lineBuffer.indexOf('\n')) >= 0) {
-    hooks.onLine(lineBuffer.slice(0, idx));
+    const line = lineBuffer.slice(0, idx);
     lineBuffer = lineBuffer.slice(idx + 1);
+    // Byte biner frame yang ikut terbaca sebagai teks menghasilkan U+FFFD.
+    if (line.includes('\uFFFD')) continue;
+    hooks.onLine(line);
   }
 }
 

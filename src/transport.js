@@ -52,6 +52,7 @@ export function initTransport(h) { backend.initTransport(h); }
 export function sendLine(str) { return backend.sendLine(str); }
 export function sendBatch(lines) { return backend.sendBatch(lines); }
 export function sendRaw(data) { return backend.sendRaw(data); }
+export function sendRawNoAck(data) { return backend.sendRawNoAck(data); }
 export function connect(arg) { return backend.connect(arg); }
 export function disconnect(manual) { return backend.disconnect(manual); }
 export function autoDetect() { return backend.autoDetect(); }

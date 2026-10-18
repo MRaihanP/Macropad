@@ -27,6 +27,8 @@ export const T_CFG_WRITE = 0x11;
 export const T_CFG_COMMIT = 0x12;
 export const T_CFG_QUERY = 0x13;
 export const T_CFG_ACTIVATE = 0x14;
+export const T_CFG_READY = 0x15;
+export const T_CREDIT = 0x16;
 export const T_EVT = 0x20;
 export const T_ERR = 0x7f;
 
@@ -50,6 +52,13 @@ export const ERR_NONE = 0x00;
 export const ERR_BAD_VER = 0x01;
 export const ERR_BAD_CRC = 0x02;
 export const ERR_LEN_OVERFLOW = 0x03;
+export const ERR_SEQ_GAP = 0x10;
+export const ERR_SEQ_DUP = 0x11;
+export const ERR_NO_SESSION = 0x12;
+export const ERR_CREDIT_EXHAUSTED = 0x13;
+export const ERR_STAGING_FULL = 0x14;
+export const ERR_CRC32_MISMATCH = 0x15;
+export const ERR_UNSUPPORTED = 0x16;
 
 /** CRC16/CCITT-FALSE. Parameter wajib identik dengan frame.h. */
 export function crc16(bytes) {

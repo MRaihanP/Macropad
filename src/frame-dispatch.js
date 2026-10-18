@@ -124,9 +124,11 @@ function handOff(type, payload) {
  * @returns {Promise<Uint8Array|null>} payload, atau null saat timeout
  */
 export function waitForFrame(type, timeoutMs) {
-  return new Promise((resolve) => {
-    const w = { resolve, timer: null };
+  let w = null;
+  const p = new Promise((resolve) => {
+    w = { resolve, timer: null, cancelled: false };
     w.timer = setTimeout(() => {
+      if (w.cancelled) return;
       const q = waiters.get(type);
       if (q) {
         const i = q.indexOf(w);
@@ -138,6 +140,24 @@ export function waitForFrame(type, timeoutMs) {
     if (!waiters.has(type)) waiters.set(type, []);
     waiters.get(type).push(w);
   });
+  // Pemanggil yang kalah Promise.race harus bisa membatalkan waiter-nya.
+  // Kalau tidak, waiter yang tidak dipakai tetap menggantung di antrean dan
+  // akan "mencuri" frame berikutnya yang tipe-nya sama (ERR, CFG_META, dll).
+  // Bukan melempar - resolve(null) supaya caller yang memanggil .then()
+  // tetap mendapat null yang jujur.
+  p.cancel = () => {
+    if (w.cancelled) return;
+    w.cancelled = true;
+    if (w.timer) clearTimeout(w.timer);
+    const q = waiters.get(type);
+    if (q) {
+      const i = q.indexOf(w);
+      if (i >= 0) q.splice(i, 1);
+      if (!q.length) waiters.delete(type);
+    }
+    w.resolve(null);
+  };
+  return p;
 }
 
 /**

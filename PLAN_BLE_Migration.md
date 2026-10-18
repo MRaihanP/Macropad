@@ -1,6 +1,6 @@
 # PLAN: Migrasi Protokol Companion App → Frame Biner (A) + CFG_SIG (B) + Credit Flow Control (C)
 
-Status: **Fase 3 & 4 SELESAI** (2026-10-17). Fase 0–4 beres; fast path frame + bulk upload biner hidup dan teruji. Fase 5 (credit flow control) berikutnya.
+Status: **Fase 5 SELESAI** (2026-10-17). Fase 0–5 beres; fast path frame + bulk upload biner + credit flow control hidup dan teruji. Fase 6 (pembersihan) berikutnya.
 Target repo: `E:\05_Finish_projects\macropad-configurator`
 
 ### Status Fase 3 — SELESAI (2026-10-17)
@@ -229,12 +229,34 @@ Jalur lama: ~600 baris `SET:` ≈ 21 KB keluar **+ 21 KB `[OK]` kembali = ~42 KB
 
 ---
 
-## Fase 5 — Credit flow control (bagian C)
+## Fase 5 — Credit flow control (bagian C) — SELESAI (2026-10-17)
 
 - `CFG_BEGIN` → `CFG_READY{credit u16}` (staging 8 KB + buffer coalisi)
-- Tiap `CREDIT(bytes u16)` menambah jatah; `creditStall` kalau gap ack > 500 ms
+- Tiap `CREDIT(bytes u16}` mengganti jatah (bukan menambah); `creditStall` kalau gap ack > 500 ms
 - `CFG_WRITE` dikirim **WriteWithoutResponse**; frame kontrol tetap **WriteWithResponse**
 - Credit hanya naik saat ruang staging benar-benar ada (kalau tidak → penumpukan diam-diam di device)
+- Frontend: `uploadPresetBinary()` di `src/frame-transport.js` memakai credit-aware loop,
+  `sendRawNoAck()` di `src/transport.js` + `src/ble-transport.js` + `src/serial-transport.js`
+- Backend Rust: `ble_write_no_ack` (WriteWithoutResponse) sudah ada, terdaftar di lib.rs
+- Firmware: handler `CFG_READY`/`CREDIT` sudah ada di `firmware/common/frame_proto.h`
+- Test guard: `ble-rs-guard-test.cjs` seksi 3 diupdate — `write()` tetap WriteWithResponse,
+  `write_no_ack()` memakai WriteWithoutResponse secara eksplisit untuk CFG_WRITE saja
+
+### Checklist berkas Fase 5
+
+| No | Berkas | Status | Verifikasi |
+|---|---|---|---|
+| 1 | `firmware/common/frame_proto.h` | [x] Exist | Handler `faCmdCfgBegin/CfgWrite/CfgCommit` + staging buffer + credit accounting |
+| 2 | `src/frame-codec.js` | [x] Updated | Konstanta `T_CFG_READY`, `T_CREDIT`, semua `ERR_*` |
+| 3 | `src/frame-transport.js` | [x] Updated | `uploadPresetBinary()` dengan credit flow control loop |
+| 4 | `src/transport.js` | [x] Updated | `sendRawNoAck()` di facade |
+| 5 | `src/ble-transport.js` | [x] Updated | `sendRawNoAck()` → `ble_write_no_ack` (WriteWithoutResponse) |
+| 6 | `src/serial-transport.js` | [x] Updated | `sendRawNoAck()` alias → `sendRaw` (serial tidak punya WWNOR) |
+| 7 | `src-tauri/src/ble.rs` | [x] Exist | `write_no_ack()` pakai `GattWriteOption::WriteWithoutResponse` + stats |
+| 8 | `src-tauri/src/lib.rs` | [x] Exist | Command `ble_write_no_ack` terdaftar |
+| 9 | `tests/suites/ble-rs-guard-test.cjs` | [x] Updated | Guard BUG 3 diperbarui untuk write_no_ack terpisah |
+
+Verifikasi: `npm test` 42/42 hijau · `npm run build` success
 
 ---
 

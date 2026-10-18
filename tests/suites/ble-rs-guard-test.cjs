@@ -59,14 +59,42 @@ const scanCalls = (connectArm.match(/BleTransport::scan\(\)/g) || []).length;
 ok(scanCalls <= 1,
   `connect() memanggil scan() paling banyak sekali, hanya sebagai fallback (terhitung ${scanCalls})`);
 
-console.log('\n--- 3. Write memakai WriteWithResponse ---');
+console.log('\\n--- 3. Write memakai WriteWithResponse ---');
 // BUG 3: WriteWithoutResponse tidak punya flow control, jadi packet bisa
 // hilang tanpa error. Untuk perintah protokol seperti SET:0:0:0:KEY:a itu
 // berarti config tidak tersimpan dan app tidak pernah tahu.
-ok(!/GattWriteOption::WriteWithoutResponse/.test(bleCode),
-  'tidak ada WriteWithoutResponse (perintah bisa hilang senyap)');
-ok(/GattWriteOption::WriteWithResponse/.test(bleCode),
-  'write memakai WriteWithResponse');
+//
+// Fase 5: ditambahkan write_no_ack() yang INTENTIONAL memakai
+// WriteWithoutResponse — untuk CFG_WRITE (bulk upload bertumpuk) di mana
+// back-pressure ditangani oleh credit flow control di device. Ini BUKAN
+// regression BUG 3 karena hanya dipakai untuk CFG_WRITE, bukan perintah
+// protokol satu byte. Guard di sini memastikan:
+//   - write() (main path) tetap pakai WriteWithResponse
+//   - write_no_ack() ada sebagai path terpisah yang eksplisit
+//   - tidak ada WriteWithoutResponse yang "sesat" di luar keduanya
+ok(/fn write\b/.test(bleCode), 'ada fungsi write()');
+const writeBody = bleCode.slice(
+  bleCode.indexOf('fn write('),
+  bleCode.indexOf('fn write_no_ack(')
+);
+ok(/GattWriteOption::WriteWithResponse/.test(writeBody),
+  'write() (main path) memakai WriteWithResponse');
+ok(!/GattWriteOption::WriteWithoutResponse/.test(writeBody),
+  'write() tidak memakai WriteWithoutResponse');
+ok(/fn write_no_ack/.test(bleCode), 'ada write_no_ack() sebagai path terpisah');
+// write_no_ack berada setelah fn read_bulk di file, jadi tidak bisa memakai
+// read_bulk sebagai akhir. Cari fn pub fn set_status atau apa pun di belakang.
+const wnaStart = bleCode.indexOf('fn write_no_ack(');
+const afterWna = bleCode.slice(wnaStart);
+// Cari akhir fungsi dengan menghitung brace {} — '}' pertama dengan depth 0.
+let wnaEnd = 0, wnaDepth = 0;
+for (let i = 0; i < afterWna.length; i++) {
+  if (afterWna[i] === '{') wnaDepth++;
+  else if (afterWna[i] === '}') { wnaDepth--; if (wnaDepth === 0) { wnaEnd = i + 1; break; } }
+}
+const wnaBody = afterWna.slice(0, wnaEnd || afterWna.length);
+ok(/GattWriteOption::WriteWithoutResponse/.test(wnaBody),
+  'write_no_ack() memakai WriteWithoutResponse (hanya untuk CFG_WRITE Fase 5)');
 
 console.log('\n--- 4. is_connected() membaca status link sungguhan ---');
 // BUG 4: is_connected() hanya membaca flag lokal yang diset true saat

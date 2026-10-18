@@ -18,16 +18,13 @@
 //  - presetSig(preset, geom)       CFG_SIG kanonik, sama dengan firmware
 //  - findMatchingSlot / findEmptySlot
 //  - ensureLineMode()              kembali ke jalur teks, DIVERIFIKASI
-//
-// BELUM:
-//  - CFG_BEGIN / CFG_WRITE / CFG_COMMIT (Fase 4). Firmware belum punya handler,
-//    hanya nama - request-nya ditolak UNSUPPORTED.
-//  - CREDIT flow control (Fase 5)
+//  - uploadPresetBinary()          CFG_BEGIN → CFG_READY{credit} → CFG_WRITE(no-ack)
+//                                  → CFG_COMMIT → CFG_RESULT (Fase 5: credit flow)
 
 import {
   encode, T_HELLO, T_CFG_QUERY, T_CFG_ACTIVATE,
   T_HELLO_RSP, T_CFG_META, T_CFG_ACT_RSP,
-  T_CFG_BEGIN, T_CFG_WRITE, T_CFG_RESULT, T_CFG_COMMIT, T_ERR,
+  T_CFG_BEGIN, T_CFG_WRITE, T_CFG_RESULT, T_CFG_COMMIT, T_CFG_READY, T_CREDIT, T_ERR, ERR_CREDIT_EXHAUSTED, ERR_STAGING_FULL, ERR_CRC32_MISMATCH, ERR_UNSUPPORTED,
 } from './frame-codec.js';
 import { cfgSigOfPreset } from './cfg-sig.js';
 import {
@@ -37,10 +34,16 @@ import {
 import { encodePreset, chunkPlan } from './cfg-builder.js';
 import { waitForFrame } from './frame-dispatch.js';
 import { registerPongProbe, clearPongProbe } from './pong-probe.js';
-import { sendRaw, sendLine, isConnected } from './transport.js';
+import { sendRaw, sendRawNoAck, sendLine, isConnected } from './transport.js';
 
 // Kode hasil CFG_ACT_RSP. 0 = sukses; selain itu device menolak.
+// Kode hasil CFG_COMMIT. 0 = sukses; selain itu error names.
 const ACT_OK = 0;
+const ERR_NAMES = {
+  0: 'NONE', 1: 'BAD_VER', 2: 'BAD_CRC', 3: 'LEN_OVERFLOW',
+  0x10: 'SEQ_GAP', 0x11: 'SEQ_DUP', 0x12: 'NO_SESSION',
+  0x13: 'CREDIT_EXHAUSTED', 0x14: 'STAGING_FULL', 0x15: 'CRC32_MISMATCH', 0x16: 'UNSUPPORTED',
+};
 
 const RTT_MS = 2000;
 // Verifikasi mode baris lebih pendek: PING hanya bolak-balik satu baris, tidak
@@ -64,24 +67,38 @@ export function frameModeStatus() { return frameUsable; }
 export function resetFrameMode() { frameUsable = null; }
 
 /**
- * Apakah ada indikasi device SEDANG dalam mode frame?
+ * Apakah device ini MAMPU menjawab frame biner?
  *
- * Firmware menjawab WHOAMI dengan `proto=line` atau `proto=frame`, dan itu
- * menyebut mode yang sedang AKTIF - bukan kemampuan device. Device baru pindah
- * ke mode frame setelah menerima SOF 0xA5, jadi WHOAMI pertama (yang dikirim
- * saat handshake, sebelum app mengirim frame apa pun) hampir selalu melaporkan
- * `proto=line` bahkan pada device yang mendukung frame.
+ * Gate ini dulunya membaca `proto === 'frame'`, dan itu salah sumber daya:
+ * `proto=` melaporkan mode yang SEDANG AKTIF, bukan kemampuan device
+ * (lihat firmware/common/macropad_core.h di perintah WHOAMI). Akibatnya:
  *
- * Karena itu fungsi ini TIDAK dipakai sebagai gerbang. Ia hanya petunjuk:
- * frame dicoba, dan kalau device menjawab frame maka fast path hidup. Kalau
- * timeout atau ERR, app turun ke jalur teks dan mencatatnya di frameUsable
- * supaya tidak mengulang percobaan yang sama.
+ *   - Device yang jelas mendukung frame dilaporkan `proto=line` setiap kali
+ *     WHOAMI dijawab saat handshake - yang selalu terjadi di mode baris. Fast
+ *     path jadi praktis tidak pernah dipakai.
+ *   - Lebih buruk, begitu device tersesat ke mode frame, WHOAMI tidak bisa
+ *     dijawab sama sekali, jadi `proto` juga hilang. Satu-satunya jalan keluar
+ *     dari mode frame adalah ensureLineMode() - tapi justru ensureLineMode()
+ *     yang butuh gate ini. Itu deadlock, dan gejalanya persis laporan
+ *     "preset stuck setelah reconnect".
+ *
+ * Yang benar adalah `frame=0xA5`: byte SOF yang dicetak firmware sebagai
+ * tanda device-nya punya lapisan frame. Nilai itu konstan dan tidak berubah
+ * saat mode berpindah, jadi inilah capability yang sebenarnya.
+ *
+ * `proto === 'frame'` tetap diterima sebagai bukti tambahan, karena device
+ * yang sedang dalam mode frame memang sudah membuktikan kemampuannya.
  *
  * @param {object} deviceProfile hasil parse WHOAMI di protocol-parser.js
  * @returns {boolean}
  */
 export function deviceSupportsFrame(deviceProfile) {
-  return !!(deviceProfile && deviceProfile.proto === 'frame');
+  if (!deviceProfile) return false;
+  if (typeof deviceProfile.proto === 'string' && deviceProfile.proto === 'frame') return true;
+  const sof = typeof deviceProfile.frame === 'string' ? deviceProfile.frame.trim().toLowerCase() : '';
+  // Firmware mencetak "0xA5". Angka desimal juga diterima supaya test dan
+  // perkakas diagnosa yang mengirim bentuk lain tetap bisa dipakai.
+  return sof === '0xa5' || sof === '165';
 }
 
 /**
@@ -171,12 +188,16 @@ export async function requestFrame(type, expectType, payload, timeoutMs = RTT_MS
   const waiter = waitForFrame(expectType, timeoutMs);
   const errWaiter = waitForFrame(T_ERR, timeoutMs);
   const ok = await sendFrame(type, payload);
-  if (!ok) return { ok: false, reason: 'gagal tulis' };
+  if (!ok) { waiter.cancel(); errWaiter.cancel(); return { ok: false, reason: 'gagal tulis' }; }
 
   const race = await Promise.race([
     waiter.then(p => ({ kind: 'ok', payload: p })),
     errWaiter.then(p => ({ kind: 'err', payload: p })),
   ]);
+  // Pemenang sudah diterima. Pembatal yang kalah HARUS ikut dibatalkan,
+  // kalau tidak waiter-nya tetap menggantung di antrean dan akan mencuri
+  // frame berikutnya yang tipe-nya sama.
+  if (race.kind === 'ok') errWaiter.cancel(); else waiter.cancel();
   return race.kind === 'ok'
     ? { ok: race.payload !== null, payload: race.payload, reason: race.payload === null ? 'timeout' : null }
     : { ok: false, err: parseErr(race.payload), reason: 'ditolak device' };
@@ -344,12 +365,18 @@ export function presetToFlat(preset, geom) {
 /**
  * Upload preset biner via protocol frame v2.
  *
- * Alur:
+ * Alur Fase 5 (credit flow control):
  *   1. Encode preset → binary payload (termasuk CRC32)
  *   2. Kirim CFG_BEGIN dengan slot tujuan
- *   3. Kirim CFG_WRITE berulang dengan chunk payload (maks ~237 byte/frame)
- *   4. Kirim CFG_COMMIT → dapatkan CFG_RESULT (kode + sig)
- *   5. Jika sukses, aktifkan slot lewat CFG_ACTIVATE
+ *   3. Tunggu CFG_READY: berisi credit (ruang staging tersedia)
+ *   4. Kirim CFG_WRITE menggunakan WriteWithoutResponse, sebanyak credit yang ada
+ *   5. Device mengirim CREDIT untuk menambah ruang saat dibutuhkan
+ *   6. Kirim CFG_COMMIT → dapatkan CFG_RESULT (kode + sig)
+ *   7. Jika sukses, aktifkan slot lewat CFG_ACTIVATE
+ *
+ * Fase 4 (tanpa credit): CFG_BEGIN fire-and-forget, CFG_WRITE menggunakan
+ * WriteWithResponse. Fase 5 menambahkan back-pressure sehingga app tidak
+ * menumpuk data lebih cepat dari device.
  *
  * @param {object} preset preset app
  * @param {object} geom {rows, cols, numEncoders}
@@ -366,20 +393,87 @@ export async function uploadPresetBinary(preset, geom, slot, onProgress) {
   const flat = presetToFlat(preset, geom);
   const payload = encodePreset(flat, dims);
 
-  // CFG_BEGIN → slot target
-  await sendFrame(T_CFG_BEGIN, [slot & 0xff]);
+  const maxChunk = 237; // maxPayload from frame.h, minus overhead
+  const { chunkSize: defaultChunk } = chunkPlan(payload.length, maxChunk);
 
-  // CFG_WRITE → chunk
-  const { chunkSize } = chunkPlan(payload.length);
+  // ---- 1. CFG_BEGIN → CFG_READY{credit u16} ----
+  // CFG_BEGIN dikirim dengan WriteWithResponse (via sendFrame). Device sarat
+  // staging buffer dan merespons CFG_READY dengan credit yang tersedia.
+  const beginWaiter = waitForFrame(T_CFG_READY, RTT_MS);
+  const beginErrWaiter = waitForFrame(T_ERR, RTT_MS);
+  const beginOk = await sendFrame(T_CFG_BEGIN, [slot & 0xff]);
+  if (!beginOk) return { ok: false, reason: 'gagal kirim CFG_BEGIN' };
+
+  // Tunggu CFG_READY, atau ERR jika device tidak mengenali CFG_BEGIN.
+  const beginRace = await Promise.race([
+    beginWaiter.then(p => ({ kind: 'ready', payload: p })),
+    beginErrWaiter.then(p => ({ kind: 'err', payload: p })),
+  ]);
+  // Batalkan waiter yang kalah supaya tidak mencuri frame berikutnya.
+  if (beginRace.kind === 'ready') beginErrWaiter.cancel(); else beginWaiter.cancel();
+
+  if (beginRace.kind === 'err' && beginRace.payload) {
+    const errInfo = parseErr(beginRace.payload);
+    return { ok: false, reason: `device menolak CFG_BEGIN: ${ERR_NAMES[errInfo.code] || 'UNKNOWN'}` };
+  }
+
+  if (!beginRace.payload) {
+    return { ok: false, reason: 'timeout menunggu CFG_READY' };
+  }
+
+  // Parse credit dari CFG_READY (u16 LE)
+  const creditField = Array.from(beginRace.payload);
+  let credit = creditField.length >= 2
+    ? (creditField[0] | (creditField[1] << 8)) >>> 0
+    : 0;
+
+  if (credit <= 0) {
+    return { ok: false, reason: 'device memberi credit 0' };
+  }
+
+  // ---- 2. CFG_WRITE dengan credit flow control ----
+  // CFG_WRITE dikirim via WriteWithoutResponse (sendRawNoAck). App tidak boleh
+  // mengirim lebih dari credit yang tersedia. Device mengirim CREDIT frame
+  // untuk memberi tahu ruang staging yang tersedia — app bereaksi dengan
+  // mengirim lebih lanjut.
+  //
+  // CREDIT frame mengganti (bukan menambah) nilai credit: berisi total ruang
+  // tersedia, bukan jumlah bertambah. Ini sederhana dan tidak memungkinkan
+  // drift akumulasi dari hitung-sendiri app vs device.
   let sent = 0;
-  for (let off = 0; off < payload.length; off += chunkSize) {
-    const chunk = payload.slice(off, off + chunkSize);
-    await sendFrame(T_CFG_WRITE, chunk);
+  let chunkStart = 0;
+
+  while (chunkStart < payload.length) {
+    const remaining = payload.length - chunkStart;
+    const canSend = Math.min(credit, remaining);
+
+    if (canSend < 1) {
+      // Credit habis — tunggu CREDIT frame dari device.
+      const cp = await waitForFrame(T_CREDIT, RTT_MS);
+      if (!cp) {
+        return { ok: false, reason: 'timeout menunggu CREDIT (device menganggap credit terpakai)' };
+      }
+      const cf = Array.from(cp);
+      credit = cf.length >= 2 ? (cf[0] | (cf[1] << 8)) >>> 0 : 0;
+      if (credit <= 0) {
+        return { ok: false, reason: 'CREDIT frame berisi 0' };
+      }
+      continue;
+    }
+
+    // Kirim chunk sebanyak credit yang tersedia, dipecah per defaultChunk.
+    const toSend = Math.min(canSend, defaultChunk);
+    const chunk = payload.slice(chunkStart, chunkStart + toSend);
+    const ok = await sendRawNoAck(new Uint8Array(encode(T_CFG_WRITE, Array.from(chunk))));
+    if (!ok) return { ok: false, reason: 'gagal kirim CFG_WRITE' };
+    chunkStart += chunk.length;
+    credit -= chunk.length;
     sent += chunk.length;
     if (onProgress) onProgress(Math.min(sent, payload.length), payload.length);
   }
 
-  // CFG_COMMIT → CFG_RESULT
+  // ---- 3. CFG_COMMIT → CFG_RESULT ----
+  // requestFrame sudah membatalkan waiter yang kalah secara internal.
   const r = await requestFrame(T_CFG_COMMIT, T_CFG_RESULT, []);
   if (!r.ok) {
     return { ok: false, reason: r.reason || 'timeout CFG_COMMIT' };
@@ -387,9 +481,7 @@ export async function uploadPresetBinary(preset, geom, slot, onProgress) {
   const result = parseCfgResult(r.payload);
   if (!result || result.code !== 0) {
     const code = result ? result.code : -1;
-    const errNames = { 0: 'NONE', 1: 'BAD_VER', 2: 'BAD_CRC', 3: 'LEN_OVERFLOW',
-                       0x13: 'CREDIT_EXHAUSTED', 0x14: 'STAGING_FULL', 0x15: 'CRC32_MISMATCH' };
-    return { ok: false, reason: `device CONFIG_COMMIT error: code=${code} (${errNames[code] || 'UNKNOWN'})` };
+    return { ok: false, reason: `device CONFIG_COMMIT error: code=${code} (${ERR_NAMES[code] || 'UNKNOWN'})` };
   }
 
   return { ok: true, sig: result.sig, slot: result.slot };

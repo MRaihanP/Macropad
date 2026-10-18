@@ -111,6 +111,46 @@ public:
 // Global transport instance - dipakai di seluruh core (handleSerialCommand, events, dll).
 extern Transport* g_transport;
 
+// =================== RESET PROTOKOL SAAT LINK BERUBAH ===================
+//
+// Minta lapisan protokol (mode frame + baris teks) dinormalkan kembali.
+//
+// KENAPA INI ADA
+//
+// State mode ini milik SESI, bukan milik device. `faMode` di
+// frame_proto.h dan `serialLineLen` di macropad_core.h keduanya `static`, dan
+// tanpa perintah eksplisit keduanya bertahan melewati disconnect. Akibatnya
+// device yang terputus DI TENGAH fast-path frame akan kembali dalam keadaan:
+//
+//   faMode      = true    -> semua perintah teks (CONTEXT:DEFAULT, INFO, DUMP)
+//                             dibuang di frame_asm.h sebelum sampai parser
+//   serialLineLen > 0    -> faRoute() tidak lagi mengenali byte 0xA5, jadi
+//                             device tidak bisa masuk mode frame lagi sama sekali
+//
+// Keduanya persis gejala "preset tidak pernah berganti setelah reconnect".
+//
+// JANGAN dipanggil langsung dari callback NimBLE. Callback itu berjalan di task
+// host BLE, sedangkan `faSt` dan `serialLine` dibaca/diubah task loop Arduino -
+// memanggil reset dari sana adalah race. Yang dilakukan di sini hanya MENANDAI
+// permintaan; Penyusunannya dilakukan di checkSerialInput() yang sudah ada.
+extern volatile bool protoLinkResetPending;
+
+// Definisi, bukan extern. transport.h di-include oleh semua backend dan oleh
+// macropad_core.h, jadi tepat satu salinan untuk seluruh translation unit.
+volatile bool protoLinkResetPending = false;
+
+inline void protoLinkResetRequest() { protoLinkResetPending = true; }
+
+#ifndef PROTO_LINK_RESET
+#define PROTO_LINK_RESET()  protoLinkResetRequest()
+#endif
+
+// Buang sisa byte inbound yang masih tertinggal di link lama. Kosong di
+// profil tanpa BLE; transport_ble.h yang meng-override dengan bleNusClear().
+#ifndef PROTO_LINK_DRAIN_RX
+#define PROTO_LINK_DRAIN_RX()  do {} while (0)
+#endif
+
 // Transport untuk LOG DIAGNOSTIK. SELALU USB CDC, apa pun mode protokol.
 //
 // Kenapa harus dipisah dari SERIAL:

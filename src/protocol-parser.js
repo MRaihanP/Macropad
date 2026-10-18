@@ -107,9 +107,28 @@ export const hasPendingLayerAfterDump = () => pendingLayerAfterDump !== null;
 // data palsu tidak dibaca sebagai data hardware sungguhan.
 export let deviceProfile = { connected: false };
 
+// Kemampuan yang HARUS bertahan melewati disconnect.
+//
+// `frame=0xA5` adalah tanda device punya lapisan frame biner - nilai konstan,
+// bukan state. Kalau ikut terhapus bersama sesi, maka tepat di koneksi
+// berikutnya app tidak tahu device ini mendukung frame, dan fast path mati
+// hanya karena terjadi disconnect.
+//
+// Yang justru BOLEH ikut terhapus adalah `proto`: itu mode yang sedang
+// aktif, dan device bisa saja sedang dalam mode frame (jadi tidak bisa
+// menjawab WHOAMI) ketika link-nya putus.
+let lastFrameSof = null;
+
+// Bukti dukungan frame yang bertahan melewati disconnect, untuk
+// deviceSupportsFrame() di frame-transport.js.
+export function frameCapability() { return lastFrameSof; }
+
 // Dipanggil hook onDisconnected di main.js: jangan biarkan HWINFO lama membuat
 // app terlihat masih terhubung ke board yang sudah dicabut.
 export function resetDeviceProfile() {
+  // Kemampuan frame sengaja dipertahankan (lihat lastFrameSof). Sesi
+  // berikutnya akan mengirim WHOAMI lagi dan menimpanya kalau device ternyata
+  // berbeda.
   deviceProfile = { connected: false };
   dumpParseLayer = NaN;
   pendingLayerAfterDump = null;   // device sudah tidak ada; jangan tunda apa pun
@@ -398,6 +417,10 @@ function handleFrameLine(line) {
       if (eq < 0) return;
       const k = p.substring(0, eq), v = p.substring(eq + 1);
       if (k === 'proto' || k === 'frame') deviceProfile[k] = v;
+      // Simpan SOF sebagai capability yang bertahan melewati disconnect.
+      // `proto` hanya mode saat ini dan bisa hilang total kalau link putus
+      // saat device sedang di mode frame (device jadi tidak bisa jawab WHOAMI).
+      if (k === 'frame' && /^0x[0-9a-f]{2}$/i.test(v.trim())) lastFrameSof = v.trim().toLowerCase();
     });
     return;
   }

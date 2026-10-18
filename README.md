@@ -233,9 +233,11 @@ untuk batch kecil, dan habis terlalu cepat untuk batch besar pada link lambat -
 dua-duanya berbohong. Penggantinya flag eksplisit (`beginCfgTransfer` /
 `endCfgTransfer`) plus jendela yang diturunkan dari jumlah perintah nyata.
 
-Yang **belum** ada: `CFG_BEGIN`/`CFG_WRITE`/`CFG_COMMIT` (bulk upload, Fase 4)
-dan credit flow control (Fase 5). Minta keduanya sekarang dijawab `ERR`
-`UNSUPPORTED`.
+Yang **sudah** ada: `CFG_BEGIN`/`CFG_WRITE`/`CFG_COMMIT` (bulk upload, Fase 4)
+dan credit flow control (Fase 5). `CFG_BEGIN` → `CFG_READY{credit u16}`;
+`CFG_WRITE` dikirim via WriteWithoutResponse (BLE) / sendRaw (serial); device
+mengirim `CREDIT` untuk menambah ruang staging. Minta `UNSUPPORTED` jika device
+belum mengenali salah satu tipe ini.
 
 ### Baris dari device
 
@@ -303,6 +305,58 @@ Firmware **tidak** bisa diverifikasi penuh di lingkungan build ini (tidak ada
 toolchain Arduino). Pemeriksaan yang dilakukan bersifat statis: kurung kurawal
 seimbang, simbol domain terdefinisi, dan kontrak offset protokol di atas.
 Compile Arduino dan uji di device tetap wajib.
+
+---
+
+## Changelog
+
+### v0.6.5
+
+Migrasi protokol ke **frame biner v2** (Fase 0-5 `PLAN_BLE_Migration.md`).
+Preset runtime sekarang diunggah lewat `CFG_BEGIN` / `CFG_WRITE` / `CFG_COMMIT`
+dengan flow control `T_CREDIT`, bukan ratusan baris `SET:`.
+
+**Perubahan utama**
+
+- Layer frame biner di sisi app: `frame-codec.js` (encode/decode),
+  `frame-dispatch.js` (perakit RX), `frame-transport.js` (soal + upload bulk).
+- Fast path perpindahan preset: `CFG_SIG` + `CFG_QUERY` + `CFG_ACTIVATE`.
+  Kalau device sudah punya slot dengan sig yang sama, perpindahan cukup satu
+  frame 8 byte.
+- `WHOAMI` sekarang melaporkan `frame=0xA5` sebagai **kemampuan** (bertahan
+  melewati disconnect), bukan `proto=frame` yang hanya mencerminkan mode
+  sesaat. Gate frame-path memakai yang former supaya device yang tersesat ke
+  mode frame tidak lagi membuat deadlock.
+- Jalur `BLE` ditulis ulang: `Drop for BleTransport` di Rust,
+  disconnect-before-connect, backpressure `sendBatch`, retry ladder
+  186ms -> 7ms, dan `onWrite()` tidak lagi `printf` blocking.
+- Sesi protokol firmware di-reset di `onConnect`/`onDisconnect`
+  (`PROTO_LINK_RESET`), jadi device yang kembali connect tidak diam-diam
+  tertinggal dalam mode frame.
+
+**Perbaikan**
+
+- Reset state protokol saat BLE connect/disconnect (_app_ dan firmware).
+- Filter karakter pengganti `U+FFFD` yang berasal dari frame biner yang ikut
+  dibaca sebagai teks.
+- `CONTEXT:DEFAULT` di-clamp `currentLayer`, jadi tidak lagi menunjuk layer
+  yang tidak ada setelah kembali ke default preset.
+- `handleDeviceLost()` memanggil `ble_disconnect` supaya handle WinRT tidak
+  menumpuk pada setiap reconnect.
+
+**Known issues (masih terbuka)**
+
+- `notifyFail=3` dan latensi radio tinggi (`RTT p50=175ms`) dilaporkan pada
+  host Windows. `ringDropped=0` sudah sehat, jadi ini sisi radio/host, bukan
+  software.
+- Fase 6 (pembersihan jalur teks: watchdog dump, `slotTable`, `SET:`) belum
+  dikerjakan. Jalur `0x02 LINE`, `SET:`, `SLOT:`, `DUMP:` masih hidup sebagai
+  diagnostic escape hatch.
+
+**Verifikasi**
+
+Firmware belum bisa diverifikasi penuh di lingkungan build ini (tidak ada
+toolchain Arduino). Compile Arduino dan uji di device tetap wajib.
 
 ---
 

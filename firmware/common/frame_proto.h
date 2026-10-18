@@ -61,6 +61,8 @@ static const char* frameTypeName(uint8_t type) {
     case FA_T_CFG_COMMIT:   return "CFG_COMMIT";
     case FA_T_CFG_QUERY:    return "CFG_QUERY";
     case FA_T_CFG_ACTIVATE: return "CFG_ACTIVATE";
+    case FA_T_CFG_READY:    return "CFG_READY";
+    case FA_T_CREDIT:       return "CREDIT";
     case FA_T_EVT:          return "EVT";
     case FA_T_ERR:          return "ERR";
     default:                return "?";
@@ -106,7 +108,7 @@ static uint32_t faTxErrEncode = 0;
 static uint32_t faTxDropped   = 0;
 static uint32_t faCxUnsup     = 0;
 
-// =================== CFG STAGING (Fase 4: bulk upload biner) ===================
+// =================== CFG STAGING (Fase 4-5: bulk upload biner + credit) ===================
 //
 // Buffer sementara untuk menerima preset biner via CFG_WRITE.
 // Layout binary (LE, tidak pakai padding):
@@ -122,11 +124,73 @@ static uint32_t faCxUnsup     = 0;
 // Size maksimum: 2 + 604*8 + 4 = 4838 byte. Buffer 5120 (5KB) muat dengan
 // sedikit ruang, jauh di bawah limit stack ESP32-S3 di IRAM.
 #define CFG_STAGING_SIZE 5120u
-
+//
+// FASE 5: Credit flow control.
+//
+// CFG_BEGIN -> CFG_READY{credit u16} memberi tahu app berapa banyak ruang
+// tersedia di staging buffer. App mengirim CFG_WRITE menggunakan
+// WriteWithoutResponse (tanpa ack per chunk), dan hanya boleh mengirim sebanyak
+// credit yang ada. Device mengirim CREDIT{bytes u16} untuk menambah ruang
+// setelah ruang staging terpakai (mis. setelah staging disinkronis atau buffer
+// device dikosongkan).
+//
+// Ini mencegah app menumpuk data lebih cepat dari yang device bisa terima pada
+// link BLE yang lambat/flaky — tanpa credit, app bisa mengirim semua CFG_WRITE
+// sekaligus, dan paket yang gagal (WriteWithoutResponse tidak punya ack) akan
+// hilang tanpa jejak.
 static uint8_t  cfgStage[CFG_STAGING_SIZE];
 static uint16_t cfgStageLen = 0;    // berapa byte yang sudah ditulis
+static uint16_t cfgStageCredit = 0;  // berapa byte lagi yang bisa diterima (Fase 5)
 static uint8_t  cfgStageSlot = 0;   // slot tujuan (0..APP_SLOTS-1)
 static bool     cfgStageActive = false;
+
+
+// =================== RESET SESI PROTOKOL ===================
+//
+// Kembalikan SELURUH state protokol ke keadaan boot. Dipanggil dari
+// checkSerialInput() saat link BLE naik atau turun (lihat PROTO_LINK_RESET).
+//
+// Kenapa ini wajib ada, dan kenapa tidak bisa diandalkan pada "app akan kirim
+// byte 0x0A untuk memadamakannya":
+//
+//   - `faMode` hanya bisa dimatikan lewat byte 0x0A (faRoute) atau perintah
+//     FRAME:LINE. Perintah FRAME:LINE sendiri tidak terjangkau saat mode frame,
+//     karena setiap byte non-0xA5 dibuang sebelum sampai handleSerialCommand().
+//     Jadi satu-satunya jalan keluar yang benar-benar ada adalah 0x0A - dan 0x0A
+//     hanya dikenal saat perakit IDLE (frame_asm.h). Perakit yang terjebak di
+//     tengah frame yang TERPOTONG tidak akan mengenalinya selamanya.
+//
+//   - `serialLineLen` tidak pernah di-reset oleh disconnect. Kalau link putus
+//     di tengah baris, `lineEmpty` jadi false selamanya, dan faRoute() berhenti
+//     mengenali byte 0xA5 - device tidak bisa MASUK mode frame lagi.
+//
+//   - Staging CFG yang masih aktif dari sesi yang terputus akan ditimpa diam-diam
+//     oleh CFG_BEGIN berikutnya. Lebih aman dinolkan di batas sesi.
+//
+// Efeknya kalau ini tidak ada persis gejala yang dilaporkan: label preset di app
+// berubah ke "Default", tapi device tetap menjalankan preset app karena semua
+// perintah teks yang dikirim app dibuang sebagai byte bukan-frame.
+static void faResetSession() {
+  // PENTING: bypass faSetMode. Fungsi itu sengaja return awal kalau modenya
+  // sudah sama, dan tidak menyentuh faSt kalau begitu - padahal di sinilah
+  // justru faSt yang harus dibersihkan. Perakit bisa tertinggal di tengah frame
+  // terpotong walaupun mode-nya sudah "baris".
+  faMode = false;
+  faInit(&faSt);
+  serialLineReset();
+
+  // Sisa byte inbound dari link lama ikut dibuang, supaya perintah yang sudah
+  // terpotong tidak dieksekusi sebagai perintah utuh di sesi berikutnya.
+  PROTO_LINK_DRAIN_RX();
+
+  // Staging bulk upload milik sesi yang sudah tidak ada.
+  cfgStageActive = false;
+  cfgStageLen = 0;
+  cfgStageCredit = 0;
+
+  LOGS->println("[FRAME] reset sesi protokol (link berubah)");
+}
+
 
 // =================== MENGIRIM JAWABAN ===================
 //
@@ -174,6 +238,20 @@ static void faTerjemahkan(uint8_t type, const uint8_t* p, uint16_t len) {
       }
       return;
     }
+
+    case FA_T_CFG_READY:
+      if (len >= 2) {
+        const uint16_t credit = (uint16_t)(p[0] | (p[1] << 8));
+        LOGS->printf("  -> CFG_READY credit=%u\n", credit);
+      }
+      return;
+
+    case FA_T_CREDIT:
+      if (len >= 2) {
+        const uint16_t credit = (uint16_t)(p[0] | (p[1] << 8));
+        LOGS->printf("  -> CREDIT credit=%u\n", credit);
+      }
+      return;
 
     case FA_T_CFG_ACT_RSP: {
       if (len < 1) return;
@@ -437,17 +515,18 @@ static void faCmdLine(const uint8_t* pl, uint16_t len) {
   kedalaman--;
 }
 
-// =================== CFG BULK UPLOAD (Fase 4) ===================
+// =================== CFG BULK UPLOAD (Fase 4-5) ===================
 //
-// Protokol tiga langkah: app kirim CFG_BEGIN → banyak CFG_WRITE → CFG_COMMIT.
+// Protokol empat langkah: app kirim CFG_BEGIN → CFG_READY → banyak
+// CFG_WRITE → CFG_COMMIT.
 // Device menampung semua payload CFG_WRITE di staging buffer, lalu di
 // CFG_COMMIT parse + verify CRC32 + copy ke slotCfg.
 //
-// Respons:
-//   CFG_BEGIN    → tidak ada jawaban (fire-and-forget), app tahu karena
-//                  frame berikutnya adalah CFG_WRITE. (Jika mau future-proof,
-//                  bisa tambahkan ack di fase berikutnya.)
+// Fase 5 menambah credit flow control:
+//   CFG_BEGIN    → FA_T_CFG_READY: u16 credit (ruang staging tersedia sekarang)
 //   CFG_WRITE    → tidak ada jawaban (ack implisit = tidak error).
+//                  Dikirim WriteWithoutResponse. Device mengirim FA_T_CREDIT
+//                  untuk menambah ruang saat staging space tersedia.
 //   CFG_COMMIT   → FA_T_CFG_RESULT (0x92):
 //                  u8 code (0=sukses, >0=error), u32 sig, u8 slot
 //                  (total 6 byte payload; sig=0 jika gagal)
@@ -463,8 +542,16 @@ static void faCmdCfgBegin(const uint8_t* pl, uint16_t len) {
     return;
   }
   cfgStageLen = 0;
+  cfgStageCredit = CFG_STAGING_SIZE;  // Fase 5: beri credit penuh
   cfgStageActive = true;
-  LOGS->printf("[FRAME] CFG_BEGIN slot=%u\n", cfgStageSlot);
+  LOGS->printf("[FRAME] CFG_BEGIN slot=%u credit=%u\n", cfgStageSlot, (unsigned)cfgStageCredit);
+
+  // Fase 5: kirim CFG_READY{credit u16} agar app tahu berapa ruang staging
+  // tersedia sebelum mulai mengirim CFG_WRITE.
+  uint8_t ready[2];
+  ready[0] = (uint8_t)(cfgStageCredit & 0xFF);
+  ready[1] = (uint8_t)((cfgStageCredit >> 8) & 0xFF);
+  faSend(FA_T_CFG_READY, ready, sizeof(ready));
 }
 
 static void faCmdCfgWrite(const uint8_t* pl, uint16_t len) {
@@ -472,14 +559,41 @@ static void faCmdCfgWrite(const uint8_t* pl, uint16_t len) {
     faReplyUnsupported(FA_T_CFG_WRITE);
     return;
   }
-  if (cfgStageLen + len > CFG_STAGING_SIZE) {
-    uint8_t resp[6] = { FA_ERR_STAGING_FULL, 0, 0, 0, 0, cfgStageSlot };
+  // Fase 5: cek credit. App tidak boleh mengirim lebih dari credit yang ada.
+  // Jika credit habis, tolak dengan FA_ERR_CREDIT_EXHAUSTED — ini memberi
+  // sinyal ke app agar tidak menumpuk lebih banyak data.
+  //
+  // CFG_WRITE dikirim WriteWithoutResponse (tidak ada ack per chunk), jadi
+  // cek ini di sisi device adalah satu-satunya lapisan flow control yang
+  // benar: app menunggu CREDIT frame sebelum bisa melanjutkan.
+  if (len > cfgStageCredit) {
+    uint8_t resp[6] = { FA_ERR_CREDIT_EXHAUSTED, 0, 0, 0, 0, cfgStageSlot };
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
     cfgStageActive = false;
+    cfgStageCredit = 0;
+    LOGS->printf("[FRAME] CFG_WRITE len=%u > credit=%u\n", len, (unsigned)cfgStageCredit);
     return;
   }
+  cfgStageCredit -= len;
   memcpy(cfgStage + cfgStageLen, pl, len);
   cfgStageLen += len;
+
+  // Setelah staging space terpakai, beri tahu app berapa ruang yang tersedia
+  // sekarang. App akan mengirim CREDIT berikutnya setelah ruang dibuat
+  // (mis. staging disinkronis ke slot). Ini memberi app sinyal bahwa
+  // write ini diterima, sekaligus menyiapkan credit untuk lanjutan.
+  //
+  // Dikirim setiap kali credit turun di bawah setengah staging — cukup
+  // sering untuk app tidak pernah benar-benar terjeblok, tapi tidak berlebihan.
+  if (cfgStageCredit < CFG_STAGING_SIZE / 2) {
+    uint8_t credit[2];
+    // Device memberi tahu berapa banyak ruang STAGING tersedia SEKARANG.
+    // Ini bukan "berapa yang baru saja dibebaskan" — app menghitung total
+    // yang perlu dikirim dan mengurangi sendiri.
+    credit[0] = (uint8_t)(cfgStageCredit & 0xFF);
+    credit[1] = (uint8_t)((cfgStageCredit >> 8) & 0xFF);
+    faSend(FA_T_CREDIT, credit, sizeof(credit));
+  }
 }
 
 static void faCmdCfgCommit() {
@@ -494,6 +608,7 @@ static void faCmdCfgCommit() {
     resp[0] = FA_ERR_BAD_VER;
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
     cfgStageActive = false;
+    cfgStageCredit = 0;
     return;
   }
 
@@ -511,6 +626,7 @@ static void faCmdCfgCommit() {
     LOGS->printf("[FRAME] CFG_COMMIT CRC mismatch: expected=%08lX actual=%08lX\n",
                  (unsigned long)expectedCrc, (unsigned long)actualCrc);
     cfgStageActive = false;
+    cfgStageCredit = 0;
     return;
   }
 
@@ -526,6 +642,7 @@ static void faCmdCfgCommit() {
     resp[1] = version;
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
     cfgStageActive = false;
+    cfgStageCredit = 0;
     return;
   }
   uint8_t nLayers = (layerCount < MAX_LAYERS) ? layerCount : MAX_LAYERS;
@@ -540,6 +657,7 @@ static void faCmdCfgCommit() {
     LOGS->printf("[FRAME] CFG_COMMIT payload too short: have %u need %u\n",
                  (unsigned)dataLen, (unsigned)needLen);
     cfgStageActive = false;
+    cfgStageCredit = 0;
     return;
   }
 
@@ -593,6 +711,7 @@ static void faCmdCfgCommit() {
 
   cfgStageActive = false;
   cfgStageLen = 0;
+  cfgStageCredit = 0;
 
   LOGS->printf("[FRAME] CFG_COMMIT ok slot=%u sig=%08lX layers=%u\n",
                cfgStageSlot, (unsigned long)sig, nLayers);
@@ -600,6 +719,12 @@ static void faCmdCfgCommit() {
 
 static void faHandleFrame(const fa_frame_t& f) {
   faRxFrames++;
+  // PENTING: frame biner juga harus memperbarui heartbeat host, sama seperti
+  // handleSerialCommand(). Tanpa ini, selama sesi frame device tidak pernah
+  // tahu bahwa host masih aktif - setelah 4 detik tanpa perintah teks,
+  // companionConnected() salah false dan openApp() langsung eksekusi
+  // executeOpenApp() (HID) alihal hal app seharusnya lewat EVT:APP via NUS.
+  lastHostSeenMs = millis();
   switch (f.type) {
     case FA_T_HELLO:        faCmdHello(f.payload, f.len); break;
     case FA_T_CFG_QUERY:    faCmdCfgQuery(f.payload, f.len); break;

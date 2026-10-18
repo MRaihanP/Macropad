@@ -915,6 +915,13 @@ enum BleRequest {
         data: Vec<u8>,
         resp: tokio::sync::oneshot::Sender<Result<usize, String>>,
     },
+    /// WriteWithoutResponse: cocok untuk CFG_WRITE (Fase 5). Tidak ada ack
+    /// firmware, jadi kegagalan berarti burst control, bukan kegagalan link
+    /// permanen. App yang menanggapi failure ini dengan throttle pacing.
+    WriteNoAck {
+        data: Vec<u8>,
+        resp: tokio::sync::oneshot::Sender<Result<usize, String>>,
+    },
     Read {
         max_len: usize,
         resp: tokio::sync::oneshot::Sender<Vec<u8>>,
@@ -1004,6 +1011,22 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                         id
                     )),
                     Some(device_info) => {
+                        // Runtuhkan transport yang sedang hidup SEBELUM membuat
+                        // yang baru.
+                        //
+                        // Sebelumnya `transport = Some(t)` menimpa transport lama
+                        // TANPA disconnect(): handler ValueChanged tidak pernah
+                        // dilepas, CCCD tidak pernah dimatikan, handle service
+                        // tidak pernah di-Close. Satu-sesi tertinggal per
+                        // reconnect, dan connect berikutnya gagal
+                        // karena Windows menahan handle yang sudah tidak dipakai.
+                        //
+                        // Di-drop tanpa disconnect() akan meninggalkan sesi
+                        // WinRT yang menggantung, jadi pemanggilan eksplisit ini
+                        // bukan sekadar formalitas.
+                        if let Some(mut lama) = transport.take() {
+                            lama.disconnect();
+                        }
                         let mut t = BleTransport::new();
                         match t.connect(&device_info) {
                             Ok(()) => {
@@ -1030,6 +1053,13 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
             BleRequest::Write { data, resp } => {
                 let r = match transport.as_mut() {
                     Some(t) => t.write(&data),
+                    None => Err("BLE tidak terhubung".to_string()),
+                };
+                let _ = resp.send(r);
+            }
+            BleRequest::WriteNoAck { data, resp } => {
+                let r = match transport.as_mut() {
+                    Some(t) => t.write_no_ack(&data),
                     None => Err("BLE tidak terhubung".to_string()),
                 };
                 let _ = resp.send(r);
@@ -1087,6 +1117,15 @@ async fn ble_write(data: Vec<u8>) -> Result<usize, String> {
     let (resp, rx) = tokio::sync::oneshot::channel();
     ble_tx()
         .send(BleRequest::Write { data, resp })
+        .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
+    rx.await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ble_write_no_ack(data: Vec<u8>) -> Result<usize, String> {
+    let (resp, rx) = tokio::sync::oneshot::channel();
+    ble_tx()
+        .send(BleRequest::WriteNoAck { data, resp })
         .map_err(|_| "Thread BLE tidak berjalan".to_string())?;
     rx.await.map_err(|e| e.to_string())?
 }
@@ -1250,6 +1289,7 @@ pub fn run() {
             ble_connect,
             ble_disconnect,
             ble_write,
+            ble_write_no_ack,
             ble_read,
             ble_is_connected,
             ble_switch_interface,

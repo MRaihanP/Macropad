@@ -172,8 +172,24 @@ public:
     uint16_t n = len < sizeof(bleNusLastWrite) - 1 ? len : sizeof(bleNusLastWrite) - 1;
     memcpy(bleNusLastWrite, v.data(), n);
     bleNusLastWrite[n] = '\0';
-    bleNusPush(v.data(), len);   // masukkan ke ring buffer transport
-    LOGS->printf("[BLE] NUS RX: %u byte, isi=\"%s\"\n", (unsigned)len, bleNusLastWrite);
+    bleNusPush(v.data(), len);
+
+    // JANGAN menulis ke LOGS (USB CDC) di sini.
+    //
+    // onWrite() berjalan di task host NimBLE. USBSerial.write() itu blocking,
+    // jadi satu printf di titik ini menahan task host - dan task host itulah
+    // yang harus menjawab paket link layer tepat waktu. Kalau telat, link
+    // supervision timeout (10 detik, lihat catatan BLE_SUPERVISION_TIMEOUT_10MS)
+    // kadaluarsa dan Windows memutus link dengan reason=0x208.
+    //
+    // Gejalanya persis "device disconnect dari companion app saat ganti preset":
+    // ganti preset = ratusan write 400 byte (WRITE_CHUNK_MAX di
+    // src/ble-transport.js), jadi printf blocking ini dipanggil ratusan kali
+    // berturut-turut. Link tetap utuh di sisi Windows karena device terus
+    // advertising - persis laporan "tidak disconnect dari bluetooth PC".
+    //
+    // Jejak perbyte tetap ada di bleNusLastWrite dan sudah dilaporkan lewat
+    // DIAGMEDIA, jadi tidak ada informasi yang hilang.
   }
 };
 
@@ -298,6 +314,11 @@ static void bleHidApplyConnParams(NimBLEServer* server, NimBLEConnInfo& ci) {
 class BleHidServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& ci) override {
     bleHidConnHandle = ci.getConnHandle();
+    // Host yang baru naik dimulai dari keadaan bersih. Tanpa ini device bisa
+    // membawa sisa mode frame / baris parsial dari sesi SEBELUMNYA, dan app
+    // yang baru connect akan melihat device "tidak menjawab apa-apa".
+    bleNusClear();
+    PROTO_LINK_RESET();
     LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
     bleHidApplyConnParams(server, ci);
   }
@@ -316,6 +337,15 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
     bleHidConnHandle = BLE_HID_NO_HANDLE;
+    // Subscriber lama sudah tidak berlaku. Kalau dibiarkan, bleNusSubCount
+    // hanya bertambah selamanya, dan penjaga `if (bleNusSubCount == 0)` di
+    // BleNusTransport::write() mati permanent - notify lalu tetap dicoba ke link
+    // yang sudah tidak ada peer, dan retry ladder (delay blocking 186 ms)
+    // berjalan penuh di dalam loop().
+    bleNusSubCount = 0;
+    // Sesi protokol (mode frame + baris teks) juga dinormalkan. Lihat
+    // PROTO_LINK_RESET di transport.h untuk alasannya.
+    PROTO_LINK_RESET();
     LOGS->printf("[BLE] Putus (reason=0x%X)\n", reason);
   }
 };

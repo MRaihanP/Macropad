@@ -423,6 +423,52 @@ UP.beginCfgTransfer(1);
 eq(UP.batchUploadInFlight(), true, 'flag eksplisit menang atas jendela');
 
 // ===================================================================
+console.log('--- G½. Konstanta Fase 5 (credit flow control) ---');
+// ===================================================================
+
+// Frame type untuk credit flow control harus ada dan sesuai firmware.
+eq(codec.T_CFG_READY, 0x15, 'T_CFG_READY = 0x15 (FA_T_CFG_READY)');
+eq(codec.T_CREDIT, 0x16, 'T_CREDIT = 0x16 (FA_T_CREDIT)');
+
+// ERR code untuk credit flow control.
+eq(codec.ERR_CREDIT_EXHAUSTED, 0x13, 'ERR_CREDIT_EXHAUSTED = 0x13');
+eq(codec.ERR_STAGING_FULL, 0x14, 'ERR_STAGING_FULL = 0x14');
+eq(codec.ERR_CRC32_MISMATCH, 0x15, 'ERR_CRC32_MISMATCH = 0x15');
+eq(codec.ERR_UNSUPPORTED, 0x16, 'ERR_UNSUPPORTED = 0x16');
+
+// Semua ERR_NAMES di frame-transport.js harus mencakup semua kode di atas.
+const ftSrc = fs.readFileSync(path.join(REPO, 'src', 'frame-transport.js'), 'utf8');
+ok(/'CREDIT_EXHAUSTED'/.test(ftSrc), 'ERR_NAMES mencakup CREDIT_EXHAUSTED');
+ok(/'STAGING_FULL'/.test(ftSrc), 'ERR_NAMES mencakup STAGING_FULL');
+ok(/'CRC32_MISMATCH'/.test(ftSrc), 'ERR_NAMES mencakup CRC32_MISMATCH');
+ok(/'UNSUPPORTED'/.test(ftSrc), 'ERR_NAMES mencakup UNSUPPORTED');
+
+// uploadPresetBinary harus memakai T_CFG_READY, T_CREDIT, T_CFG_WRITE, sendRawNoAck.
+ok(/T_CFG_READY/.test(ftSrc) && /T_CREDIT/.test(ftSrc), 'uploadPresetBinary memakai T_CFG_READY + T_CREDIT');
+ok(/sendRawNoAck/.test(ftSrc), 'uploadPresetBinary memakai sendRawNoAck untuk CFG_WRITE');
+// CFG_BEGIN dikirim via sendFrame (WriteWithResponse), bukan sendRawNoAck.
+const beginSection = ftSrc.slice(ftSrc.indexOf('1. CFG_BEGIN'), ftSrc.indexOf('2. CFG_WRITE'));
+ok(/sendFrame.*T_CFG_BEGIN/.test(beginSection), 'CFG_BEGIN via sendFrame (WriteWithResponse)');
+
+// transport.js facade harus mengekspor sendRawNoAck.
+const transportSrc = fs.readFileSync(path.join(REPO, 'src', 'transport.js'), 'utf8');
+ok(/sendRawNoAck/.test(transportSrc), 'transport.js mengekspor sendRawNoAck');
+
+// Rust: command ble_write_no_ack terdaftar di lib.rs.
+const libSrc = fs.readFileSync(path.join(REPO, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+ok(/ble_write_no_ack/.test(libSrc), 'lib.rs mendaftarkan command ble_write_no_ack');
+
+// Rust: write_no_ack() pakai WriteWithoutResponse, write() pakai WriteWithResponse.
+const bleRust = fs.readFileSync(path.join(REPO, 'src-tauri', 'src', 'ble.rs'), 'utf8');
+const bleRustStripped = bleRust.replace(/\/[\s\S]*?\*/g, '').replace(/^\s*\/\/.*$/gm, '');
+const writeFnBody = bleRustStripped.slice(
+  bleRustStripped.indexOf('fn write('),
+  bleRustStripped.indexOf('fn write_no_ack(')
+);
+ok(/WriteWithResponse/.test(writeFnBody), 'Rust write() pakai WriteWithResponse');
+ok(!/WriteWithoutResponse/.test(writeFnBody), 'Rust write() TIDAK pakai WriteWithoutResponse');
+
+// ===================================================================
 console.log('--- H. Kontrak wiring transport ---');
 // ===================================================================
 

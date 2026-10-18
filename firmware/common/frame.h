@@ -77,15 +77,17 @@
 /* ---- Jenis frame ----
  * 0x00         : reserved / tidak boleh dipakai
  * 0x01 HELLO   : app -> fw, jabat tangan + capabilities
- * 0x02 LINE    : dua arah, escape hatch protokol baris lama
+ * 0x02 LINE    : dua arah, escape hatch protokol lama
  * 0x10 CFG_BEGIN
  * 0x11 CFG_WRITE
  * 0x12 CFG_COMMIT
  * 0x13 CFG_QUERY
  * 0x14 CFG_ACTIVATE
+ * 0x15 CFG_READY   : fw -> app, credit yang tersedia setelah CFG_BEGIN
+ * 0x16 CREDIT      : fw -> app, tambahan credit bertahap (bisa berulang)
  * 0x20 EVT      : fw -> app
  * 0x7F ERR      : dua arah
- * Sengaja renggang, dikelompokkan per kelompok agar tidak bentrok
+ * Sengaja rengang, dikelompokkan per kelompok agar tidak bentrok
  * saat versi protocol naik nanti.
  */
 #define FA_T_HELLO        0x01u
@@ -95,6 +97,8 @@
 #define FA_T_CFG_COMMIT   0x12u
 #define FA_T_CFG_QUERY    0x13u
 #define FA_T_CFG_ACTIVATE 0x14u
+#define FA_T_CFG_READY    0x15u
+#define FA_T_CREDIT       0x16u
 #define FA_T_EVT          0x20u
 #define FA_T_ERR          0x7Fu
 

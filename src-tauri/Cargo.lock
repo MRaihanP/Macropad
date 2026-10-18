@@ -2080,7 +2080,7 @@ dependencies = [
 
 [[package]]
 name = "macropad-configurator"
-version = "0.6.0"
+version = "0.6.5"
 dependencies = [
  "futures",
  "serde",
