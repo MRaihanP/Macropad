@@ -26,6 +26,7 @@ import { sendLine, sendBatch, isConnected, dumpInProgress, handshakePending } fr
 import {
   deviceSupportsFrame, frameModeStatus, framePathAvailable, resetFrameMode, queryFrameSlots,
   activateFrameSlot, ensureLineMode, presetSig, findMatchingSlot, sigHex,
+  queryFrameLayerDump,
 } from './frame-transport.js';
 import { t } from './i18n.js';
 
@@ -128,6 +129,26 @@ export function activePresetName() {
 export function activePresetLayers() {
   const p = currentActivePresetId ? presetsData.presets.find(x => x.id === currentActivePresetId) : null;
   return p ? (p.layers || []) : null;
+}
+
+/**
+ * Apply hasil binary LAYER_DUMP ke mapping[layer].
+ *
+ * @param {number} layer target layer index
+ * @param {Array<{type:number, value:string}>} keys array flat dari device (urutan row-major)
+ */
+function applyBinaryLayerDump(layer, keys) {
+  if (layer < 0 || layer >= CAP_LAYERS) return;
+  for (let k = 0; k < keys.length; k++) {
+    const r = Math.floor(k / COLS);
+    const c = k % COLS;
+    if (r < ROWS && c < COLS) {
+      mapping[layer][r][c] = {
+        type: keys[k].type,
+        value: keys[k].value || '',
+      };
+    }
+  }
 }
 
 // ---- Hook ke main.js ----
@@ -817,6 +838,23 @@ async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
 // hanya memastikan urutan yang benar.
 async function loadActiveLayerDump() {
   const layer = currentLayer;
+
+  // Coba frame binary jika device support (mengurangi 11 notif text → 2 frame)
+  if (framePathAvailable() && deviceSupportsFrame(hooks.getDeviceProfile())) {
+    const r = await queryFrameLayerDump(layer);
+    if (r.ok) {
+      // Apply binary dump ke mapping dan render grid
+      applyBinaryLayerDump(layer, r.payload.keys);
+      hooks.renderGrid();
+      return true;
+    }
+    // Frame gagal — turun ke text mode, device mungkin disconnect
+    if (!isConnected()) return false;
+    // framePathAvailable() akan return false setelah kegagalan berulang,
+    // sehingga percobaan berikutnya otomatis ke text mode
+  }
+
+  // Fallback: text-mode DUMP (existing logic)
   // Waiter dipasang SEBELUM hooks.loadLayer mengirim DUMP. Kalau dibalik,
   // device bisa menjawab dalam hitungan milidetik dan DUMP_END-nya tiba saat
   // belum ada yang menunggu - dump selesai tanpa jejak, dan kita menunggu
