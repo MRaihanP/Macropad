@@ -159,7 +159,7 @@ inline void hidLinkSet(HidLink next) {
   }
 #endif
 
-  LOGS->printf("[IFACE] link %s -> %s\n", hidLinkName(prev), hidLinkName(next));
-  LOGS->printf("[IFACE] input %s dipakai, %s DINONAKTIFKAN\n",
+  DBG("[IFACE] link %s -> %s\n", hidLinkName(prev), hidLinkName(next));
+  DBG("[IFACE] input %s dipakai, %s DINONAKTIFKAN\n",
                  hidLinkName(next), hidLinkName(prev));
 }

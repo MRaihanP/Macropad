@@ -179,7 +179,16 @@ inline void protoLinkResetRequest() { protoLinkResetPending = true; }
 #define SERIAL g_transport
 
 // Hanya untuk pesan diagnostik - JANGAN dipakai di macropad_core.h.
-// Aturannya: kalau baris itu boleh dibaca companion app, pakai SERIAL.
+// Aturannya: kalau baris itu dapat dibaca companion app, pakai SERIAL.
 // Kalau hanya untuk manusia lewat Serial Monitor, pakai LOGS.
 extern Transport* g_logTransport;
 #define LOGS g_logTransport
+
+// Macro debug: hanya aktif bila DEBUG_COMPILE didefinisikan.
+// Semua trace [BLE], [FRAME], [IFACE] akan dibungkus dengan ini
+// supaya production build tidak mengirim notifikasi debug yang berlebihan.
+#ifdef DEBUG_COMPILE
+  #define DBG(fmt, ...) do { LOGS->printf(fmt, ##__VA_ARGS__); } while (0)
+#else
+  #define DBG(fmt, ...) do {} while (0)
+#endif

@@ -38,6 +38,7 @@
 #include "frame_asm.h"
 #include "crc32.h"
 #include "cfg_sig.h"
+#include "transport.h"  // DBG macro untuk debug logs
 
 // MTU untuk menghitung payload maksimum di HELLO.
 //
@@ -86,7 +87,7 @@ static void faSetMode(bool modeFrame) {
   if (faMode == modeFrame) return;
   faMode = modeFrame;
   faInit(&faSt);
-  LOGS->println(modeFrame ? "[FRAME] mode frame" : "[FRAME] mode baris");
+  DBG("[FRAME] mode frame\n");
 }
 
 // =================== PENGHITUNG ===================
@@ -194,7 +195,7 @@ static void faResetSession() {
   cfgStageLen = 0;
   cfgStageCredit = 0;
 
-  LOGS->println("[FRAME] reset sesi protokol (link berubah)");
+  DBG("[FRAME] reset sesi protokol (link berubah)");
 }
 
 
@@ -291,7 +292,7 @@ static void faTerjemahkan(uint8_t type, const uint8_t* p, uint16_t len) {
 static void faSend(uint8_t type, const uint8_t* payload, uint16_t len) {
   size_t n = faEncode(type, payload, len, faSendBuf, sizeof(faSendBuf));
   if (n == 0) {
-    LOGS->printf("[FRAME] gagal encode %s len=%u\n", frameTypeName(type), (unsigned)len);
+    DBG("[FRAME] gagal encode %s len=%u\n", frameTypeName(type), (unsigned)len);
     faTxErrEncode++;
     return;
   }
@@ -317,7 +318,7 @@ static void faSend(uint8_t type, const uint8_t* payload, uint16_t len) {
     // sedangkan noSub menghitung setiap potongan write - jadi angkanya bisa
     // jauh lebih besar dan tidak bisa dipakai menghitung permintaan yang hilang.
     faTxDropped++;
-    LOGS->printf("[FRAME] %s gagal terkirim (%u/%u byte) - app belum subscribe?\n",
+    DBG("[FRAME] %s gagal terkirim (%u/%u byte) - app belum subscribe?\n",
                  frameTypeName(type), (unsigned)terkirim, (unsigned)n);
   }
 }
@@ -407,7 +408,7 @@ static void faCmdHello(const uint8_t* pl, uint16_t len) {
   // tidak memakainya untuk apa pun sekarang, tapi dicetak supaya perbedaan
   // antara "app bilang bisa X" dan "device menjawab Y" bisa dilihat langsung.
   if (len > 0) {
-    LOGS->printf("[FRAME] HELLO payload %u byte:", (unsigned)len);
+    DBG("[FRAME] HELLO payload %u byte:", (unsigned)len);
     for (uint16_t i = 0; i < len && i < 8; i++) LOGS->printf(" %02x", pl[i]);
     LOGS->println("");
   }
@@ -481,7 +482,7 @@ static void faCmdCfgActivate(const uint8_t* pl, uint16_t len) {
   resp[4] = (uint8_t)((sig >> 24) & 0xFF);
   resp[5] = slot;
   faSend(FA_T_CFG_ACT_RSP, resp, sizeof(resp));
-  LOGS->printf("[FRAME] CFG_ACTIVATE slot=%u sig=%08lX\n", (unsigned)slot, (unsigned long)sig);
+  DBG("[FRAME] CFG_ACTIVATE slot=%u sig=%08lX\n", (unsigned)slot, (unsigned long)sig);
   broadcastLayerChanged();
 }
 
@@ -513,7 +514,7 @@ static void faCmdLine(const uint8_t* pl, uint16_t len) {
   if (len >= sizeof(buf)) len = sizeof(buf) - 1;
   memcpy(buf, pl, len);
   buf[len] = '\0';
-  LOGS->printf("[FRAME] LINE \"%s\"\n", buf);
+  DBG("[FRAME] LINE \"%s\"\n", buf);
   faSetMode(false);
   handleSerialCommand(String(buf));
   faSetMode(true);
@@ -550,7 +551,7 @@ static void faCmdCfgBegin(const uint8_t* pl, uint16_t len) {
   cfgStageLen = 0;
   cfgStageCredit = CFG_STAGING_SIZE;  // Fase 5: beri credit penuh
   cfgStageActive = true;
-  LOGS->printf("[FRAME] CFG_BEGIN slot=%u credit=%u\n", cfgStageSlot, (unsigned)cfgStageCredit);
+  DBG("[FRAME] CFG_BEGIN slot=%u credit=%u\n", cfgStageSlot, (unsigned)cfgStageCredit);
 
   // Fase 5: kirim CFG_READY{credit u16} agar app tahu berapa ruang staging
   // tersedia sebelum mulai mengirim CFG_WRITE.
@@ -577,7 +578,7 @@ static void faCmdCfgWrite(const uint8_t* pl, uint16_t len) {
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
     cfgStageActive = false;
     cfgStageCredit = 0;
-    LOGS->printf("[FRAME] CFG_WRITE len=%u > credit=%u\n", len, (unsigned)cfgStageCredit);
+    DBG("[FRAME] CFG_WRITE len=%u > credit=%u\n", len, (unsigned)cfgStageCredit);
     return;
   }
   cfgStageCredit -= len;
@@ -629,7 +630,7 @@ static void faCmdCfgCommit() {
   if (expectedCrc != actualCrc) {
     resp[0] = FA_ERR_CRC32_MISMATCH;
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
-    LOGS->printf("[FRAME] CFG_COMMIT CRC mismatch: expected=%08lX actual=%08lX\n",
+    DBG("[FRAME] CFG_COMMIT CRC mismatch: expected=%08lX actual=%08lX\n",
                  (unsigned long)expectedCrc, (unsigned long)actualCrc);
     cfgStageActive = false;
     cfgStageCredit = 0;
@@ -660,7 +661,7 @@ static void faCmdCfgCommit() {
     // konseptual (app menghitung salah) jadi laporkan sebagai CRC error.
     resp[0] = FA_ERR_CRC32_MISMATCH;
     faSend(FA_T_CFG_RESULT, resp, sizeof(resp));
-    LOGS->printf("[FRAME] CFG_COMMIT payload too short: have %u need %u\n",
+    DBG("[FRAME] CFG_COMMIT payload too short: have %u need %u\n",
                  (unsigned)dataLen, (unsigned)needLen);
     cfgStageActive = false;
     cfgStageCredit = 0;
@@ -719,7 +720,7 @@ static void faCmdCfgCommit() {
   cfgStageLen = 0;
   cfgStageCredit = 0;
 
-  LOGS->printf("[FRAME] CFG_COMMIT ok slot=%u sig=%08lX layers=%u\n",
+  DBG("[FRAME] CFG_COMMIT ok slot=%u sig=%08lX layers=%u\n",
                cfgStageSlot, (unsigned long)sig, nLayers);
 }
 
@@ -837,7 +838,7 @@ static void faProtoFrameIn(const String& teks) {
     fed++;
   }
   (void)ditolak;
-  LOGS->printf("[FRAME] FRAMEIN: %d byte, mode=%s, rx=%lu, crcErr=%lu\n",
+  DBG("[FRAME] FRAMEIN: %d byte, mode=%s, rx=%lu, crcErr=%lu\n",
                fed, faModeFrame() ? "frame" : "baris",
                (unsigned long)faRxFrames, (unsigned long)faRxErrCrc);
 }
@@ -874,14 +875,14 @@ static void faProtoFeedEncoded(uint8_t type, const uint8_t* payload, uint16_t le
 
   const size_t n = faEncode(type, payload, len, buf, sizeof(buf));
   if (n == 0) {
-    LOGS->printf("[FRAME] FRAMEIN: %s tidak bisa disusun (payload %u byte)\n",
+    DBG("[FRAME] FRAMEIN: %s tidak bisa disusun (payload %u byte)\n",
                  frameTypeName(type), (unsigned)len);
     return;
   }
   // Cetak byte-nya. Tanpa ini, kalau frame yang disusun memang salah, tidak
   // ada yang bisa dibandingkan dengan byte yang dikirim app - dan "coba ulangi"
   // jadi satu-satunya pilihan.
-  LOGS->printf("[FRAME] %s (%u byte):", frameTypeName(type), (unsigned)n);
+  DBG("[FRAME] %s (%u byte):", frameTypeName(type), (unsigned)n);
   for (size_t i = 0; i < n; i++) LOGS->printf(" %02x", buf[i]);
   LOGS->println("");
   // Salin dulu: buf ada di static, tapi isinya tidak akan berubah oleh
@@ -935,9 +936,9 @@ static void faProtoFrameByName(const String& nama) {
   }
 
   if (!ada) {
-    LOGS->println("[FRAME] FRAMEIN: nama frame tidak dikenal");
-    LOGS->println("[FRAME] yang bisa: HELLO, CFG_QUERY, CFG_ACTIVATE:<n>, CFG_BEGIN,");
-    LOGS->println("[FRAME]            CFG_WRITE, CFG_COMMIT, EVT, LINE:<teks>");
+    DBG("[FRAME] FRAMEIN: nama frame tidak dikenal");
+    DBG("[FRAME] yang bisa: HELLO, CFG_QUERY, CFG_ACTIVATE:<n>, CFG_BEGIN,");
+    DBG("[FRAME]            CFG_WRITE, CFG_COMMIT, EVT, LINE:<teks>");
     faCxUnsup++;
     return;
   }
