@@ -641,7 +641,7 @@ uint8_t battPercentFromMv(uint32_t mv) {
   return 0;
 }
 
-const unsigned long BATT_REPORT_INTERVAL_MS = 5000;
+const unsigned long BATT_REPORT_INTERVAL_MS = 10000;  // Turun dari 5s → 10s
 unsigned long lastBattReportMs = 0;
 ChargeState lastChargeState = CHARGE_NONE;
 bool battStateValid = false;
