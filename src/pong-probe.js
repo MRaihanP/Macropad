@@ -18,40 +18,82 @@
 // mengira device hidup padahal hanya satu yang benar-benar mengalaminya.
 
 let handler = null;
+let lastRtt = 100;  // default: 100ms (nilai conservatis untuk pacing)
+let rttSamples = []; // rolling window untuk rata-rata
+const RTT_WINDOW = 5; // simpan 5 sample terbaru
 
 /**
  * Daftarkan pemeriksa PONG. Bernilai benar kalau ada slot kosong.
  *
  * @param {function(boolean): void} fn dipanggil dengan hasil probe
+ * @param {boolean} trackRtt jika true, ukur RTT dari PONG yang diterima
  * @returns {boolean} false kalau slot sudah dipakai
  */
-export function registerPongProbe(fn) {
+export function registerPongProbe(fn, trackRtt = false) {
   if (handler) return false;
   handler = fn;
+  if (trackRtt) {
+    rttPending = true;
+    rttStart = Date.now();
+  }
   return true;
+}
+
+// State untuk RTT measurement
+let rttStart = 0;
+let rttPending = false;
+
+/**
+ * Laporkan PONG yang diterima ke probe yang menunggu.
+ * Juga update RTT measurement jika registerPongProbe dipanggil dengan trackRtt=true.
+ *
+ * @returns {boolean} true kalau ada probe yang menerima
+ */
+export function reportPong() {
+  if (!handler) {
+    // Tetap update RTT meskipun tidak ada probe aktif — PONG keepalive juga berguna
+    if (rttPending) {
+      rttPending = false;
+      const delta = Date.now() - rttStart;
+      if (delta > 0 && delta < 5000) { // ignore outlier
+        rttSamples.push(delta);
+        if (rttSamples.length > RTT_WINDOW) rttSamples.shift();
+        lastRtt = rttSamples.reduce((a, b) => a + b, 0) / rttSamples.length;
+      }
+    }
+    return false;
+  }
+  const fn = handler;
+  handler = null;
+  fn(true);
+  return true;
+}
+
+/**
+ * Dapatkan RTT rata-rata terukur (ms).
+ * @returns {number} RTT dalam ms, atau nilai default 100 jika belum ada sample
+ */
+export function getLastRtt() {
+  return lastRtt;
+}
+
+/**
+ * Set RTT secara manual (untuk test/mock).
+ * @param {number} ms RTT dalam ms
+ */
+export function setLastRtt(ms) {
+  lastRtt = ms;
+}
+
+/** Reset RTT measurement (dipanggil di disconnect). */
+export function resetRtt() {
+  lastRtt = 100;
+  rttSamples = [];
+  rttPending = false;
 }
 
 /** Lepas probe. Aman dipanggil walau slot sudah kosong. */
 export function clearPongProbe() {
   handler = null;
-}
-
-/**
- * Laporkan PONG yang diterima ke probe yang menunggu.
- *
- * Dipanggil protocol-parser.js setiap kali baris PONG lewat. Kalau tidak ada
- * probe, ini bukan error: keepalive PONG yang biasa harus tetap jalan seperti
- * sebelumnya.
- *
- * @returns {boolean} true kalau ada probe yang menerima
- */
-export function reportPong() {
-  if (!handler) return false;
-  const fn = handler;
-  // Slot dilepas SEBELUM pemanggil dipanggil. Kalau tidak, probe yang memanggil
-  // ensureLineMode() lagi di dalam callback-nya akan ditolak, dan tidak ada
-  // jalur untuk mengosongkan slot setelah selesai.
-  handler = null;
-  fn(true);
-  return true;
+  rttPending = false;
 }

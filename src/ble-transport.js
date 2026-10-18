@@ -448,15 +448,26 @@ export async function sendRaw(data) {
 // antara WinRT dan driver, ketika GATT send queue overflow. Ini tanda app
 // mengirim lebih cepat dari yang device/Windows bisa proses.
 //
-// Solusi: pacing delay kecil antar write. 5ms cukup untuk memberi Windows
-// dan device memproses satu frame sebelum frame berikutnya. Pada link BLE
-// 2Mbps dengan rtt 76ms, 5ms pacing hampir tidak terasa — tapi cukup untuk
-// mencegah buffer overflow pada link lambat. Nilai ini dipertahankan di
-// satu tempat supaya bisa di-tune.
-// Pacing delay between WriteWithoutResponse calls. Windows GATT send queue
-// can hold ~20 packets before returning 0x80650011 (Insufficient Resources).
-// 10ms per write = max 100 writes/sec, safe for 2Mbit BLE links.
-const CFG_WRITE_PACING_MS = 10;
+// Pacing delay antar WriteWithoutResponse. Windows GATT send queue
+// bisa menampung ~20 packet sebelum mengembalikan 0x80650011.
+//
+// Dulu pakai timer statis 10ms. Sekarang pacing dihitung dari RTT yang terukur:
+//   pacing = max(5, min(20, RTT / 3))
+// Ini memberi 3x safety margin pada setiap side of round-trip. Link cepat
+// (rtt~76ms) → pacing~25ms, link lambat (rtt~300ms) → pacing~20ms.
+// Nilai 5-20ms clamp mencegah pacing tidak wajar pada link ekstrem.
+import { getLastRtt, resetRtt } from './pong-probe.js';
+
+/**
+ * Hitung pacing delay adaptif dari RTT terukur.
+ * @returns {number} delay dalam ms ( clamped 5-20ms )
+ */
+function adaptivePacingMs() {
+  const rtt = getLastRtt();
+  const pacing = Math.max(5, Math.min(20, Math.floor(rtt / 3)));
+  return pacing;
+}
+
 // NOTE: sendRawNoAck does NOT call noteBusy() intentionally.
 // Binary upload traffic is already tracked by beginCfgTransfer/noteCfgCommands.
 // Adding noteBusy() here would interfere with adaptive.js's own beginCfgTransfer
@@ -465,10 +476,10 @@ export async function sendRawNoAck(data) {
   if (!connected) return false;
   try {
     await invoke('ble_write_no_ack', { data: Array.from(data) });
-    // Pacing delay — memberi Windows/GATT stack untuk mengirim sebelum
-    // app membanjiri dengan frame berikutnya. Tanpa ini, pada link lambat
-    // Windows buffer overflow → 0x80650011 → device disconnected.
-    if (data.length > 0) await sleep(CFG_WRITE_PACING_MS);
+    // Pacing delay adaptif — memberi Windows/GATT stack untuk mengirim
+    // sebelum app membanjiri dengan frame berikutnya. Pacing dihitung
+    // dari RTT terukur (default 100ms) agar optimal pada semua link.
+    if (data.length > 0) await sleep(adaptivePacingMs());
     return true;
   } catch (e) {
     // 0x80650011 (Insufficient Resources) adalah tanda GATT send queue
@@ -739,6 +750,7 @@ export async function disconnect(manual) {
   // memunculkan "GATT tidak terhubung" berulang padahal user sudah disconnect.
   stopReadLoop();
   stopDiag();
+  resetRtt();  // kirim sample RTT ke sesi berikutnya
   // Parser ikut dibersihkan di jalur manual juga: tanpa ini baris parsial dari
   // sesi lama menempel pada byte pertama device berikutnya.
   resetParserState();

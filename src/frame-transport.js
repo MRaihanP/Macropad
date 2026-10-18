@@ -518,7 +518,7 @@ function probePong() {
     // Slot penuh = probe lain masih menunggu. Memaksakan PING kedua akan
     // membuat device menjawab dua kali dan probe pertama bisa memakai jawaban
     // milik probe kedua. Lebih baik gagal dan laporan naik ke jalur teks.
-    if (registerPongProbe(finish)) sendLine('PING');
+    if (registerPongProbe(finish, true)) sendLine('PING');  // true = track RTT untuk pacing adaptif
     else finish(false);
   });
 }
