@@ -310,7 +310,7 @@ Compile Arduino dan uji di device tetap wajib.
 
 ## Changelog
 
-### v0.6.5
+### v0.6.6
 
 Migrasi protokol ke **frame biner v2** (Fase 0-5 `PLAN_BLE_Migration.md`).
 Preset runtime sekarang diunggah lewat `CFG_BEGIN` / `CFG_WRITE` / `CFG_COMMIT`
