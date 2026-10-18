@@ -341,6 +341,18 @@ class BleHidServerCallbacks : public NimBLEServerCallbacks {
     bleNusClear();
     PROTO_LINK_RESET();
     LOGS->printf("[BLE] Connect (handle=%u)\n", bleHidConnHandle);
+    // Coba set 2M PHY untuk throughput ~2x (755→1350 kbps). Best-effort:
+    // bila central tidak support 2M, ia otomatis turun ke 1M.
+    // Konstanta yang dikenali ESP-IDF di ESP32 Arduino 3.3.x:
+    //   BLE_GAP_LE_PHY_1M=1, BLE_GAP_LE_PHY_2M=2, BLE_GAP_LE_PHY_CODED=3
+    // Preference: 2M, fallback 1M, coded hanya untuk long-range (tidak dipakai)
+    if (server != nullptr) {
+      server->updatePhy(bleHidConnHandle,
+                        BLE_GAP_LE_PHY_2M,
+                        BLE_GAP_LE_PHY_2M,
+                        BLE_GAP_LE_PHY_CODED);
+      LOGS->printf("[BLE] PHY set ke 2M (best-effort)\n");
+    }
     bleHidApplyConnParams(server, ci);
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& ci) override {
