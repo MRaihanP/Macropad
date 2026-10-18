@@ -279,6 +279,9 @@ export const en = {
 'adaptive.scanning': 'Scanning...',
 'adaptive.noMatch': 'No matches.',
 
+'adaptive.frameSwitchStart': '[ADAPT] Switching to "{name}" ({exe})...',
+'adaptive.frameUploadStart': '[ADAPT] Uploading "{name}" to slot {slot} (binary)',
+'adaptive.frameUploadFail': '[ADAPT] Binary upload of "{name}" failed: {reason}',
 'adaptive.presetActiveLog': '[ADAPT] Active preset: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
 'adaptive.frameQueryFail': '[ADAPT] CFG_QUERY failed (timeout/no response)',

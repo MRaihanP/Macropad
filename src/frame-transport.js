@@ -45,6 +45,24 @@ const ERR_NAMES = {
   0x13: 'CREDIT_EXHAUSTED', 0x14: 'STAGING_FULL', 0x15: 'CRC32_MISMATCH', 0x16: 'UNSUPPORTED',
 };
 
+// Batas satu write BLE, dalam byte.
+//
+// PENTING: payload maksimum characteristic NUS adalah MTU - 3 byte. Pada MTU 247
+// (nilai yang muncul di DIAG) itu 244 byte. Satu frame CFG_WRITE dengan payload
+// 237 byte memakai 237 + 5 header + 2 CRC = 244 byte, jadi SUDAH tepat di batas.
+//
+// Karena itu frame TIDAK boleh digabung: dua frame dalam satu write = 481 byte,
+// Windows memotongnya tanpa error, dan preset yang terpotong bisa lolos
+// pemeriksaan CRC di sisi app kalau tidak hati-hati. Jadi penggabungan frame
+// DIBATASI oleh MAX_WRITE_BYTES di bawah, bukan dilakukan tanpa batas.
+const MAX_WRITE_BYTES = 244;
+// Overhead per frame di wire: header 5 byte (SOF, VER, type, len hi, len lo)
+// plus trailer CRC 2 byte. Cermin encode() di frame-codec.js.
+const FRAME_OVERHEAD = 7;
+
+// Batas menunggu jawaban frame. PING/PONG bolak-balik satu baris dan device
+// tidak punya pekerjaan lain saat itu, jadi ini harus jauh di bawah RTT device
+// yang lambat - 2 detik sudah longgar.
 const RTT_MS = 2000;
 // Verifikasi mode baris lebih pendek: PING hanya bolak-balik satu baris, tidak
 // ada pekerjaan device di belakangnya.
@@ -432,43 +450,71 @@ export async function uploadPresetBinary(preset, geom, slot, onProgress) {
   }
 
   // ---- 2. CFG_WRITE dengan credit flow control ----
-  // CFG_WRITE dikirim via WriteWithoutResponse (sendRawNoAck). App tidak boleh
-  // mengirim lebih dari credit yang tersedia. Device mengirim CREDIT frame
-  // untuk memberi tahu ruang staging yang tersedia — app bereaksi dengan
-  // mengirim lebih lanjut.
   //
-  // CREDIT frame mengganti (bukan menambah) nilai credit: berisi total ruang
-  // tersedia, bukan jumlah bertambah. Ini sederhana dan tidak memungkinkan
-  // drift akumulasi dari hitung-sendiri app vs device.
+  // Credit = sisa ruang staging yang boleh ditulis. Payload maksimum satu preset
+  // adalah 4838 byte dan staging 5120, jadi credit dari CFG_READY selalu cukup
+  // untuk seluruh payload. Artinya loop di bawah tidak PERLU menunggu frame
+  // CREDIT - dan itu memang disengaja.
+  //
+  // Versi lama menunggu T_CREDIT setiap kali credit habis. Itu terlihat aman,
+  // tapi salah: firmware tidak pernah menambah credit (tidak ada siklus flush,
+  // staging di-commit utuh di akhir). Begitu credit habis, app menunggu frame
+  // yang tidak akan pernah datang, timeout 2 detik, upload gagal, lalu caller
+  // turun ke jalur teks yang mengirim ratusan baris SET. Itulah pemicu gejala
+  // "app diam beberapa menit lalu stream membanjiri".
+  //
+  // Frame CREDIT tetap dipantau: device mengirimnya sebagai umpan balik bahwa
+  // data diterima. Kalau credit benar-benar habis sebelum payload selesai, upload
+  // berhenti dengan alasan yang jelas supaya caller bisa turun ke jalur teks
+  // dengan log yang jujur - bukan diam 2 detik lalu menebak.
   let sent = 0;
   let chunkStart = 0;
 
   while (chunkStart < payload.length) {
     const remaining = payload.length - chunkStart;
-    const canSend = Math.min(credit, remaining);
-
-    if (canSend < 1) {
-      // Credit habis — tunggu CREDIT frame dari device.
-      const cp = await waitForFrame(T_CREDIT, RTT_MS);
-      if (!cp) {
-        return { ok: false, reason: 'timeout menunggu CREDIT (device menganggap credit terpakai)' };
-      }
-      const cf = Array.from(cp);
-      credit = cf.length >= 2 ? (cf[0] | (cf[1] << 8)) >>> 0 : 0;
-      if (credit <= 0) {
-        return { ok: false, reason: 'CREDIT frame berisi 0' };
-      }
-      continue;
+    // Credit dipotong per frame UTUH. Kalau dipotong per chunk, sisa credit bisa
+    // bukan kelipatan ukuran payload frame, dan frame terakhir jadi tidak valid.
+    const creditFrames = Math.floor(credit / maxChunk);
+    if (creditFrames < 1) {
+      return {
+        ok: false,
+        reason: `staging device penuh (sisa credit ${credit} byte < 1 frame ${maxChunk} byte) - turun ke jalur teks`,
+      };
     }
 
-    // Kirim chunk sebanyak credit yang tersedia, dipecah per defaultChunk.
-    const toSend = Math.min(canSend, defaultChunk);
-    const chunk = payload.slice(chunkStart, chunkStart + toSend);
-    const ok = await sendRawNoAck(new Uint8Array(encode(T_CFG_WRITE, Array.from(chunk))));
+    // Kirim frame, TANPA melanggar batas payload NUS.
+    //
+    // Perhitungan batas ini yang membuat penggabungan frame TIDAK dilakukan di
+    // sini: payload NUS maksimal MTU-3, di MTU 247 itu 244 byte, dan satu frame
+    // CFG_WRITE payload 237 byte sudah memakai 244 byte (237 + 5 header + 2 CRC).
+    // Dua frame dalam satu write = 481 byte, dan Windows memotong write
+    // characteristic tanpa memberi tahu - preset yang terpotong bisa lolos
+    // pemeriksaan CRC di sisi app kalau tidak hati-hati.
+    //
+    // Jadi framesPerWrite di sini selalu 1 pada MTU 247. Kecepatan upload
+    // IMDALIKAN dari pemangkasan jumlah frame yang dikirim, bukan dari
+    // penggabungan. Lihat comentário maxChunk di atas.
+    const framesThisWrite = Math.min(
+      creditFrames,
+      Math.ceil(remaining / maxChunk),
+    );
+    const take = Math.min(remaining, framesThisWrite * maxChunk);
+
+    const bytes = [];
+    for (let o = chunkStart; o < chunkStart + take; o += maxChunk) {
+      const end = Math.min(o + maxChunk, chunkStart + take);
+      bytes.push(...encode(T_CFG_WRITE, Array.from(payload.slice(o, end))));
+    }
+    const ok = await sendRawNoAck(new Uint8Array(bytes));
     if (!ok) return { ok: false, reason: 'gagal kirim CFG_WRITE' };
-    chunkStart += chunk.length;
-    credit -= chunk.length;
-    sent += chunk.length;
+
+    chunkStart += take;
+    // Potong sebesar PAYLOAD yang diterima device, bukan sebesar byte di wire.
+    // Device hanya menghitung `len` dari payload CFG_WRITE, jadi header + CRC
+    // tidak boleh ikut mengurangi credit - kalau iya, credit habis jauh lebih
+    // cepat daripada yang device harapkan.
+    credit -= take;
+    sent += take;
     if (onProgress) onProgress(Math.min(sent, payload.length), payload.length);
   }
 

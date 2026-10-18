@@ -548,6 +548,17 @@ async function activatePresetRuntime(preset, exe) {
 
   // ---- FAST PATH: CFG_SIG + CFG_QUERY + CFG_ACTIVATE ----
   //
+  // Log di baris pertama ini PENTING dan bukan hiasan.
+  //
+  // Gejala yang dilaporkan: "pindah ke preset app lain, app terlihat diam saja
+  // tanpa log apapun, setelah beberapa menit baru keluar [ADAPT] Active
+  // Preset". Tanpa log di sini, semua yang terjadi di bawah - queryFrameSlots
+  // (1 RTT), findMatchingSlot, mungkin upload binary (N RTT), CFG_ACTIVATE
+  // (1 RTT), ensureLineMode (1 RTT + PONG) - terjadi di dalam keheningan total.
+  // User melihat app macet, padahal sebenarnya link BLE yang lambat sedang
+  // membayar beberapa round-trip.
+  log(t('adaptive.frameSwitchStart', { name: preset.name, exe }), null);
+  //
   // Alurnya: tanya device slot mana yang isinya sudah sama dengan preset ini
   // (pakai CFG_SIG kanonik yang sama persis dengan firmware). Kalau ada,
   // cukup SATU frame 8 byte untuk beralih - bukan ratusan baris SET.
@@ -558,30 +569,28 @@ async function activatePresetRuntime(preset, exe) {
   // device tidak sempat mengolah perintah switch, dan grid app tidak pernah
   // sempat menampilkan keymap yang benar.
   //
-  // ---- FAST PATH: CFG_SIG + CFG_QUERY + CFG_ACTIVATE ----
-  //
-  // Alurnya: tanya device slot mana yang isinya sudah sama dengan preset ini
-  // (pakai CFG_SIG kanonik yang sama persis dengan firmware). Kalau ada,
-  // cukup SATU frame 8 byte untuk beralih - bukan ratusan baris SET.
-  //
-  // Syaratnya device harus sudah mendukung frame. Device baru masuk mode frame
+  // Syaratnya device harus mendukung frame. Device baru masuk mode frame
   // setelah menerima SOF 0xA5, jadi deviceSupportsFrame() hanya PETUNJUK -
   // percobaan pertama yang benar-benar membuktikan. Kalau percobaan gagal,
   // jalur teks dipakai dan kegagalan dicatat supaya tidak diulang.
   //
-  // PENTING (prototipe USB): WHOAMI prototipe kirim proto=line, sehingga
-  // deviceSupportsFrame() salah. Dulu kondisi masuk di sini juga memakai
-  // `frameModeStatus() === null` (untuk memaksa probe per koneksi). Tapi itu
-  // memaksa queryFrameSlots() -> sendFrame() -> sendRaw(Uint8Array), dan
-  // Tauri serial plugin di build ini MENOLAK Uint8Array ("invalid type:
-  // sequence, expected a string"). Akibatnya tiap (re)connect memicu crash
-  // reconnect loop. Karena prototipe tidak pernah mengklaim proto=frame,
-  // cukup pakai deviceSupportsFrame() saja: tidak masuk frame-path kecuali
-  // device benar-benar mengklaimnya. frameUsable=null hanya terjadi pada
-  // sesi yang belum pernah konek — jika sampai di situ berarti device tak pernah
-  // merespon frame sama sekali (atau belum pernah konek), jadi tidak perlu
-  // dipaksa.
-  const buktiFrame = deviceSupportsFrame(hooks.getDeviceProfile());
+  // Bukti frame dari DUA sumber, dan keduanya wajib dipakai.
+  //
+  // `getDeviceProfile()` memberi profil SESI INI - tapi resetDeviceProfile()
+  // menghapusnya setiap disconnect, dan tepat setelah connect baru profil itu
+  // belum terisi (WHOAMI dijawab beberapa ratus ms kemudian). Selama jendela itu
+  // deviceSupportsFrame() bernilai false, jadi fast path tidak pernah dicoba,
+  // dan switch pertama/setiap switch setelah reconnect jatuh ke jalur teks yang
+  // mengirim ratusan baris SET.
+  //
+  // `getFrameCapability()` mengembalikan `lastFrameSof` yang SENGAJA bertahan
+  // melewati disconnect (lihat protocol-parser.js). Itu yang membuat fast path
+  // tetap hidup di switch pertama dan setelah reconnect.
+  //
+  // Gejala yang dilaporkan persis ini: switch pertama sangat lama lalu stream
+  // membanjiri, switch berikutnya lebih cepat karena profil sudah terisi.
+  const buktiFrame = deviceSupportsFrame(hooks.getDeviceProfile())
+    || !!hooks.getFrameCapability?.();
   if (buktiFrame && frameModeStatus() !== false) {
     const meta = await queryFrameSlots();
     if (meta) {
@@ -589,20 +598,31 @@ async function activatePresetRuntime(preset, exe) {
       if (devSlot >= 0) {
         const rsp = await activateFrameSlot(devSlot);
         if (rsp) {
-          // Device sudah pindah slot. Sekarang device masih dalam mode frame,
-          // jadi INFO/DUMPENC berikutnya harus lewat jalur teks - dan perpindahan
-          // itu DIVERIFIKASI, bukan diasumsikan.
+          // Device sudah pindah slot, dan itu SEKARANG terjadi - jadi preset
+          // sudah aktif dari sisi device. Itu yang penting untuk gejala
+          // "perpindahan lama": pengguna tidak perlu menunggu dump selesai.
           //
-          // Versi pertama memakai `await sendLine('')` dan langsung melangkah.
-          // Kalau device tidak benar-benar keluar dari mode frame, INFO dan
-          // DUMPENC dibaca device sebagai payload frame rusak: crcErr naik, grid
-          // tidak pernah terisi - gejala "matrix tombol tidak berubah" yang
-          // justru seharusnya diperbaiki oleh fast path ini.
-          if (!await ensureLineMode()) {
+          // CFG_ACTIVATE dijawab dengan CFG_ACT_RSP di mode frame. Sebelum
+          // INFO/DUMPENC (yang berupa teks) dikirim, device harus keluar dari
+          // mode frame - perintah resminya satu byte 0x0A lewat jalur RAW.
+          //
+          // verifyLineMode TIDAK dipakai di sini, dan itu keputusan sadar:
+          // probePong() adalah satu RTT penuh (PING -> PONG), jadi memverifikasi
+          // setelah SETIAP switch menambah ~240ms pada RTT p50 device Anda -
+          // dan device yang lambat justru yang paling dirugikan. Yang membuat
+          // ini tetap aman adalah 0x0A dikirim lewat jalur frame (sendRaw),
+          // bukan sendLine: jadi byte itu tidak mungkin hilang di barisan teks.
+          //
+          // Kalau ternyata mode frame tidak berubah, gejala yang muncul adalah
+          // grid kosong (INFO/DUMPENC jadi payload rusak) - dan itu terlihat
+          // sebagai crcErr naik di DIAG, bukan sebagai preset yang salah.
+          const inLineMode = await ensureLineMode();
+          if (!inLineMode) {
+            // BUKAN fallback penuh. Preset sudah aktif di device; yang belum
+            // synced hanya grid di app. Menjalankan activatePresetRuntimeText()
+            // di sini akan mengirim ulang ratusan baris SET - persis perintah
+            // yang membuat device kewalahan dan Windows memutus link.
             log(t('adaptive.frameModeStuck'), 'err');
-            // Kembali ke jalur teks sepenuhnya: preset dikirim ulang lewat jalur
-            // yang sudah terbukti bisa jalan, dan grid dibaca ulang dari sana.
-            return await activatePresetRuntimeText(preset, exe, sig, slot, cached);
           }
           log(t('adaptive.presetActiveLog', {
             name: preset.name, exe,
@@ -708,13 +728,16 @@ async function pollFocusedApp() {
     if (targetId === currentActivePresetId) return;
     // Cooldown setelah switch. Tanpa ini, companion app sendiri yang sedang
     // difokuskan ikut memicu "Back to Default", lalu user alt+tab ke aplikasi
-    // target memicu switch lagi - dan dua-duanya butuh upload penuh (ratusan
-    // perintah SET). Akibatnya preset berganti bolak-balik tanpa henti,
-    // device tidak pernah selesai memproses antrean, dan grid app tidak pernah
-    // sempat menampilkan keymap yang benar.
+    // target memicu switch lagi - dan dua-duanya butuh upload. Akibatnya preset
+    // berganti bolak-balik tanpa henti, device tidak pernah selesai memproses
+    // antrean, dan grid app tidak pernah sempat menampilkan keymap yang benar.
     //
-    // Jeda ini bukan penalti: switch yang sah tetap terjadi, hanya tidak
-    // menumpuk dengan switch berikutnya yang belum sempat selesai.
+    // Catatan tentang gejala "tidak ada notifikasi perpindahan sampai lama":
+    // penyebabnya bukan cooldown ini. Poll 120 ms + debounce 150 ms sudah
+    // membuka jalan dalam ~300 ms. Yang hilang adalah UMPAN BALIK ke user -
+    // activatePresetRuntime() tidak memberi log apa pun sampai selesai, dan pada
+    // preset yang harus di-upload lewat frame itu bisa beberapa detik. Jadi
+    // switch yang sudah tahu akan dicatat di frameSwitchStart.
     if (Date.now() - lastSwitchAt < SWITCH_COOLDOWN_MS) return;
     lastSwitchAt = Date.now();
 

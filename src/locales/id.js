@@ -276,6 +276,9 @@ export const id = {
 'adaptive.scanning': 'Memindai...',
 'adaptive.noMatch': 'Tidak ada yang cocok.',
 
+'adaptive.frameSwitchStart': '[ADAPT] Beralih ke "{name}" ({exe})…',
+'adaptive.frameUploadStart': '[ADAPT] Mengunggah "{name}" ke slot {slot} (biner)',
+'adaptive.frameUploadFail': '[ADAPT] Unggah biner "{name}" gagal: {reason}',
 'adaptive.presetActiveLog': '[ADAPT] Preset aktif: "{name}" ({exe}){cache}',
 'adaptive.cache': ' · cache',
 'adaptive.frameQueryFail': '[ADAPT] CFG_QUERY gagal (timeout/brak response)',

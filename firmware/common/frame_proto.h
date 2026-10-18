@@ -128,20 +128,26 @@ static uint32_t faCxUnsup     = 0;
 // FASE 5: Credit flow control.
 //
 // CFG_BEGIN -> CFG_READY{credit u16} memberi tahu app berapa banyak ruang
-// tersedia di staging buffer. App mengirim CFG_WRITE menggunakan
-// WriteWithoutResponse (tanpa ack per chunk), dan hanya boleh mengirim sebanyak
-// credit yang ada. Device mengirim CREDIT{bytes u16} untuk menambah ruang
-// setelah ruang staging terpakai (mis. setelah staging disinkronis atau buffer
-// device dikosongkan).
+// TERSISA di staging buffer. App mengirim CFG_WRITE memakai WriteWithoutResponse
+// dan hanya boleh mengirim sebanyak credit yang ada.
 //
-// Ini mencegah app menumpuk data lebih cepat dari yang device bisa terima pada
-// link BLE yang lambat/flaky — tanpa credit, app bisa mengirim semua CFG_WRITE
-// sekaligus, dan paket yang gagal (WriteWithoutResponse tidak punya ack) akan
-// hilang tanpa jejak.
+// Credit di sini adalah "sisa ruang", BUKAN "jumlah yang dibebaskan". App
+// melacak sendiri sisa itu, jadi tidak ada drift akumulasi.
+//
+// PENTING - credit tidak pernah ditambah. Itu disengaja: payload maksimum satu
+// preset adalah 4838 byte (lihat perhitungan di atas) dan CFG_STAGING_SIZE
+// 5120, jadi credit penuh selalu cukup untuk SELURUH preset dalam satu sesi.
+// Alur flow control-nya sederhana: device memberi tahu sisa ruang, app
+// menghormatinya. Tidak ada siklus refill karena tidak ada siklus flush - staging
+// di-commit utuh di akhir, bukan ditulis berkala.
+//
+// Kalau suatu saat payload bisa melebihi staging, check `len > cfgStageCredit`
+// di faCmdCfgWrite sudah menolaknya dengan FA_ERR_CREDIT_EXHAUSTED, dan app
+// turun ke jalur teks - bukan hang.
 static uint8_t  cfgStage[CFG_STAGING_SIZE];
-static uint16_t cfgStageLen = 0;    // berapa byte yang sudah ditulis
-static uint16_t cfgStageCredit = 0;  // berapa byte lagi yang bisa diterima (Fase 5)
-static uint8_t  cfgStageSlot = 0;   // slot tujuan (0..APP_SLOTS-1)
+static uint16_t cfgStageLen = 0;      // berapa byte yang sudah ditulis
+static uint16_t cfgStageCredit = 0;   // sisa ruang yang boleh ditulis (Fase 5)
+static uint8_t  cfgStageSlot = 0;     // slot tujuan (0..APP_SLOTS-1)
 static bool     cfgStageActive = false;
 
 

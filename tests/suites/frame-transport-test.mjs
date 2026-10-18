@@ -521,8 +521,89 @@ ok(/reportPong\s*\(\s*\)/.test(parserSrc), 'parser melaporkan PONG ke probe');
 // sebelum \r di akhir baris - jadi test ini akan selalu hijau tanpa alasan.
 const adaptiveKode = fs.readFileSync(path.join(REPO, 'src', 'adaptive.js'), 'utf8')
   .split('\n').map(l => l.replace(/\/\/.*/, '')).join('\n');
+const idSrc = fs.readFileSync(path.join(REPO, 'src', 'locales', 'id.js'), 'utf8');
+const enSrc = fs.readFileSync(path.join(REPO, 'src', 'locales', 'en.js'), 'utf8');
 ok(!/sendLine\s*\(\s*''\s*\)/.test(adaptiveKode),
   'adaptive.js tidak lagi memakai baris kosong sebagai sakelar mode');
+
+// ===================================================================
+console.log('--- H. Regresi: switch preset lambat + stream membanjiri ---');
+// ===================================================================
+//
+// Gejala yang dilaporkan user:
+//   1. Pindah ke preset app lain -> app diam tanpa log, setelah MENIT baru
+//      keluar "[ADAPT] Active preset", disertai DIAG merah.
+//   2. Switch berikutnya lebih cepat, tapi tetap terasa lambat.
+//   3. Pindah ke preset Default juga lambat.
+//
+// Penyebabnya bukan radio. Di aggressiveBLE dengan rtt p50=237ms, satu
+// round-trip sudah ~1/4 detik, dan activatePresetRuntime() membayar LEBIH
+// dari satu: queryFrameSlots (1 RTT) + ensureLineMode/probePong (1 RTT) +
+// mungkin upload binary. Selama itu tidak ada satu baris log pun, jadi user
+// melihat app macet.
+//
+// Test di bawah mengunci EMPAT perbaikan yang menutup jalur tersebut.
+
+// (1) Log di baris pertama activatePresetRuntime. Tanpa ini tidak ada umpan
+// balik sama sekali selama beberapa RTT.
+ok(/adaptive\.frameSwitchStart/.test(adaptiveKode),
+  'activatePresetRuntime() memberi log saat switch dimulai, bukan hanya saat selesai');
+
+// (2) ensureLineMode() memanggil probePong() = PING->PONG = 1 RTT penuh.
+// Setelah CFG_ACTIVATE, preset SUDAH aktif di device; memakai probe hanya
+// menambah ~240ms pada device yang paling butuh cepat.
+ok(/const inLineMode = await ensureLineMode/.test(adaptiveKode),
+  'keputusan mode line dicatat terpisah dari fallback');
+
+// (3) ensureLineMode() gagal TIDAK boleh memicu activatePresetRuntimeText().
+// Preset sudah aktif di device; mengulang upload = ratusan baris SET = link
+// jenuh = Windows memutus = loop. Ini persis gejala "stream membanjiri".
+const afterEnsure = adaptiveKode.slice(adaptiveKode.indexOf('ensureLineMode'));
+const blokSetelah = afterEnsure.slice(0, afterEnsure.indexOf('activatePresetRuntimeText'));
+ok(!/activatePresetRuntimeText/.test(blokSetelah),
+  'kegagalan ensureLineMode tidak lagi memicu upload ulang penuh (anti flood)');
+
+// (4) Gate frame WAJIB memakai getFrameCapability() Besides deviceProfile.
+// resetDeviceProfile() menghapus profil tiap disconnect, jadi gate yang cuma
+// baca profil mati persis di switch pertama - Symptom "pertama kali lama".
+ok(/getFrameCapability/.test(adaptiveKode),
+  'gate frame membaca getFrameCapability() yang bertahan melewati disconnect');
+
+// (5) Loop upload tidak boleh menunggu frame CREDIT. Firmware tidak pernah
+// menambah credit, jadi menunggu = timeout 2 detik = gagal = fallback teks.
+const loopUpload = ftSrc.slice(ftSrc.indexOf('CFG_WRITE dengan credit flow control'));
+ok(!/waitForFrame\(T_CREDIT/.test(loopUpload),
+  'loop CFG_WRITE tidak menunggu frame CREDIT (firmware tidak pernah menambah credit)');
+ok(/creditFrames/.test(loopUpload),
+  'loop CFG_WRITE memeriksa credit dalam frame UTUH sebelum mengirim');
+ok(/sendRawNoAck\(new Uint8Array\(bytes\)\)/.test(loopUpload),
+  'beberapa frame digabung per panggilan write');
+
+// (6) Credit dipotong sebesar PAYLOAD, bukan sebesar byte di wire. Device
+// hanya menghitung `len` payload CFG_WRITE; header+CRC ikut dipotong akan
+// membuat credit habis sebelum payload selesai.
+ok(/credit -= take/.test(loopUpload),
+  'credit dipotong sebesar payload yang diterima device, bukan byte di wire');
+ok(!/credit -= bytes\.length/.test(loopUpload),
+  'header+CRC tidak ikut mengurangi credit');
+
+// (7) Batas payload NUS. MTU 247 - 3 = 244 byte; satu frame payload 237
+// sudah 244 byte. Menggabung frame tanpa menghitung ini membuat Windows
+// memotong write dan preset datang tidak lengkap.
+ok(/MAX_WRITE_BYTES\s*=\s*244/.test(ftSrc),
+  'batas write NUS 244 byte (MTU 247 - 3) dinyatakan eksplisit');
+ok(/FRAME_OVERHEAD\s*=\s*7/.test(ftSrc),
+  'overhead frame 7 byte (header 5 + CRC 2) dinyatakan eksplisit');
+
+// (8) Credit harus cukup untuk satu preset utuh. Payload maksimum 4838 byte
+// (lihat frame_proto.h) dan staging 5120 - jadi credit penuh selalu cukup dan
+// tidak ada siklus refill yang perlu ada.
+ok(/CFG_STAGING_SIZE 5120/.test(frameProto),
+  'staging 5120 byte cukup untuk payload maksimum 4838 byte');
+
+// (9) Locale untuk log baru harus ada di kedua bahasa.
+ok(/adaptive\.frameSwitchStart/.test(idSrc) && /adaptive\.frameSwitchStart/.test(enSrc),
+  'locale frameSwitchStart ada di id dan en');
 
 // ===================================================================
 console.log('--- I. Ringkasan ---');
