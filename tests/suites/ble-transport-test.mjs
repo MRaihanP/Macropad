@@ -652,8 +652,52 @@ ok(isNamesRowBody && /\^\\d\+\$/.test(isNamesRowBody[0]),
 
 // Preset switch harus minta dump ulang layer.
 const adaptiveSrc = fs.readFileSync(`${SRC}/adaptive.js`, 'utf8');
-ok(/hooks\.loadLayer\(currentLayer\)/.test(adaptiveSrc),
+const frameTransportSrc = fs.readFileSync(`${SRC}/frame-transport.js`, 'utf8');
+ok(/hooks\.loadLayer\(layer\)/.test(adaptiveSrc) || /hooks\.loadLayer\(currentLayer\)/.test(adaptiveSrc),
   'activatePresetRuntime meminta dump layer lewat hooks.loadLayer (grid ikut berubah)');
+
+// Dump WAJIB ditunggu, bukan hanya dikirim. hooks.loadLayer() hanya await
+// sendLine() - selesai begitu byte masuk antrean, bukan begitu DUMP_END sampai.
+// Gejala: device sudah benar (key jalan) tapi grid masih menampilkan preset
+// lama, dan dua dump saling menimpa karena switch berikutnya dikirim sebelum
+// dump pertama selesai.
+ok(/waitForDump\(layer, DUMP_WAIT_MS\)/.test(adaptiveSrc),
+  'loadActiveLayerDump menunggu DUMP_END sebelum lanjut');
+ok(/const settled = waitForDump[\s\S]{0,120}hooks\.loadLayer/.test(adaptiveSrc),
+  'waiter DUMP dipasang SEBELUM DUMP dikirim (tidak ada balasan yang hilang)');
+ok(/DUMP_WAIT_MS\s*=\s*8000/.test(adaptiveSrc),
+  'timeout dump dibatasi 8 detik supaya auto-switch tidak mati permanen');
+
+// Jalur "preset default" juga harus reload grid. Symptom: pindah ke aplikasi
+// lain, key masih nyangkut di preset sebelumnya karena tidak ada yang meminta
+// DUMP.
+const blokDefault = adaptiveSrc.slice(adaptiveSrc.indexOf("backDefaultLog"));
+ok(/loadActiveLayerDump\(\)/.test(blokDefault),
+  'perpindahan ke preset default juga memuat ulang grid');
+
+// ensureLineMode gagal -> JANGAN kirim DUMP. Kalau device masih mode frame,
+// DUMP_BEGIN datang tanpa DUMP_END = error "DUMP never closed".
+const stikMode = adaptiveSrc.slice(adaptiveSrc.indexOf('inLineMode'));
+const stikBlok = stikMode.slice(0, stikMode.indexOf('loadActiveLayerDump'));
+ok(!/loadActiveLayerDump/.test(stikBlok),
+  'mode line gagal dipastikan -> DUMP tidak dikirim (anti "DUMP never closed")');
+
+// ensureLineMode harus mencoba lebih dari sekali: 0x0A hanya dikenali perakit
+// saat IDLE, dan PONG bisa telat pada link lambat.
+ok(/LINE_MODE_ATTEMPTS\s*=\s*3/.test(frameTransportSrc),
+  'ensureLineMode mencoba 3x (perakit mungkin belum IDLE, PONG bisa telat)');
+ok(/sleepMs\(LINE_MODE_RETRY_MS\)/.test(frameTransportSrc),
+  'ada jeda antar percobaan ensureLineMode (3 percobaan tanpa jeda tidak berguna)');
+
+// ensureLineMode harus return false kalau link hilang, bukan mencoba terus.
+const ensureBody = frameTransportSrc.slice(
+  frameTransportSrc.indexOf('export async function ensureLineMode'),
+  frameTransportSrc.indexOf('export async function ensureLineMode') + 1200,
+);
+ok(/if \(!isConnected\(\)\) return false/.test(ensureBody),
+  'ensureLineMode berhenti saat link hilang (retry di link mati tidak ada artinya)');
+ok(/for \(let attempt = 0; attempt < LINE_MODE_ATTEMPTS/.test(ensureBody),
+  'ensureLineMode memakai loop percobaan terbatas, bukan tak terbatas');
 ok(!/from '\.\/home-page\.js'/.test(adaptiveSrc),
   'adaptive.js tetap tidak mengimpor home-page.js (aturan kontrak)');
 // Cooldown: companion app sendiri yang sedang fokus memicu "Back to Default",

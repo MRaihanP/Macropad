@@ -68,6 +68,22 @@ const RTT_MS = 2000;
 // ada pekerjaan device di belakangnya.
 const LINE_PROBE_MS = 1200;
 
+// Berapa kali line mode dicoba sebelum menyerah.
+//
+// 0x0A hanya dikenali perakit frame saat IDLE. Kalau perakit masih memegang
+// setengah frame terpotong, 0x0A dimakan sebagai byte data dan device TIDAK
+// berpindah mode sama sekali - bukan karena perintahnya salah, tapi karena
+// perakit belum siap menerima perintah.
+//
+// Di link lambat satu percobaan punya peluang nyata gagal: PONG belum sempat
+// tiba dalam LINE_PROBE_MS. Tiga percobaan menutup kedua kasus itu.
+const LINE_MODE_ATTEMPTS = 3;
+// Jeda antar percobaan. Cukup bagi perakit device menyelesaikan frame yang
+// sedang dipegang, tapi cukup pendek sehingga tidak terasa oleh user.
+const LINE_MODE_RETRY_MS = 120;
+
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
 // Keputusan format untuk SESI INI.
 //
 // null = belum ada bukti. true = device terbukti menjawab frame. false = sudah
@@ -282,11 +298,33 @@ export async function frameHello() {
  */
 export async function ensureLineMode() {
   if (!isConnected()) return false;
+
   // Newline lewat jalur RAW. sendLine menambah newline-nya sendiri, dan kita
   // justru butuh satu newline yang paling dulu sampai.
-  const raw = await sendRaw(new Uint8Array([0x0a]));
-  if (!raw) return false;
-  return await probePong();
+  //
+  // Satu percobaan TIDAK cukup, dan inilah alasannya. 0x0A hanya dikenali
+  // perakit frame saat dalam keadaan IDLE (lihat faRoute di frame_asm.h).
+  // Kalau perakit masih memegang setengah frame dari sinkronisasi yang terputus
+  // di tengah jalan, 0x0A itu dimakan sebagai byte data biasa, bukan perintah -
+  // dan device tetap di mode frame. PONG pun tidak pernah datang, jadi probe
+  // melaporkan "gagal" padahal masalahnya "belum upbeat", bukan "tidak bisa".
+  //
+  // Di link lambat (rtt p50 di device yang lambat bisa 200ms+) satu percobaan
+  // punya peluang nyata gagal karena PONG belum sempat tiba dalam LINE_PROBE_MS.
+  // Tiga percobaan dengan jeda pendek menutup keduanya: perakit yang belum IDLE
+  // akan sempat selesai, dan PONG yang terlambat akan tertangkap di percobaan
+  // berikutnya.
+  for (let attempt = 0; attempt < LINE_MODE_ATTEMPTS; attempt++) {
+    if (!isConnected()) return false;
+    const raw = await sendRaw(new Uint8Array([0x0a]));
+    if (!raw) return false;              // link hilang: retry tidak ada artinya
+    if (await probePong()) return true;
+    // Jeda pendek sebelum mencoba lagi. Tanpa jeda, tiga percobaan bisa
+    // selesai dalam waktu yang lebih pendek dari satu RTT - jadi tidak menambah
+    // peluang apa pun, hanya menambah write.
+    if (attempt < LINE_MODE_ATTEMPTS - 1) await sleepMs(LINE_MODE_RETRY_MS);
+  }
+  return false;
 }
 
 /**

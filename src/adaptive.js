@@ -71,6 +71,18 @@ const FOCUS_POLL_MS = 120;
 const SWITCH_COOLDOWN_MS = 2500;
 let lastSwitchAt = 0;
 
+// Berapa lama menunggu DUMP_END setelah switch preset.
+//
+// Yang ditunggu HANYA penanda DUMP_END, bukan isi lengkap dump - jadi ini bukan
+// "berapa lama switch boleh". Yang dijaga adalah urutan: switch berikutnya tidak
+// boleh dikirim sebelum dump yang sekarang selesai, karena dua dump yang
+// tumpang tindih membuat grid menampilkan isi yang salah.
+//
+// 8 detik longgar untuk link lambat (rtt p95 bisa ~1 detik di adapter buruk),
+// tapi bukan tanpa batas: kalau device tidak pernah mengirim DUMP_END, switch
+// berikutnya akan terkunci selamanya dan auto-switch mati permanen.
+const DUMP_WAIT_MS = 8000;
+
 const APP_SLOTS = 6;                        // harus sama dengan APP_SLOTS di firmware
 let slotTable = Array(APP_SLOTS).fill(null); // {id, sig, used}
 let slotTick = 0;
@@ -622,7 +634,23 @@ async function activatePresetRuntime(preset, exe) {
             // synced hanya grid di app. Menjalankan activatePresetRuntimeText()
             // di sini akan mengirim ulang ratusan baris SET - persis perintah
             // yang membuat device kewalahan dan Windows memutus link.
+            //
+            // Dampar sampai DUMP di bawah: kalau device ternyata masih mode
+            // frame, INFO/DUMPENC akan dibaca sebagai payload frame rusak dan
+            // DUMP_BEGIN yang menyertainya tidak pernah punya DUMP_END - itu
+            // persis error "DUMP never closed" yang muncul di log. Jadi kalau
+            // mode line gagal dipastikan, jangan kirim DUMP sama sekali;
+            // lebih baik grid stale sementara daripada parser terkunci.
             log(t('adaptive.frameModeStuck'), 'err');
+            log(t('adaptive.presetActiveLog', {
+              name: preset.name, exe,
+              cache: t('adaptive.cacheFrame'),
+            }), 'ok');
+            hooks.notify(t('adaptive.presetNotif', { name: preset.name }), 'preset');
+            currentActivePresetId = preset.id;
+            updateActivePresetLabel();
+            slotTable[slot] = { id: preset.id, sig, used: ++slotTick };
+            return;
           }
           log(t('adaptive.presetActiveLog', {
             name: preset.name, exe,
@@ -696,8 +724,37 @@ async function activatePresetRuntimeText(preset, exe, sig, slot, cached) {
 // selesai, bukan di baris yang sama. Kalau dikirim bersamaan, DUMP:0 masuk ke
 // antrean device di belakang ratusan perintah SET dan jawabannya tertahan lama
 // - dan kalau ada frame lain yang sedang berjalan, parser menundanya.
+//
+// WAIT DUMP WAJIB, dan itu yang hilang di versi lama.
+//
+// Gejala: "matrix tidak berubah, tapi input dari key sudah benar preset yang
+// seharusnya". Itu persis tanda device sudah benar sementara app masih
+// menampilkan keymap LAMA. hooks.loadLayer() hanya await sendLine() - yang
+// selesai begitu byte-nya masuk antrean, bukan begitu DUMP_END sampai. Jadi
+// pemanggil lanjut dan switch berikutnya dimulai sebelum dump yang lama
+// selesai, dan dua dump saling menimpa: yang terakhir selesai bukan yang
+// terakhir diminta.
+//
+// Di link lambat (rtt p50=237ms) ini bukan detail kecil: DUMP untuk 3x3 plus
+// encoder adalah puluhan baris, dan tanpa jeda switch berikutnya sudah dikirim
+// di tengah-tengahnya.
+//
+// Timeout-nya longgar (8 detik) karena yang ditunggu hanya penanda DUMP_END,
+// bukan isi lengkapnya - dan selama menunggu tidak ada switch lain yang boleh
+// jalan (autoSwitchBusy masih true). Jadi menunggu di sini bukan deadlock,
+// hanya memastikan urutan yang benar.
 async function loadActiveLayerDump() {
-  await hooks.loadLayer(currentLayer);
+  const layer = currentLayer;
+  // Waiter dipasang SEBELUM hooks.loadLayer mengirim DUMP. Kalau dibalik,
+  // device bisa menjawab dalam hitungan milidetik dan DUMP_END-nya tiba saat
+  // belum ada yang menunggu - dump selesai tanpa jejak, dan kita menunggu
+  // timeout tanpa sebab.
+  const settled = waitForDump(layer, DUMP_WAIT_MS);
+  await hooks.loadLayer(layer);
+  const ok = await settled;
+  if (!ok) {
+    log(t('adaptive.dumpWaitTimeout', { layer }), 'err');
+  }
 }
 
 let pollInFlight = false;
@@ -764,6 +821,18 @@ async function pollFocusedApp() {
         updateActivePresetLabel();
         log(t('adaptive.backDefaultLog'), null);
         hooks.notify(t('adaptive.defaultNotif'), 'preset');
+        // Muat ulang grid. Tanpa ini, kekacauan yang dilaporkan terjadi:
+        // "pindah ke aplikasi lain, key masih nyangkut di preset app
+        // sebelumnya". Device sudah benar (CONTEXT:DEFAULT sudah sampai),
+        // tapi grid masih menampilkan isi preset LAMA karena tidak ada
+        // yang meminta DUMP.
+        //
+        // INFO di baris perintah di atas TIDAK cukup: INFO memicu muat
+        // ulang layer di protocol-parser, tapi pemanggilan itu ditunda
+        // kalau ada frame atau dump lain yang sedang berjalan - dan tepat
+        // setelah switch ke preset(frame) itu memang sedang berjalan.
+        // Jadi dump layer aktif diminta eksplisit di sini.
+        await loadActiveLayerDump();
       }
     } finally { autoSwitchBusy = false; }
   } finally { pollInFlight = false; }
