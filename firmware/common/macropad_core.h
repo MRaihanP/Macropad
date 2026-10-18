@@ -477,14 +477,8 @@ void scanMatrix() {
           // Panjang terburuk: "[KEY] 7,2,2,3," + 47 char + newline = 62 byte, masih di
           // bawah 64. Jangan tambah field tanpa menghitung ulang.
           SERIAL->printf("[KEY] %d,%d,%d,%d,%s\n", activeCfg->currentLayer, r, c, action.type, action.value);
-          // Jejak medium: memberi tahu lewat Serial Monitor input ini dikirim ke
-          // USB HID atau BLE HID. Prefix [IN:...] sengaja terpisah dari baris
-          // [KEY] di atas karena companion app mem-parsanya dengan regex ketat.
-          {
-            char detail[MACRO_MAX_LEN + 24];
-            snprintf(detail, sizeof(detail), "L%d R%d C%d type=%d", activeCfg->currentLayer, r, c, action.type);
-            hidTrace("KEY", detail);
-          }
+          // [IN:] trace dihapus — [KEY] event sudah cukup untuk companion app.
+          // Duplikat ini menyebabkan overflow GATT buffer (0x80650011).
           flashLed();
           rgbKeyFlash(r, c);
         }
