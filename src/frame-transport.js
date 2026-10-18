@@ -22,8 +22,8 @@
 //                                  → CFG_COMMIT → CFG_RESULT (Fase 5: credit flow)
 
 import {
-  encode, T_HELLO, T_CFG_QUERY, T_CFG_ACTIVATE,
-  T_HELLO_RSP, T_CFG_META, T_CFG_ACT_RSP,
+  encode, T_HELLO, T_CFG_QUERY, T_CFG_ACTIVATE, T_LAYER_DUMP,
+  T_HELLO_RSP, T_CFG_META, T_CFG_ACT_RSP, T_LAYER_DUMP_RSP,
   T_CFG_BEGIN, T_CFG_WRITE, T_CFG_RESULT, T_CFG_COMMIT, T_CFG_READY, T_CREDIT, T_ERR, ERR_CREDIT_EXHAUSTED, ERR_STAGING_FULL, ERR_CRC32_MISMATCH, ERR_UNSUPPORTED,
 } from './frame-codec.js';
 import { cfgSigOfPreset } from './cfg-sig.js';
@@ -392,6 +392,58 @@ export async function frameHello() {
   const r = await requestFrame(T_HELLO, T_HELLO_RSP, []);
   noteFrameAttempt(r.ok, !!r.unsupported);
   return r.ok ? r.payload : null;
+}
+
+/**
+ * Parse payload FA_T_LAYER_DUMP_RSP (binary layer dump).
+ *
+ * Format (firmware/faCmdLayerDump):
+ *   byte 0:   layer number
+ *   byte 1:   key count (ROWS*COLS)
+ *   per key:  type (uint8) + value[MACRO_MAX_LEN=48]
+ *
+ * Jika payload melebihi MTU (443B untuk 3x3), device mengirim 2 frame
+ * chunk. Frame kedua dimulai dengan byte 0 = layer (high byte), byte 1 = 0
+ * (marker chunk), lalu dilanjutkan key payload. Parser ini merangkai keduanya.
+ *
+ * @param {Uint8Array|number[]} payload
+ * @returns {{layer:number, keys:Array<{type:number, value:string}>}|null}
+ */
+export function parseLayerDumpRsp(payload) {
+  if (!payload || payload.length < 2) return null;
+  const p = Array.from(payload);
+  const layer = p[0];
+  const keyCount = p[1];
+  const KEY_STRIDE = 1 + 48;  // type + MACRO_MAX_LEN value
+  const keys = [];
+  let off = 2;
+  while (off + KEY_STRIDE <= p.length && keys.length < keyCount) {
+    const type = p[off];
+    // value adalah char[48], bisa mengandung null terminator
+    const valBytes = p.slice(off + 1, off + KEY_STRIDE);
+    const valStr = String.fromCharCode(...valBytes.filter(b => b !== 0));
+    keys.push({ type, value: valStr });
+    off += KEY_STRIDE;
+  }
+  return { layer, keys };
+}
+
+/**
+ * LAYER_DUMP frame request → LAYER_DUMP_RSP response.
+ *
+ * Menggantikan 11 notifikasi text-mode DUMP (DUMP_BEGIN + 9 baris key + DUMP_END)
+ * dengan 2 frame biner. Hanya 2 round-trip GATT vs 11 notifikasi text.
+ *
+ * @param {number} layer layer index (0-based)
+ * @returns {Promise<{ok:boolean, payload?:object, reason?:string}>}
+ *   payload = {layer, keys} dari parseLayerDumpRsp
+ */
+export async function queryFrameLayerDump(layer) {
+  const r = await requestFrame(T_LAYER_DUMP, T_LAYER_DUMP_RSP, [layer]);
+  noteFrameAttempt(r.ok, !!r.unsupported);
+  if (!r.ok) return { ok: false, reason: r.reason || 'gagal LAYER_DUMP' };
+  const parsed = parseLayerDumpRsp(r.payload);
+  return parsed ? { ok: true, payload: parsed } : { ok: false, reason: 'parse LAYER_DUMP_RSP gagal' };
 }
 
 /**

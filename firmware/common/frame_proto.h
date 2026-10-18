@@ -65,6 +65,7 @@ static const char* frameTypeName(uint8_t type) {
     case FA_T_CFG_READY:    return "CFG_READY";
     case FA_T_CREDIT:       return "CREDIT";
     case FA_T_EVT:          return "EVT";
+    case FA_T_LAYER_DUMP:   return "LAYER_DUMP";
     case FA_T_ERR:          return "ERR";
     default:                return "?";
   }
@@ -456,6 +457,46 @@ static void faCmdCfgQuery(const uint8_t* pl, uint16_t len) {
   faSend(FA_T_CFG_META, resp, sizeof(resp));
 }
 
+// LAYER_DUMP: "berikan isi layer N dalam format binary"
+// Payload: 1 byte layer index
+// Response: FA_T_LAYER_DUMP_RSP dengan format:
+//   byte 0: layer number
+//   byte 1: key count = ROWS*COLS
+//   setiap key: type (uint8) + value[MACRO_MAX_LEN=48] = 49B
+//   Total payload: 2 + 9*49 = 443B → muat dalam 2 frame @ 237 byte MTU 247
+// Ini menggantikan 11 notifikasi text (DUMP_BEGIN + 9 key + DUMP_END) → 2 frame biner
+static void faCmdLayerDump(const uint8_t* pl, uint16_t len) {
+  if (len < 1 || pl[0] >= activeCfg->layerCount) {
+    uint8_t err[2] = { FA_T_LAYER_DUMP, FA_ERR_UNSUPPORTED };
+    faSend(FA_T_ERR, err, 2);
+    return;
+  }
+  const uint8_t layer = pl[0];
+  const uint8_t keyCount = ROWS * COLS;
+  const uint16_t totalLen = 2 + keyCount * (1 + MACRO_MAX_LEN);
+  uint8_t resp[256];  // cukup untuk 9 keys (2 + 9*49 = 443 → butuh 2 frame)
+  resp[0] = layer;
+  resp[1] = keyCount;
+  uint16_t off = 2;
+  for (uint8_t k = 0; k < keyCount; k++) {
+    uint8_t r = k / COLS;
+    uint8_t c = k % COLS;
+    KeyAction& a = activeCfg->layerMap[layer][r][c];
+    resp[off++] = (uint8_t)a.type;
+    memcpy(&resp[off], a.value, MACRO_MAX_LEN);
+    off += MACRO_MAX_LEN;
+    // Jika buffer penuh, kirim sekarang — faSend otomatis fragment
+    if (off + 1 + MACRO_MAX_LEN > sizeof(resp)) {
+      faSend(FA_T_LAYER_DUMP_RSP, resp, off);
+      // frame berikutnya: lanjutkan dari byte ini
+      off = 0;
+      resp[off++] = layer >> 8;  // marker frame kedua (high byte = 0 untuk <32 layer)
+      resp[off++] = 0;           // ini adalah frame chunk kedua, key count = 0 marker
+    }
+  }
+  if (off > 2) faSend(FA_T_LAYER_DUMP_RSP, resp, off);
+}
+
 // CFG_ACTIVATE: pindah ke slot tertentu.
 static void faCmdCfgActivate(const uint8_t* pl, uint16_t len) {
   uint8_t resp[6];
@@ -739,6 +780,7 @@ static void faHandleFrame(const fa_frame_t& f) {
     case FA_T_CFG_BEGIN:    faCmdCfgBegin(f.payload, f.len); break;
     case FA_T_CFG_WRITE:    faCmdCfgWrite(f.payload, f.len); break;
     case FA_T_CFG_COMMIT:   (void)f; faCmdCfgCommit(); break;
+    case FA_T_LAYER_DUMP:   faCmdLayerDump(f.payload, f.len); break;
     case FA_T_LINE:         faCmdLine(f.payload, f.len); break;
     default:
       // Belum diimplementasikan pada fase ini, dan itu dikatakan terus terang

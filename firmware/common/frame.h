@@ -100,7 +100,11 @@
 #define FA_T_CFG_READY    0x15u
 #define FA_T_CREDIT       0x16u
 #define FA_T_EVT          0x20u
+#define FA_T_LAYER_DUMP   0x21u  /* request: dump layer N sebagai binary   */
 #define FA_T_ERR          0x7Fu
+
+/* Jawaban untuk FA_T_LAYER_DUMP: binary layer dump */
+#define FA_T_LAYER_DUMP_RSP (FA_T_LAYER_DUMP | FA_RESP_BIT)  /* 0xA1 */
 
 /* Bit paling atas menandai frame JAWABAN.
  *
