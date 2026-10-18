@@ -25,7 +25,7 @@ extern volatile uint16_t bleHidConnHandle;
 #define BLE_NUS_RX_UUID     "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  // firmware -> app
 
 // Ring buffer NUS (app -> firmware)
-#define BLE_NUS_RING_SIZE  2048
+#define BLE_NUS_RING_SIZE  4096  // Naik dari 2048 → 4096 untuk burst notifikasi (DIAG: rxFull bisa muncul pada burst DUMP)
 // BLE_NUS_MAX_CHUNK dihapus. Batas chunk sekarang dihitung dari MTU hasil
 // negosiasi (lihat ble_shared.h: bleNusChunkLimit()). Hardcode 244 akan
 // gagal diam-diam kalau Windows menawar MTU < 247.
