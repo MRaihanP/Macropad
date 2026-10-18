@@ -576,7 +576,7 @@ void checkEncoder() {
     } else if (!layerSwitchTriggered && elapsed >= LONG_PRESS_MS) {
       layerSwitchTriggered = true;
       activeCfg->currentLayer = (activeCfg->currentLayer + 1) % activeCfg->layerCount;
-      SERIAL->printf("[LAYER] Pindah ke layer %d\n", activeCfg->currentLayer);
+      // [LAYER] trace dihapus — duplikat dari broadcastLayerChanged() (EVT:LAYER)
       broadcastLayerChanged();
       statusLed(true); // solid
     } else if (layerSwitchTriggered && !escapeTriggered && elapsed >= ESCAPE_HOLD_MS) {
@@ -927,7 +927,7 @@ void handleSerialCommand(const String& cmd) {
     long lL;
     if (!parseIntRange(cmd.substring(6), 0, activeCfg->layerCount - 1, lL)) { SERIAL->println("[ERROR] Layer index tidak valid"); return; }
     activeCfg->currentLayer = (uint8_t)lL;
-    SERIAL->printf("[LAYER] Pindah manual ke layer %d\n", activeCfg->currentLayer);
+    // [LAYER] trace dihapus — duplikat dari broadcastLayerChanged()
     broadcastLayerChanged();
     return;
   }
