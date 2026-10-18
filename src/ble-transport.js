@@ -139,6 +139,7 @@ let deviceId = null;
 let lastGoodDeviceId = null;
 try { lastGoodDeviceId = localStorage.getItem(LAST_DEVICE_KEY); } catch (e) { }
 let connected = false;
+let notifySubscribed = false;  // true setelah read loop pertama sukses
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
 let autoBusy = false;
@@ -233,6 +234,8 @@ let suppressEventsUntil = 0;
 let handshakeInProgress = false;
 
 export function handshakePending() { return handshakeInProgress; }
+export function isNotifySubscribed() { return notifySubscribed; }
+export function __setNotifySubscribedForTest(val) { notifySubscribed = val; }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -474,6 +477,9 @@ function adaptivePacingMs() {
 // tracking for the text path. The frame transport manages its own pacing.
 export async function sendRawNoAck(data) {
   if (!connected) return false;
+  // Exponential backoff untuk 0x80650011 (GATT send queue overflow).
+  // Delay: 50ms → 100ms → 200ms. Retry sampai 3x, lalu baru tear down.
+  const writeRetries = [50, 100, 200];
   try {
     await invoke('ble_write_no_ack', { data: Array.from(data) });
     // Pacing delay adaptif — memberi Windows/GATT stack untuk mengirim
@@ -483,19 +489,28 @@ export async function sendRawNoAck(data) {
     return true;
   } catch (e) {
     // 0x80650011 (Insufficient Resources) adalah tanda GATT send queue
-    // penuh sementara. Coba sekali lagi setelah 50ms — ini sering berhasil
-    // karena device baru saja memproses packet sebelumnya.
-    // Jika gagal lagi, baru anggap device lost.
+    // penuh sementara. Coba dengan exponential backoff — ini sering
+    // berhasil karena device baru saja memproses packet sebelumnya.
+    // Jika semua retry gagal, baru anggap device lost.
     const msg = String(e);
     if (msg.includes('0x80650011') || msg.includes('Insufficient Resources')) {
-      await sleep(50);
-      try {
-        await invoke('ble_write_no_ack', { data: Array.from(data) });
-        if (data.length > 0) await sleep(CFG_WRITE_PACING_MS);
-        return true;
-      } catch (e2) {
-        // Retry kedua juga gagal — sekarang baru tear down koneksi.
+      for (const delay of writeRetries) {
+        await sleep(delay);
+        try {
+          await invoke('ble_write_no_ack', { data: Array.from(data) });
+          if (data.length > 0) await sleep(adaptivePacingMs());
+          return true;
+        } catch (e2) {
+          // Cek lagi — mungkin error yang sama, lanjut retry
+          if (!String(e2).includes('0x80650011') && !String(e2).includes('Insufficient Resources')) {
+            // Error berbeda — mungkin disconnect, jangan retry lagi
+            log(t('ble.writeErrorNoAck', { err: e2 }), 'err');
+            await handleDeviceLost();
+            return false;
+          }
+        }
       }
+      // Semua retry gagal — anggap GATT queue benar-benar macet
     }
     // Track write errors untuk burst backoff detection.
     readErrorCount++;
@@ -510,6 +525,20 @@ export async function sendRawNoAck(data) {
 
 export async function sendLine(str) {
   if (!connected) return;
+  // Option A: Subscription guard — jangan kirim command sampai BLE notify
+  // benar-benar ter-subscribe. Jika kirim sebelum subscribe, device akan
+  // ngirim respon tapi tidak ada subscriber — byte hilang tanpa jejak
+  // (noSub counter di DIAG naik). Tunggu maks 1s untuk subscribe aktif.
+  if (!notifySubscribed) {
+    const t0 = Date.now();
+    while (!notifySubscribed && Date.now() - t0 < 1000 && connected) {
+      await sleep(5);
+    }
+    if (!notifySubscribed) {
+      log(t('transport.deviceLostLog'), 'warn');
+      return;
+    }
+  }
   try {
     await invoke('ble_write', { data: Array.from(new TextEncoder().encode(str + '\n')) });
   } catch (e) {
@@ -763,6 +792,7 @@ export async function disconnect(manual) {
   handshakeInProgress = false;
   try { await invoke('ble_disconnect'); } catch (e) { log(t('ble.disconnectError', { err: e }), 'err'); }
   connected = false;
+  notifySubscribed = false;  // reset flag subscribe
   deviceId = null;
   hooks.onDeviceLost();
   setConnected(false);
@@ -784,9 +814,8 @@ export async function handleDeviceLost() {
   stopPing();
   stopReadLoop();
   stopDiag();
-  // Device hilang di tengah handshake -> flag harus turun. Kalau tidak,
-  // reconnect berikutnya akan tetap terblokir oleh handshake yang sudah tidak
-  // ada, dan auto-switch preset tidak akan pernah jalan lagi.
+  resetRtt();  // kirim sample RTT ke sesi berikutnya
+  notifySubscribed = false;  // reset flag subscribe
   handshakeInProgress = false;
   setConnected(false);
 
@@ -1034,6 +1063,9 @@ function startReadLoop() {
     readBusy = true;
     try {
       const got = await readIncoming();
+      // Set flag subscribe setelah read loop pertama sukses. Ini membuktikan
+      // BLE notify sudah ter-subscribe dan perintah berikutnya aman dikirim.
+      if (!notifySubscribed) notifySubscribed = true;
       // LANJUTKAN LANGSUNG kalau masih ada data.
       //
       // Ini yang menutup 668 notifikasi hilang yang terlihat di DIAG
