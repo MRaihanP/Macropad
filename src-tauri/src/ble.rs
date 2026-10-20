@@ -30,7 +30,11 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCommunicationStatus, GattDeviceService, GattWriteOption,
 };
 use windows::Devices::Bluetooth::BluetoothLEDevice;
-use windows::Devices::Enumeration::{DeviceInformation, DeviceWatcher};
+use windows::Devices::Enumeration::{
+    DeviceInformation, DeviceInformationCustomPairing, DevicePairingKinds,
+    DevicePairingProtectionLevel, DevicePairingRequestedEventArgs, DevicePairingResultStatus,
+    DeviceWatcher,
+};
 use windows::Storage::Streams::{DataReader, DataWriter};
 use windows::Foundation::TypedEventHandler;
 use windows::core::{GUID, IInspectable};
@@ -503,6 +507,59 @@ impl BleTransport {
 
         ble_log!("Connected to MacroPad");
         Ok(())
+    }
+
+    // Pair device kalau belum paired.
+    //
+    // Windows BLE kadang tidak membuka akses GATT untuk device yang belum
+    // paired - terutama kalau device punya characteristic terenkripsi seperti
+    // HID keyboard. Akibatnya GetGattServicesForUuidAsync mengembalikan daftar
+    // kosong TANPA pesan error yang jelas, dan connect() gagal tepat setelah
+    // FromIdAsync (gejala "FromIdAsync OK" lalu langsung putus).
+    //
+    // Firmware memakai Just Works (IO_CAP_NO_INPUT_OUTPUT), jadi cukup
+    // DevicePairingKinds::ConfirmOnly + Accept() di handler PairingRequested.
+    // Handler itu yang menghindari dialog "Bluetooth pairing request" muncul.
+    pub fn pair(device_info: &DeviceInformation) -> Result<(), String> {
+        let pairing = device_info
+            .Pairing()
+            .map_err(|e| format!("Gagal akses DevicePairing: {}", e))?;
+        let custom = pairing
+            .Custom()
+            .map_err(|e| format!("Gagal akses DeviceInformationCustomPairing: {}", e))?;
+
+        let handler = TypedEventHandler::<
+            DeviceInformationCustomPairing,
+            DevicePairingRequestedEventArgs,
+        >::new(move |_sender, args| {
+            if let Some(args) = &*args {
+                let _ = args.Accept();
+            }
+            Ok(())
+        });
+        let token = custom
+            .PairingRequested(&handler)
+            .map_err(|e| format!("Gagal pasang handler pairing: {}", e))?;
+
+        let result = block_on_winrt(custom.PairWithProtectionLevelAsync(
+            DevicePairingKinds::ConfirmOnly,
+            DevicePairingProtectionLevel::EncryptionAndAuthentication,
+        ))
+        .map_err(|e| format!("Gagal mulai pairing: {}", e))?;
+
+        let status = result
+            .Status()
+            .map_err(|e| format!("Gagal baca status pairing: {}", e))?;
+
+        let _ = custom.RemovePairingRequested(token);
+
+        match status {
+            DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => {
+                eprintln!("[ble-trace] pairing OK: {:?}", status);
+                Ok(())
+            }
+            other => Err(format!("Pairing gagal: status {:?}", other)),
+        }
     }
 
     pub fn disconnect(&mut self) {
