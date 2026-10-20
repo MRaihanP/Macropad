@@ -1,8 +1,8 @@
 // Uji negatif untuk contract-advertising-test (F4 / C8).
 //
-// Yang diuji: advertising tidak pernah dimatikan, apa pun mode iface.
-// Kalau dimatikan, device hilang dari daftar Bluetooth dan companion app
-// tidak bisa menemukannya untuk mengirim PROTO:NUS.
+// Yang diuji: advertising DIMATIKAN saat mode USB (mutual exclusion).
+// Kalau kita mengembalikan perilaku lama (advertising tidak pernah dimatikan),
+// contract-advertising-test harus mendeteksi regresinya.
 //
 // Jalankan: node tests/negative/negative-advertising.mjs
 import fs from 'node:fs';
@@ -19,28 +19,28 @@ const restore = () => { for (const [f, c] of files) fs.writeFileSync(f, c, 'utf8
 
 const cases = [
   {
-    name: 'bleHidStop() mematikan advertising lagi',
+    name: 'bleHidStop() tidak mematikan advertising lagi (kembali ke perilaku lama)',
     file: BLE,
-    from: 'bleLog("Advertising tetap ON (mode USB) - device tetap bisa ditemukan");',
-    to: 'adv->stop(); bleLog("Advertising dimatikan (mode USB)");',
+    from: '    adv->stop();\n    bleLog("Advertising dimatikan (mode USB)");',
+    to: '    bleLog("Advertising tetap ON (mode USB) - device tetap bisa ditemukan");',
   },
   {
-    name: 'sketsh mematikan advertising saat boot di mode USB',
+    name: 'sketsh tidak mematikan advertising saat boot di mode USB',
     file: PROTO,
-    from: 'LOGS->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\\n", hidLinkName(g_hidLink));',
-    to: 'if (g_hidLink == HidLink::USB) NimBLEDevice::getAdvertising()->stop();\n  LOGS->printf("[IFACE] link awal: %s (ganti: IFACE:USB / IFACE:BLE)\\n", hidLinkName(g_hidLink));',
+    from: '  if (g_hidLink != HidLink::BLE) bleHidStop();',
+    to: '',
   },
   {
-    name: 'watchdog dibatasi mode BLE lagi',
+    name: 'watchdog advertising berjalan di semua mode (bukan hanya BLE)',
     file: PROTO,
-    from: 'if (bleHidConnected()) return;',
-    to: 'if (g_hidLink != HidLink::BLE) return;\n  if (bleHidConnected()) return;',
+    from: '  if (g_hidLink != HidLink::BLE) return;',
+    to: '  // watchdog guard dihapus (regresi)',
   },
   {
-    name: 'bleHidStart() tidak bisa restart advertising',
+    name: 'bleHidStart() tidak bisa restart advertising (dinonaktifkan)',
     file: BLE,
-    from: '  if (adv != nullptr && !adv->isAdvertising()) {\n    adv->start(0);',
-    to: '  if (adv != nullptr && !adv->isAdvertising()) {\n    // adv->start(0); // disabled',
+    from: '    adv->start(0);',
+    to: '',
   },
 ];
 

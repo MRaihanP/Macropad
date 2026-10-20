@@ -680,11 +680,14 @@ static void bleHidInit() {
 // keyboard yang tidak akan pernah mengirim apa-apa (hanya bisa hilang lewat
 // "Remove device" manual).
 //
-// Advertising SENGAJA tidak dimatikan. Kalau dimatikan, device hilang dari
-// daftar Bluetooth dan companion app tidak bisa menemukannya untuk mengirim
-// PROTO:NUS — padahal itulah jalur satu-satunya untuk membuat protokol
-// companion app hidup lewat BLE. Dengan advertising selalu on, device
-// tetap terlihat dan bisa dikonfigurasi lewat BLE pada mode HID apa pun.
+// Advertising DIMATIKAN juga, bukan sekadar peer diputus. Saat mode USB,
+// BLE dimatikan total supaya device hilang dari daftar Bluetooth (hemat
+// baterai, tidak ada dua medium aktif bersamaan). Watchdog advertising di
+// profileLoopHook digerbang (hanya jalan saat g_hidLink == BLE) supaya tidak
+// menyalakannya kembali.
+//
+// Untuk hidupkan lagi: tombol BOOT atau MODE:BT -> hidLinkSet(BLE) memanggil
+// bleHidStart() yang menyalakan advertising.
 inline void bleHidStop() {
   if (!NimBLEDevice::isInitialized()) return;
 
@@ -698,7 +701,8 @@ inline void bleHidStop() {
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   if (adv != nullptr && adv->isAdvertising()) {
-    bleLog("Advertising tetap ON (mode USB) - device tetap bisa ditemukan");
+    adv->stop();
+    bleLog("Advertising dimatikan (mode USB)");
   }
 }
 

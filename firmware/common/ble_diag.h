@@ -97,43 +97,19 @@ static bool bleDiagCommand(const String& cmd) {
     return true;
   }
 
-  // ---- MODE:BT / MODE:PC - satu perintah untuk pindah_medium, sama seperti
-  //      tombol BOOT..ifaceToggleFromButton() di sketsh, tapi di sini dipanggil
+  // ---- MODE:BT / MODE:PC - satu perintah untuk pindah medium, sama seperti
+  //      tombol BOOT (ifaceSwitchFull() di sketsh), tapi di sini dipanggil
   //      dari Serial Monitor tanpa perlu menekan GPIO0. ----
-  //
-  // Kenapa perlu perintah ini:
-  //
-  // IFACE:BLE hanya memanggil hidLinkSet(), jadi ia hanya mengubah SATU sumbu
-  // (ke mana report tombol dikirim). g_protoLink tetap PROTO_CDC dan
-  // g_transport tetap &g_usbTransport - artinya jawaban perintah masih dikirim
-  // ke USB CDC, bukan ke NUS. Companion app yang terhubung lewat BLE menulis ke
-  // NUS, jadi jawabannya tidak pernah sampai ke sana dan app selalu timeout.
-  //
-  // Tombol BOOT tidak punya masalah ini karena ia mengubah KEDUA sumbu lalu
-  // memanggil protoTransportSwitch(). Perintah ini melakukan hal yang sama,
-  // supaya Serial Monitor bisa firewood mode yang sama dengan tombol.
   //
   // BT  = pindah ke BLE  (setara satu tekan tombol saat mode USB)
   // PC  = pindah ke USB  (setara satu tekan tombol saat mode BLE)
   //
-  // Perintah ini sengaja terpisah dari IFACE:* yang lain. IFACE:BLE tetap
-  // seperti semula (hanya satu sumbu) supaya diagnostic masih bisa menguji
-  // masing-masing sumbu secara terpisah.
+  // Perintah ini menyelaraskan KEDUA sumbu (HID_LINK + PROTO_LINK) dan
+  // memindahkan POWER (mutual exclusion), sama persis dengan tombol BOOT.
   if (cmd == "MODE:BT" || cmd == "MODE:PC") {
     const bool goBle = (cmd == "MODE:BT");
 #if HID_BLE_SUPPORT
-    if (goBle) {
-      hidLinkSet(HidLink::BLE);
-      g_protoLink = ProtoLink::NUS;
-    } else {
-      hidLinkSet(HidLink::USB);
-      g_protoLink = ProtoLink::CDC;
-    }
-    protoTransportSwitch();
-    LOGS->printf("[MODE] pindah ke %s (hid=%s proto=%s)\n",
-                 goBle ? "BLE" : "USB",
-                 hidLinkName(g_hidLink),
-                 protoLinkName(g_protoLink));
+    ifaceSwitchFull(goBle);
 #else
     (void)goBle;
     LOGS->println("[ERROR] BLE tidak dikompilasi (HID_BLE_SUPPORT=0) - hanya MODE:PC");

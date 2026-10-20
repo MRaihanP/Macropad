@@ -163,3 +163,20 @@ inline void hidLinkSet(HidLink next) {
   DBG("[IFACE] input %s dipakai, %s DINONAKTIFKAN\n",
                  hidLinkName(next), hidLinkName(prev));
 }
+
+// =================== PINDAH PENUH (HID + PROTOKOL + POWER) ===================
+//
+// Satu-satunya fungsi yang dipakai untuk "berpindah medium" sungguhan: tombol
+// BOOT dan perintah MODE:BT / MODE:PC. Ia menyelaraskan KEDUA sumbu sekaligus
+// (HID_LINK dan PROTO_LINK), mengarahkan g_transport, memindahkan POWER
+// (USB dimatikan saat BLE, BLE dimatikan saat USB), lalu menyalakan indikator
+// LED.
+//
+// Dideklarasikan di sini karena ble_diag.h (yang memakai MODE:*) di-include
+// SETELAH header ini; definisinya ada di sketsh profil (HID_Keypad_Prototype.ino).
+//
+// Perhatikan bedanya dengan hidLinkSet() di atas: hidLinkSet() hanya memindah
+// SATU sumbu HID dan TIDAK menyentuh power. Itu yang dipakai IFACE:USB/BLE
+// (diagnostik per-sumbu), supaya jawaban perintahnya masih bisa dikirim lewat
+// Serial Monitor.
+void ifaceSwitchFull(bool goBle);

@@ -30,8 +30,8 @@ const hid = read('firmware/common/hid_link.h');
 console.log('--- A. Tombol switch harus benar-benar membalik DUA sumbu ---');
 // Satu sumbu saja menghasilkan keadaan setengah-setengah: tombol ke USB tapi
 // jawaban perintah lewat NUS, atau sebaliknya.
-const fn = proto.match(/void ifaceToggleFromButton\(\)\s*\{([\s\S]*?)\n\}/);
-ok(!!fn, 'ifaceToggleFromButton() ada di sketsh PROTOTYPE');
+const fn = proto.match(/void ifaceSwitchFull\(bool goBle\)\s*\{([\s\S]*?)\n\}/);
+ok(!!fn, 'ifaceSwitchFull(bool goBle) ada di sketsh PROTOTYPE');
 if (fn) {
   const body = fn[1];
   ok(/hidLinkSet\(HidLink::BLE\)/.test(body), 'memindahkan HID_LINK ke BLE');
@@ -45,6 +45,8 @@ if (fn) {
   ok(hidAt >= 0 && protoAt > hidAt,
     'hidLinkSet(BLE) dijalankan SEBELUM g_protoLink = NUS (advertising dulu)');
   ok(/protoTransportSwitch\(\)/.test(body), 'protoTransportSwitch() dipanggil');
+  // Mutual exclusion: usbDevicePower harus dipanggil.
+  ok(/usbDevicePower\(!goBle\)/.test(body), 'usbDevicePower dipanggil untuk mutual exclusion');
   // Pesan log harus lewat LOGS, bukan SERIAL. Kalau lewat SERIAL, pesan ini
   // sendiri terkirim ke companion app setelah g_transport pindah ke NUS dan
   // muncul sebagai baris protocol yang tidak dikenal.
@@ -100,8 +102,7 @@ ok(/void profileLoopHook\(\)/.test(proto), 'profileLoopHook() terdefinisi');
 // sekecil itu akan berhenti di brace PERTAMA yang tertutup - dan badan
 // profileLoopHook() memang memuat blok if, jadi hasilnya terpotong.
 function fnBody(src, name) {
-  // src.indexOf() akan kena DEKLARASI forward (dipisah titik koma) lebih dulu,
-  // bukan definisi. Cari occurrence yang diikuti '{' untuk memastikan badan.
+  // src.indexOf() akan kena DEKLARASI forward (dipisah titik koma) lebih dulu, bukan definisi. Cari occurrence yang diikuti '{' untuk memastikan badan.
   let start = -1;
   let from = 0;
   for (;;) {
