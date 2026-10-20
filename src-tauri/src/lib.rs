@@ -1029,14 +1029,16 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                             if let Ok(paired) = pairing.IsPaired() {
                                 if !paired {
                                     eprintln!("[ble-trace] device belum paired, lakukan pairing...");
-                                    if let Err(e) = BleTransport::pair(&device_info) {
-                                        eprintln!("[ble-trace] pairing gagal: {}", e);
+                                    match BleTransport::pair(&device_info) {
+                                        Ok(true) => {
+                                            // BARU dipairing: beri Windows waktu
+                                            // memperbarui GATT database sebelum
+                                            // connect().
+                                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                                        }
+                                        Ok(false) => { /* sudah paired, tidak perlu jeda */ }
+                                        Err(e) => eprintln!("[ble-trace] pairing gagal: {}", e),
                                     }
-                                    // Beri Windows waktu memperbarui GATT database
-                                    // setelah pairing. Tanpa jeda ini, connect()
-                                    // berikutnya bisa membaca cache lama yang masih
-                                    // kosong (gejala "FromIdAsync OK" lalu putus).
-                                    std::thread::sleep(std::time::Duration::from_millis(1000));
                                 }
                             }
                         }

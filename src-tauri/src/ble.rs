@@ -29,7 +29,7 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue,
     GattCommunicationStatus, GattDeviceService, GattWriteOption,
 };
-use windows::Devices::Bluetooth::BluetoothLEDevice;
+use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothLEDevice};
 use windows::Devices::Enumeration::{
     DeviceInformation, DeviceInformationCustomPairing, DevicePairingKinds,
     DevicePairingProtectionLevel, DevicePairingRequestedEventArgs, DevicePairingResultStatus,
@@ -304,18 +304,32 @@ impl BleTransport {
             .map_err(|e| format!("Gagal connect BLE: {}", e))?;
         eprintln!("[ble-trace] FromIdAsync OK, status={:?}", device.ConnectionStatus());
 
-        // Dapatkan service
-        let services = block_on_winrt(device.GetGattServicesForUuidAsync(MACROPAD_SERVICE_UUID))
-            .map_err(|e| format!("Gagal get services: {}", e))?;
+        // Dapatkan service.
+        //
+        // WAJIB Uncached, bukan Cached. Windows menyimpan GATT database di
+        // cache per-device, dan cache itu menjadi TIDAK LENGKAP setelah
+        // unpair/re-pair atau setelah link lama belum sepenuhnya terlepas:
+        // service NUS tetap terlihat, tapi characteristic-nya belum terdaftar.
+        // Gejalanya persis "Service NUS ditemukan tapi characteristic TX
+        // belum terdaftar". BluetoothCacheMode::Uncached memaksa Windows
+        // menanyakannya ke device lagi, bukan membaca cache lama.
+        let services = block_on_winrt(device.GetGattServicesForUuidWithCacheModeAsync(
+            MACROPAD_SERVICE_UUID,
+            BluetoothCacheMode::Uncached,
+        ))
+        .map_err(|e| format!("Gagal get services: {}", e))?;
         let service = services
             .Services()
             .map_err(|e| format!("Gagal get services list: {}", e))?
             .GetAt(0)
             .map_err(|e| format!("Gagal ambil service: {}", e))?;
 
-        // Dapatkan TX characteristic (write)
-        let tx_chars = block_on_winrt(service.GetCharacteristicsForUuidAsync(MACROPAD_TX_UUID))
-            .map_err(|e| format!("Gagal get TX char: {}", e))?;
+        // Dapatkan TX characteristic (write) - Uncached, alasannya sama.
+        let tx_chars = block_on_winrt(service.GetCharacteristicsForUuidWithCacheModeAsync(
+            MACROPAD_TX_UUID,
+            BluetoothCacheMode::Uncached,
+        ))
+        .map_err(|e| format!("Gagal get TX char: {}", e))?;
         let tx_list = tx_chars
             .Characteristics()
             .map_err(|e| format!("Gagal get TX characteristics: {}", e))?;
@@ -339,9 +353,12 @@ impl BleTransport {
             .GetAt(0)
             .map_err(|e| format!("Gagal ambil TX characteristic: {}", e))?;
 
-        // Dapatkan RX characteristic (notify)
-        let rx_chars = block_on_winrt(service.GetCharacteristicsForUuidAsync(MACROPAD_RX_UUID))
-            .map_err(|e| format!("Gagal get RX char: {}", e))?;
+        // Dapatkan RX characteristic (notify) - Uncached, alasannya sama.
+        let rx_chars = block_on_winrt(service.GetCharacteristicsForUuidWithCacheModeAsync(
+            MACROPAD_RX_UUID,
+            BluetoothCacheMode::Uncached,
+        ))
+        .map_err(|e| format!("Gagal get RX char: {}", e))?;
         let rx_list = rx_chars
             .Characteristics()
             .map_err(|e| format!("Gagal get RX characteristics: {}", e))?;
@@ -520,7 +537,7 @@ impl BleTransport {
     // Firmware memakai Just Works (IO_CAP_NO_INPUT_OUTPUT), jadi cukup
     // DevicePairingKinds::ConfirmOnly + Accept() di handler PairingRequested.
     // Handler itu yang menghindari dialog "Bluetooth pairing request" muncul.
-    pub fn pair(device_info: &DeviceInformation) -> Result<(), String> {
+    pub fn pair(device_info: &DeviceInformation) -> Result<bool, String> {
         let pairing = device_info
             .Pairing()
             .map_err(|e| format!("Gagal akses DevicePairing: {}", e))?;
@@ -553,10 +570,17 @@ impl BleTransport {
 
         let _ = custom.RemovePairingRequested(token);
 
+        // true = BARU saja dipairing (pemanggil boleh memberi jeda supaya Windows
+        // memperbarui GATT database); false = sudah paired, tidak ada yang perlu
+        // ditunggu.
         match status {
-            DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => {
-                eprintln!("[ble-trace] pairing OK: {:?}", status);
-                Ok(())
+            DevicePairingResultStatus::Paired => {
+                eprintln!("[ble-trace] pairing OK (baru)");
+                Ok(true)
+            }
+            DevicePairingResultStatus::AlreadyPaired => {
+                eprintln!("[ble-trace] device sudah paired");
+                Ok(false)
             }
             other => Err(format!("Pairing gagal: status {:?}", other)),
         }
