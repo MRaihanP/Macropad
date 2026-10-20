@@ -45,6 +45,29 @@ let backendId = 'usb';
 // ada lapisan kedua.
 let pendingHooks = null;
 
+// Backend BLE dimuat malas (lazy) supaya modul BLE hanya masuk ke bundle saat
+// transport BLE benar-benar dipakai. `bleLoading` menahan import yang sedang
+// berjalan supaya dua pemanggil tidak memuat dua kali.
+let bleMod = null;
+let bleLoading = null;
+async function getBle() {
+  if (bleMod) return bleMod;
+  if (!bleLoading) {
+    bleLoading = import('./ble-transport.js').then(m => { bleMod = m; return m; });
+  }
+  return bleLoading;
+}
+
+// Aktifkan transport TANPA memutus backend lama. Dipakai coordinator
+// auto-connect saat berpindah medium; pemanggil yang memutuskan koneksi.
+async function switchTo(id) {
+  if (id === backendId) return;
+  if (id === 'ble') await getBle();
+  backend = id === 'usb' ? serialBackend : bleMod;
+  backendId = id;
+  backend.initTransport(pendingHooks);
+}
+
 export function setPendingTransportHooks(h) { pendingHooks = h; }
 
 // ---- Fungsi yang meneruskan ke backend aktif ----
@@ -55,8 +78,43 @@ export function sendRaw(data) { return backend.sendRaw(data); }
 export function sendRawNoAck(data) { return backend.sendRawNoAck(data); }
 export function connect(arg) { return backend.connect(arg); }
 export function disconnect(manual) { return backend.disconnect(manual); }
-export function autoDetect() { return backend.autoDetect(); }
-export function poll() { return backend.poll(); }
+// Auto-connect saat launch: scan USB dan BLE, USB prioritas.
+//
+//   1. Coba USB (enumerate + probe WHOAMI + connect)
+//   2. Kalau USB tidak ada, coba BLE (scan + connect)
+//
+// Kalau keduanya terdeteksi, USB menang karena dicoba lebih dulu. Urutan ini
+// juga yang dipakai saat device berpindah medium (failover): transport lama
+// dipindah, baru transport lain dicoba.
+export async function autoDetect() {
+  if (isConnected()) return true;
+  await switchTo('usb');
+  if (await backend.tryAutoConnect(true)) return true;
+  await switchTo('ble');
+  return await backend.tryAutoConnect(true);
+}
+// Poll transport aktif, lalu kalau tidak konek coba deteksi transport lain
+// (failover). Backend aktif membaca data; backend lain memindai device baru.
+//
+// Setelah transport lain berhasil connect, `backend`/`backendId` ikut dipindah
+// supaya facade (sendLine, isConnected, dst) menunjuk transport yang benar.
+export async function poll() {
+  if (backendId === 'usb') {
+    await serialBackend.poll();
+  } else if (bleMod) {
+    await bleMod.poll();
+  }
+  if (!isConnected()) {
+    if (backendId === 'usb') {
+      const ble = await getBle();
+      await ble.poll();                       // BLE poll memindai device baru saat idle
+      if (ble.isConnected()) await switchTo('ble');
+    } else {
+      await serialBackend.poll();             // USB poll memindai port baru
+      if (serialBackend.isConnected()) await switchTo('usb');
+    }
+  }
+}
 export function enableAutoReconnect() { return backend.enableAutoReconnect(); }
 export function updateConnectButton(state) { return backend.updateConnectButton(state); }
 export function handleDeviceLost() { return backend.handleDeviceLost(); }
@@ -122,7 +180,8 @@ export async function setTransportBackend(id) {
   // profil dan meter baterai harus ikut kosong, kalau tidak user mengira device
   // lama masih hidup setelah beralih ke backend lain.
   await backend.disconnect(true);
-  backend = id === 'usb' ? serialBackend : await import('./ble-transport.js');
+  if (id === 'ble') await getBle();
+  backend = id === 'usb' ? serialBackend : bleMod;
   backendId = id;
   backend.initTransport(pendingHooks);
   return backendId;

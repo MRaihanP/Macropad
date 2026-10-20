@@ -160,6 +160,15 @@ let notifySubscribed = false;  // true setelah read loop pertama sukses
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
 let autoBusy = false;
+
+// ---- Scan throttling ----
+//
+// `ble_scan` di Rust SINKRON dan tidur 5 detik (ble.rs). Tanpa guard, dua scan
+// bisa bertumpuk dan membanjiri Windows DeviceWatcher. `scanBusy` menahan scan
+// kedua, `lastScanAt` memberi jeda minimum antar scan.
+let scanBusy = false;
+let lastScanAt = 0;
+const BLE_SCAN_INTERVAL_MS = 10000;
 // Single-flight connect. True selama connect() berjalan. Tanpa ini beberapa
 // jalur (klik Connect, scheduleRetry, tryAutoConnect) bisa membuka link BLE
 // bersamaan dan saling menabrak. Lihat catatan lengkap di connect().
@@ -582,8 +591,13 @@ export async function sendBatch(lines) {
 
 // ---- Scan ----
 export async function scan() {
+  // Guard: jangan ada dua scan bersamaan. Rust scan sinkron 5 detik, jadi scan
+  // kedua yang masuk selama itu langsung ditolak (bukan diantre).
+  if (scanBusy) return [];
+  scanBusy = true;
   try {
     const devices = await invoke('ble_scan');
+    lastScanAt = Date.now();
     if (!Array.isArray(devices)) return [];
     return devices.map(d => ({
       // snake_case dari Rust - jangan diubah jadi camelCase, ini yang bikin
@@ -595,6 +609,8 @@ export async function scan() {
   } catch (e) {
     log(t('ble.scanError', { err: e }), 'err');
     return [];
+  } finally {
+    scanBusy = false;
   }
 }
 
@@ -1027,15 +1043,25 @@ export async function readIncoming() {
 // Pantau status koneksi dari sisi Rust. Device bisa hilang tanpa memberi tahu
 // (jarak, device mati), jadi harus dicek berkala seperti port serial.
 export async function poll() {
-  if (!connected) return;
-  try {
-    const stillUp = await invoke('ble_is_connected');
-    if (!stillUp) { await handleDeviceLost(); return; }
-    await readIncoming();
-  } catch (e) {
-    log(t('ble.pollError', { err: e }), 'err');
-    await handleDeviceLost();
+  if (connected) {
+    try {
+      const stillUp = await invoke('ble_is_connected');
+      if (!stillUp) { await handleDeviceLost(); return; }
+      await readIncoming();
+    } catch (e) {
+      log(t('ble.pollError', { err: e }), 'err');
+      await handleDeviceLost();
+    }
+    return;
   }
+  // Idle: pindai BLE berkala supaya device yang muncul belakangan ikut
+  // terhubung otomatis. USB punya pollPorts() yang memindai port baru; BLE
+  // tidak punya event "device muncul", jadi satu-satunya cara adalah scan.
+  // Dibandingkan dengan poll interval 2 detik, scan dibatasi BLE_SCAN_INTERVAL_MS
+  // supaya Windows DeviceWatcher tidak dibanjiri (scan Rust sendiri 5 detik).
+  if (!autoReconnect || scanBusy) return;
+  if (Date.now() - lastScanAt < BLE_SCAN_INTERVAL_MS) return;
+  await tryAutoConnect(false);
 }
 
 // ---- Ping ----
