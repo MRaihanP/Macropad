@@ -884,6 +884,12 @@ const retryDelay = (n) => Math.min(RETRY_BASE_MS * n, RETRY_MAX_MS);
 let readErrorCount = 0;
 let burstBackoffActive = false;
 
+// Hitungan connect GAGAL berturuh. Setelah 3 kali connect gagal berturut-turut,
+// Windows Bluetooth adapter kemungkinan dalam state yang buruk (GATT services
+// tidak bisa diakses meskipun link terhubung). Panggil ble_reset_adapter()
+// untuk membersihkan state adapter sebelum percobaan berikutnya.
+let connectFailCount = 0;
+
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
   if (attempt > RETRY_MAX_ATTEMPTS) {
@@ -947,6 +953,7 @@ export async function tryAutoConnect(verbose, only) {
 
     for (const d of targets) {
       if (await connect(d.id)) {
+        connectFailCount = 0;   // reset counter saat sukses
         log(t('ble.autoConnectOk', { name: d.name }), 'ok');
         hooks.onAutoConnectOk(d.id);
         return true;
@@ -960,10 +967,22 @@ export async function tryAutoConnect(verbose, only) {
       // "TX characteristic not registered".
       await sleep(1500);
       if (await connect(d.id)) {
+        connectFailCount = 0;   // reset counter saat sukses
         log(t('transport.autoConnectOk2', { path: d.name }), 'ok');
         hooks.onAutoConnectOk(d.id);
         return true;
       }
+    }
+    // Semua device gagal di-connect. Tandai kegagalan dan reset adapter
+    // Windows kalau sudah 3 kali berturut-turut, agar GATT cache yang corrupt
+    // dibersihkan sebelum percobaan berikutnya (poll() di 10 detik ke depan).
+    connectFailCount++;
+    if (connectFailCount >= 3) {
+      log(t('ble.adapterResetForReconnect'), 'info');
+      try { await invoke('ble_reset_adapter'); } catch (e2) { /* best-effort */ }
+      // Windows butuh waktu untuk melepas GATT cache setelah reset.
+      await sleep(3000);
+      connectFailCount = 0;
     }
     if (verbose) { log(t('ble.autoNotFound'), 'err'); hooks.onAutoConnectFail(); }
     return false;
