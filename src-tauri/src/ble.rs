@@ -304,6 +304,13 @@ impl BleTransport {
             .map_err(|e| format!("Gagal connect BLE: {}", e))?;
         eprintln!("[ble-trace] FromIdAsync OK, status={:?}", device.ConnectionStatus());
 
+        // Beri waktu singkat setelah FromIdAsync agar link BLE terstabil
+        // sebelum query GATT. Tanpa jeda ini, GetGattServicesForUuidAsync
+        // kadang gagal dengan 0x80070016 (ERROR_INVALID_DATA) meskipun link
+        // lapisan BLE sudah terhubung - Windows masih menyelesaikan parameter
+        // koneksi di belakang layar.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
         // Dapatkan service.
         //
         // WAJIB Uncached, bukan Cached. Windows menyimpan GATT database di
