@@ -21,9 +21,11 @@ import {
 // di bawah ikut ke device yang benar tanpa perlu tahu mana yang sedang hidup.
 import {
   initTransport, sendLine, sendBatch, connect, disconnect,
-  autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  autoDetect, poll, isConnected, isAutoBusy, isDualAutoActive,
+  enableAutoReconnect, disableDualAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
   setTransportBackend, transportId, bleBackend, lastTransport, lastGoodDeviceId,
+  dualAutoDetect, dualPoll, stopDualAuto, startDualAuto,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -220,8 +222,26 @@ el('btnConnect').onclick = () => {
   connect();
 };
 
+// ---- Panel Koneksi Manual: buka/tutup ----
+//
+// Saat panel DIBUKA: hentikan autoconnect utama (dualAutoDetect / dualPoll).
+// Saat panel DITUTUP: autoconnect tetap dihentikan (tidak nyala kembali
+// berdasarkan transport yang dipilih di panel). User harus klik Connect
+// secara manual jika ingin menyambung.
+const manualConnect = el('manualConnect');
+if (manualConnect) {
+  manualConnect.addEventListener('toggle', () => {
+    if (manualConnect.open) {
+      stopDualAuto();
+      log(t('transport.dualAutoPaused'), 'warn');
+    }
+    // Panel ditutup: tidak memulai kembali autoconnect otomatis.
+  });
+}
+
 // Coba auto-connect ke device BLE terakhir yang sukses, atau device paired pertama.
-// Dipakai saat switch transport ke BLE, saat klik Refresh BLE, dan saat startup.
+// Dipakai saat switch transport ke BLE (khususnya saat panel manual TIDAK dibuka),
+// saat klik Refresh BLE, dan saat startup lewat dualAutoDetect.
 async function attemptBleAutoConnect(devices) {
   const ble = bleBackend();
   if (!ble || isConnected() || isAutoBusy()) return false;
@@ -287,7 +307,11 @@ if (transportSel) {
         if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
         log(t('ble.traceSwitched'));
         const devices = await ble.scanAndUpdateSelect();
-        await attemptBleAutoConnect(devices);
+        // Hanya auto-connect jika panel manual TERTUTUP. Saat panel dibuka,
+        // user dalam mode manual: scan saja, tidak connect otomatis.
+        if (!manualConnect || !manualConnect.open) {
+          await attemptBleAutoConnect(devices);
+        }
       }
     } catch (e) {
       log(t('main.transportSwitchError', { err: e }), 'err');
@@ -296,19 +320,8 @@ if (transportSel) {
   };
   syncTransportRows();
 
-  // Jika transport terakhir adalah BLE, pulihkan dan coba auto-connect otomatis.
-  const savedTransport = lastTransport();
-  if (savedTransport === 'ble') {
-    transportSel.value = 'ble';
-    await setTransportBackend('ble');
-    syncTransportRows();
-    updateConnectButton(isConnected());
-    const ble = bleBackend();
-    if (ble) {
-      const devices = await ble.scanAndUpdateSelect();
-      await attemptBleAutoConnect(devices);
-    }
-  }
+  // Startup: coba autoconnect dual-transport (USB dulu, baru BLE, bergiliran).
+  await dualAutoDetect();
 }
 const btnRefreshBle = el('btnRefreshBle');
 if (btnRefreshBle) {
@@ -316,10 +329,10 @@ if (btnRefreshBle) {
     const ble = bleBackend();
     if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
     try {
-      enableAutoReconnect();   // ↻ aktifkan kembali auto-connect setelah putus manual
+      // Hanya scan dan tampilkan dropdown. Auto-connect tidak dijalankan
+      // saat panel manual dibuka (user dalam mode manual).
       const found = await ble.scanAndUpdateSelect();
       if (found.length) log(t('ble.foundLog', { count: found.length }), 'ok');
-      await attemptBleAutoConnect(found);
     } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
   };
 }
@@ -389,8 +402,10 @@ el('globalAdaptiveToggle').onchange = (e) => {
 };
 el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
 // Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
-// dipantau (port COM untuk USB, status GATT untuk BLE).
-setInterval(() => { poll(); }, 2000);
+// dipantau (port COM untuk USB, status GATT untuk BLE). dualPoll ikut
+// mencoba backend lain (failover) kalau backend aktif terputus dan autoconnect
+// masih aktif.
+setInterval(() => { dualPoll(); }, 2000);
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
 // tidak ada import bolak-balik antara main.js dan rgb-page.js.

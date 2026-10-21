@@ -153,3 +153,103 @@ export async function setTransportBackend(id) {
 export function bleBackend() {
   return backendId === 'ble' ? backend : null;
 }
+
+// Referensi ke modul BLE (dimuat lazy, di-cache supaya selalu instance yang sama).
+let bleTransportModule = null;
+async function getBleTransportModule() {
+  if (!bleTransportModule) bleTransportModule = await import('./ble-transport.js');
+  return bleTransportModule;
+}
+
+// Kembalikan modul BLE backend terlepas dari backend yang sedang aktif.
+// Dipakai oleh dual-transport autoconnect untuk mencoba BLE walaupun USB
+// adalah backend aktif saat ini.
+export async function bleTransport() {
+  return getBleTransportModule();
+}
+
+// ---- Dual-transport auto-connect coordinator ----
+//
+// State autoconnect utama. Aktif secara default saat app dibuka.
+// Dipadamkan saat user membuka panel Koneksi Manual, dan tidak nyala kembali
+// saat panel ditutup (user harus klik Connect secara manual).
+let dualAutoActive = true;
+let dualRetryTimer = null;
+
+export function isDualAutoActive() { return dualAutoActive; }
+
+export function stopDualAuto() {
+  dualAutoActive = false;
+  clearTimeout(dualRetryTimer);
+  dualRetryTimer = null;
+  // Matikan auto-reconnect di kedua backend supaya tidak mencoba di latar belakang.
+  serialBackend.disableAutoReconnect();
+  const ble = getBleTransportModule();
+  ble.then((b) => { if (b.disableAutoReconnect) b.disableAutoReconnect(); });
+}
+
+// Alias untuk kompatibilitas nama dengan main.js.
+export const disableDualAutoReconnect = stopDualAuto;
+
+export function startDualAuto() {
+  dualAutoActive = true;
+}
+
+// Coba USB terlebih dahulu, lalu BLE. Jika keduanya gagal, jeda 5 detik lalu
+// coba lagi secara bergiliran (USB → BLE → USB → BLE ...).
+export async function dualAutoDetect() {
+  if (!dualAutoActive || backend.isConnected()) return false;
+
+  // 1. Coba USB dulu (scan port serial murah, cepat).
+  log(t('transport.dualAutoUsb'));
+  if (serialBackend.autoDetect) {
+    const ok = await serialBackend.autoDetect();
+    if (ok) return true; // USB berhasil; backend aktif masih serial.
+  }
+
+  // 2. Coba BLE jika USB gagal atau tidak ada.
+  log(t('transport.dualAutoBle'));
+  const ble = await getBleTransportModule();
+  if (ble.autoDetect) {
+    const ok = await ble.autoDetect();
+    if (ok) {
+      // BLE berhasil: pindahkan facade ke backend BLE.
+      await setTransportBackend('ble');
+      return true;
+    }
+  }
+
+  // Keduanya gagal: jeda lalu coba lagi secara bergiliran.
+  if (dualAutoActive) {
+    dualRetryTimer = setTimeout(() => dualAutoDetect(), 5000);
+  }
+  return false;
+}
+
+// Poll dengan failover: polling backend aktif, dan jika terputus,
+// coba backend lain sebagai cadangan (hanya jika dualAutoActive masih nyala).
+export async function dualPoll() {
+  if (!dualAutoActive) return;
+
+  const wasConnected = backend.isConnected();
+  await backend.poll();
+  const stillConnected = backend.isConnected();
+
+  if (wasConnected && !stillConnected && !backend.isAutoBusy()) {
+    const other = backendId === 'usb'
+      ? await getBleTransportModule()
+      : serialBackend;
+
+    if (other.isConnected && other.isConnected()) {
+      await setTransportBackend(backendId === 'usb' ? 'ble' : 'usb');
+      return;
+    }
+
+    if (other.autoDetect) {
+      const ok = await other.autoDetect();
+      if (ok && backendId === 'usb') {
+        await setTransportBackend('ble');
+      }
+    }
+  }
+}

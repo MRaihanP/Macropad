@@ -87,6 +87,7 @@ export const isConnected = () => !!port;
 // Disconnect secara manual.
 export const isAutoBusy = () => autoBusy;
 export function enableAutoReconnect() { autoReconnect = true; }
+export function disableAutoReconnect() { autoReconnect = false; }
 
 function releasePortListener() {
   const u = portUnlisten;

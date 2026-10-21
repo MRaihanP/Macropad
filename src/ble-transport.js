@@ -302,6 +302,7 @@ export const isConnected = () => connected;
 export const isAutoBusy = () => autoBusy;
 export const portPath = null;   // tidak ada path; device diidentifikasi lewat id
 export function enableAutoReconnect() { autoReconnect = true; }
+export function disableAutoReconnect() { autoReconnect = false; }
 
 // Logika laporan dan vonis sengaja TIDAK di file ini.
 //
