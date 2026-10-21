@@ -239,10 +239,12 @@ impl BleTransport {
         watcher
             .Start()
             .map_err(|e| format!("Gagal start watcher: {}", e))?;
-        eprintln!("[ble-trace] watcher berjalan, menunggu 5 detik");
+        eprintln!("[ble-trace] watcher berjalan, menunggu 2 detik");
 
-        // Biarkan watcher berjalan 5 detik untuk menemukan device BLE di sekitar.
-        thread::sleep(Duration::from_secs(5));
+        // Biarkan watcher berjalan 2 detik untuk menemukan device BLE di sekitar.
+        // Device yang sudah pair biasanya ditemukan dalam hitungan detik pertama;
+        // 5 detik terlalu lama untuk auto-connect.
+        thread::sleep(Duration::from_secs(2));
 
         // Stop() memicu event Stopped, yang mengirim hasil lewat channel `rx`.
         watcher.Stop().map_err(|e| format!("Gagal stop watcher: {}", e))?;

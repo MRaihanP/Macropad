@@ -937,12 +937,10 @@ export async function tryAutoConnect(verbose, only) {
       }
       // Jeda sebelum mencoba ulang.
       //
-      // 400 ms (nilai lama) tidak cukup untuk Windows melepas link GATT.
-      // Percobaan kedua berjalan saat link pertama belum bersih, dan
-      // Windows membatalkan operasi dengan 0x800704C7 - yang membuat
-      // percobaan berikutnya sees cache GATT tidak lengkap dan gagal dengan
-      // "TX characteristic not registered".
-      await sleep(1500);
+      // 800 ms cukup untuk Windows melepas link GATT setelah percobaan gagal.
+      // 1500 ms (nilai lama) terlalu lama untuk auto-connect dan membuat
+      // respons tetap terasa berat.
+      await sleep(800);
       if (await connect(d.id)) {
         log(t('transport.autoConnectOk2', { path: d.name }), 'ok');
         hooks.onAutoConnectOk(d.id);
