@@ -37,6 +37,8 @@
 
 import * as serialBackend from './serial-transport.js';
 
+const LAST_TRANSPORT_KEY = 'macropad.lastTransport';
+
 let backend = serialBackend;
 let backendId = 'usb';
 
@@ -95,6 +97,18 @@ export function handshakePending() {
 
 export function transportId() { return backendId; }
 
+// Transport terakhir yang dipakai user (disimpan ke localStorage).
+export function lastTransport() {
+  try { return localStorage.getItem(LAST_TRANSPORT_KEY); } catch (e) { return null; }
+}
+
+// lastGoodDeviceId hanya tersedia di backend BLE. USB mengembalikan null.
+export function lastGoodDeviceId() {
+  return typeof backend.lastGoodDeviceId !== 'undefined'
+    ? backend.lastGoodDeviceId
+    : null;
+}
+
 // Inisialisasi backend aktif dengan hook yang sudah didaftarkan main.js.
 export function initActiveBackend() { backend.initTransport(pendingHooks); }
 
@@ -125,6 +139,7 @@ export async function setTransportBackend(id) {
   backend = id === 'usb' ? serialBackend : await import('./ble-transport.js');
   backendId = id;
   backend.initTransport(pendingHooks);
+  try { localStorage.setItem(LAST_TRANSPORT_KEY, id); } catch (e) { }
   return backendId;
 }
 

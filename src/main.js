@@ -23,7 +23,7 @@ import {
   initTransport, sendLine, sendBatch, connect, disconnect,
   autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
-  setTransportBackend, transportId, bleBackend,
+  setTransportBackend, transportId, bleBackend, lastTransport, lastGoodDeviceId,
 } from "./transport.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
@@ -220,6 +220,30 @@ el('btnConnect').onclick = () => {
   connect();
 };
 
+// Coba auto-connect ke device BLE terakhir yang sukses, atau device paired pertama.
+// Dipakai saat switch transport ke BLE, saat klik Refresh BLE, dan saat startup.
+async function attemptBleAutoConnect(devices) {
+  const ble = bleBackend();
+  if (!ble || isConnected() || isAutoBusy()) return false;
+  if (!devices) {
+    devices = await ble.scanAndUpdateSelect();
+  }
+  if (devices.length === 0) return false;
+
+  const lgd = lastGoodDeviceId();
+  // Device terakhir yang berhasil selalu dicoba lebih dulu.
+  if (lgd && devices.some(d => d.id === lgd)) {
+    log(t('ble.autoConnecting'), 'ok');
+    if (await connect(lgd)) return true;
+  }
+  // Coba device paired lain yang belum dicoba.
+  const paired = devices.filter(d => d.isPaired && d.id !== lgd);
+  for (const d of paired) {
+    if (await connect(d.id)) return true;
+  }
+  return false;
+}
+
 // ---- Pemilih transport (USB / BLE) ----
 // Backend BLE dimuat lewat import() dinamis di facade, jadi modul baru diunduh
 // hanya kalau user benar-benar memilih BLE.
@@ -262,7 +286,8 @@ if (transportSel) {
       if (transportSel.value === 'ble') {
         if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
         log(t('ble.traceSwitched'));
-        await ble.scanAndUpdateSelect();
+        const devices = await ble.scanAndUpdateSelect();
+        await attemptBleAutoConnect(devices);
       }
     } catch (e) {
       log(t('main.transportSwitchError', { err: e }), 'err');
@@ -270,6 +295,20 @@ if (transportSel) {
     }
   };
   syncTransportRows();
+
+  // Jika transport terakhir adalah BLE, pulihkan dan coba auto-connect otomatis.
+  const savedTransport = lastTransport();
+  if (savedTransport === 'ble') {
+    transportSel.value = 'ble';
+    await setTransportBackend('ble');
+    syncTransportRows();
+    updateConnectButton(isConnected());
+    const ble = bleBackend();
+    if (ble) {
+      const devices = await ble.scanAndUpdateSelect();
+      await attemptBleAutoConnect(devices);
+    }
+  }
 }
 const btnRefreshBle = el('btnRefreshBle');
 if (btnRefreshBle) {
@@ -277,8 +316,10 @@ if (btnRefreshBle) {
     const ble = bleBackend();
     if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
     try {
+      enableAutoReconnect();   // ↻ aktifkan kembali auto-connect setelah putus manual
       const found = await ble.scanAndUpdateSelect();
       if (found.length) log(t('ble.foundLog', { count: found.length }), 'ok');
+      await attemptBleAutoConnect(found);
     } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
   };
 }

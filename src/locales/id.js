@@ -461,6 +461,7 @@ export const id = {
 'ble.noDevices': 'Tidak ada device BLE ditemukan',
 'ble.autoPausedLog': '[LOG] Reconek BLE otomatis dijeda. Klik Sambung atau ↻ untuk aktifkan.',
 'ble.autoSearching': '[BLE] Memindai MacroPad...',
+'ble.autoConnecting': '[BLE] Mencoba connect otomatis...',
 'ble.autoNoDevices': '[BLE] Tidak ada device ditemukan.',
 'ble.autoConnectOk': '[AUTO] BLE tersambung ke {name}',
 'ble.autoNotFound': '[BLE] MacroPad tidak ditemukan otomatis. Pindai dan pilih manual.',

@@ -463,6 +463,7 @@ export const en = {
 'ble.noDevices': 'No BLE devices found',
 'ble.autoPausedLog': '[LOG] BLE auto-reconnect paused. Click Connect or ↻ to re-enable.',
 'ble.autoSearching': '[BLE] Scanning for MacroPad...',
+'ble.autoConnecting': '[BLE] Trying auto-connect...',
 'ble.autoNoDevices': '[BLE] No devices found.',
 'ble.autoConnectOk': '[AUTO] BLE connected to {name}',
 'ble.autoNotFound': '[BLE] MacroPad not found automatically. Scan and pick manually.',

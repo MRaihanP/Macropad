@@ -138,7 +138,7 @@ let diagBusy = false;
 
 // ---- State koneksi ----
 let deviceId = null;
-let lastGoodDeviceId = null;
+export let lastGoodDeviceId = null;
 try { lastGoodDeviceId = localStorage.getItem(LAST_DEVICE_KEY); } catch (e) { }
 let connected = false;
 // Tulis dengan retry: satu kegagalan TIDAK langsung dianggap link putus.
