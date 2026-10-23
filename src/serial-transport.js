@@ -35,11 +35,19 @@ let lastGoodPort = null;
 try { lastGoodPort = localStorage.getItem(LAST_PORT_KEY); } catch (e) { }
 let autoReconnect = true;      // false setelah user menekan Disconnect sendiri
 let autoBusy = false;          // sedang probe/connect otomatis
+// Saat true, manager lintas-transport yang memiliki siklus auto-connect.
+// pollPorts() tetap memantau port (deteksi cabut), tapi tidak boleh ikut
+// memanggil tryAutoConnect() - itu akan berebut dengan loop manager.
+let managerMode = false;
 let pollBusy = false;
 let knownPorts = new Set();
 // Port yang sudah di-probe tapi GAGAL pada percobaan terakhir. Disimpan supaya
 // pollPorts() bisa mencoba lagi nanti - bukan hanya saat port "baru" muncul.
 let failedProbes = new Set();
+// Port yang pernah di-probe (berhasil maupun gagal). Dipakai supaya port yang
+// sudah ada saat startup tapi belum sempat diprobe - karena port sebelumnya
+// sudah cocok - tetap dicoba setelah device pertama pergi.
+let probedPorts = new Set();
 let pingTimer = null;
 let retryTimer = null;
 
@@ -87,6 +95,15 @@ export const isConnected = () => !!port;
 // Disconnect secara manual.
 export const isAutoBusy = () => autoBusy;
 export function enableAutoReconnect() { autoReconnect = true; }
+export function setManagerMode(v) { managerMode = !!v; }
+// Batalkan retry yang sudah terjadwal. Dipakai facade saat berpindah backend
+// dan saat user memutus manual, supaya timer lama tidak bangun di transport
+// yang sudah tidak aktif.
+export function stopAutoRetry() { clearTimeout(retryTimer); retryTimer = null; }
+// Port yang sudah lolos probe tetapi gagal connect harus dicoba lagi. Tanpa
+// penanda ini findAvailableDevice() menganggapnya "sudah dikenal" dan tidak
+// pernah memprobe ulang.
+export function markPortFailed(path) { if (path) failedProbes.add(path); }
 
 function releasePortListener() {
   const u = portUnlisten;
@@ -293,8 +310,17 @@ export async function connect(pathArg) {
 }
 
 export async function disconnect(manual) {
+  // Backend yang belum tersambung tidak punya apa pun untuk ditutup. Tanpa
+  // guard ini, setTransportBackend() yang memanggil disconnect(true) saat
+  // berpindah transport akan memunculkan notifikasi "terputus" palsu dan
+  // menjalankan onDisconnected padahal tidak ada device yang hilang.
+  if (!port) {
+    if (manual) { autoReconnect = false; stopAutoRetry(); }
+    return;
+  }
   if (manual) {
     autoReconnect = false;   // user sengaja memutus: jangan disambung otomatis lagi
+    stopAutoRetry();
     deviceWasLost = false;
     hooks.notify(t('transport.notifDisconnected'), 'disconnect');
     log(t('transport.autoPausedLog'));
@@ -421,6 +447,10 @@ function retryDelay(attempt) {
 // probe, sehingga menunggu tanpa batas, bukan menyerah.
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
+  // Saat manager lintas-transport aktif, retry dimiliki manager. Timer di sini
+  // akan berebut dengan loop manager dan bisa connect ke transport yang sudah
+  // tidak aktif - jadi jangan dijadwalkan sama sekali.
+  if (managerMode) return;
   if (attempt > RETRY_MAX_ATTEMPTS) return;
   retryTimer = setTimeout(async () => {
     if (port || !autoReconnect) return;
@@ -429,14 +459,69 @@ export function scheduleRetry(only, attempt = 1) {
   }, retryDelay(attempt));
 }
 
+// Reset penanda probe. Dipakai tombol Refresh USB dan autoDetect() supaya
+// pencarian berikutnya benar-benar memprobe semua port dari awal.
+export function resetProbeState() {
+  failedProbes = new Set();
+  probedPorts = new Set();
+}
+
 // Tombol ↻ dan start awal
 export async function autoDetect() {
   autoReconnect = true;
   clearTimeout(retryTimer);
   failedProbes = new Set();   // probe ulang dari nol saat user menekan tombol ↻
+  probedPorts = new Set();
   if (port) { await refreshPorts(); return; }
   const ok = await tryAutoConnect(true);
   if (!ok && knownPorts.size) scheduleRetry([...knownPorts]);
+}
+
+// Cari port yang bisa dipakai auto-connect TANPA membuka koneksi permanen.
+//
+// Ini inti dari tryAutoConnect(), dipisah supaya manager lintas-transport bisa
+// memprobe USB sambil backend BLE tetap aktif. `knownPorts` dari putaran
+// sebelumnya dipakai untuk membatasi probe: hanya port baru, port yang gagal,
+// dan port terakhir yang sukses - bukan semua port setiap 2 detik.
+export async function findAvailableDevice(only) {
+  if (port) return null;
+  // Enumerasi murah dulu; dropdown hanya di-rebuild kalau daftar port benar-
+  // benar berubah. Tanpa ini, probe tiap 2 detik akan menutup dropdown yang
+  // sedang dibuka user karena <select> diisi ulang terus-menerus.
+  const all = await listPortPaths();
+  const prevKnown = knownPorts;
+  const added = all.filter(p => !prevKnown.has(p));
+  const removed = [...prevKnown].some(p => !all.includes(p));
+  if (added.length || removed) await refreshPorts(all, true);
+  if (all.length === 0) return null;
+
+  const targets = only && only.length ? all.filter(p => only.includes(p)) : all;
+  const candidates = [];
+  const add = (p) => { if (!candidates.includes(p)) candidates.push(p); };
+
+  // Port terakhir yang sukses selalu dicoba lebih dulu.
+  if (lastGoodPort && targets.includes(lastGoodPort)) add(lastGoodPort);
+  for (const p of targets) {
+    if (!prevKnown.has(p) || !probedPorts.has(p) || failedProbes.has(p)) add(p);
+  }
+
+  for (const path of candidates) {
+    const found = await probeWhoAmI(path);
+    // Selalu tandai perlu-dicoba sampai connect() benar-benar berhasil
+    // menghapusnya. Kalau penanda dihapus di sini lalu user menjeda/berpindah
+    // transport sebelum connect, port itu akan dianggap sudah dikenal dan
+    // tidak pernah diprobe lagi.
+    probedPorts.add(path);
+    failedProbes.add(path);
+    if (found) {
+      // Windows butuh waktu melepas handle port sementara sebelum connect()
+      // membukanya lagi. Jeda ini sama dengan yang sudah terbukti di
+      // tryAutoConnect(); tanpa jeda, connect bisa gagal "port terkunci".
+      await sleep(400);
+      return path;
+    }
+  }
+  return null;
 }
 
 // Pantau daftar port tiap 2 dtk (enumerasi murah). Probe jalan kalau ada port
@@ -459,7 +544,9 @@ export async function pollPorts() {
     const retryable = paths.filter(p => failedProbes.has(p));
     if (!added.length && !removed && !retryable.length) return;
     await refreshPorts(paths, true);
-    if (!port && autoReconnect && (added.length || retryable.length)) {
+    // managerMode: siklus connect dimiliki connection-manager.js. pollPorts
+    // tetap boleh mendeteksi port baru/hilang, tapi tidak boleh ikut connect.
+    if (!port && autoReconnect && !managerMode && (added.length || retryable.length)) {
       const targets = added.length ? added : retryable;
       const ok = await tryAutoConnect(false, targets);
       if (ok) {

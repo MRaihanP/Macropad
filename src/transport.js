@@ -32,15 +32,31 @@
 // protocol-parser membacanya lewat getter supaya tidak terikat ke satu backend.
 //
 // Mengalihkan transport: setTransportBackend('ble'|'usb')
-// Dipanggil dari UI pemilih transport; setelah hook diinstal ulang, semua modul
-// lain yang mengimpor dari facade ini otomatis ikut backend baru.
+// Dipanggil dari UI pemilih transport DAN oleh connection-manager.js saat
+// device ditemukan di transport lain. Probe sendiri tidak mengganti backend.
 
 import * as serialBackend from './serial-transport.js';
 
-const LAST_TRANSPORT_KEY = 'macropad.lastTransport';
+const LAST_TRANSPORT_KEY = 'macropad.lastTransport';       // key lama, dibaca untuk migrasi
+const LAST_GOOD_TRANSPORT_KEY = 'macropad.lastGoodTransport';
 
 let backend = serialBackend;
 let backendId = 'usb';
+// Modul BLE dimuat sekali dan dipakai ulang. Probe BLE TIDAK boleh memakai
+// import() baru di jalur lain: kalau Vite/HMR memuat dua instance, scan yang
+// mengisi dropdown bisa menulis ke instance yang bukan backend aktif.
+let bleModule = null;
+// Saat true, connection-manager.js memiliki siklus retry. Flag ini diteruskan
+// ke backend yang aktif maupun yang dimuat belakangan.
+let managerMode = false;
+
+async function loadBleModule() {
+  if (!bleModule) {
+    bleModule = await import('./ble-transport.js');
+    if (typeof bleModule.setManagerMode === 'function') bleModule.setManagerMode(managerMode);
+  }
+  return bleModule;
+}
 
 // Dipasang sekali oleh main.js. Hook diteruskan ke backend aktif - backend
 // sendiri yang memanggil hook-nya, supaya framing tetap milik backend dan tidak
@@ -98,8 +114,20 @@ export function handshakePending() {
 export function transportId() { return backendId; }
 
 // Transport terakhir yang dipakai user (disimpan ke localStorage).
+//
+// Yang dipakai untuk prioritas startup adalah transport yang benar-benar
+// BERHASIL connect (key baru). Key lama tetap dibaca sekali supaya instalasi
+// sebelumnya tidak kehilangan preferensi.
 export function lastTransport() {
-  try { return localStorage.getItem(LAST_TRANSPORT_KEY); } catch (e) { return null; }
+  try {
+    return localStorage.getItem(LAST_GOOD_TRANSPORT_KEY)
+      || localStorage.getItem(LAST_TRANSPORT_KEY);
+  } catch (e) { return null; }
+}
+
+export function rememberTransport(id) {
+  if (id !== 'usb' && id !== 'ble') return;
+  try { localStorage.setItem(LAST_GOOD_TRANSPORT_KEY, id); } catch (e) { }
 }
 
 // lastGoodDeviceId hanya tersedia di backend BLE. USB mengembalikan null.
@@ -112,19 +140,16 @@ export function lastGoodDeviceId() {
 // Inisialisasi backend aktif dengan hook yang sudah didaftarkan main.js.
 export function initActiveBackend() { backend.initTransport(pendingHooks); }
 
-// Ganti backend runtime. Dipanggil dari UI pemilih transport; setelah hook
+// Ganti backend runtime. Dipanggil dari UI pemilih transport DAN oleh
+// connection-manager.js saat device ditemukan di transport lain. Setelah hook
 // diinstal ulang, modul lain yang mengimpor dari facade ini otomatis ikut
 // memakai backend baru tanpa perlu diimpor ulang.
 //
-// Catatan soal "negosiasi": yang dinegosiasi di sini HANYA backend fisik
-// (usb atau ble), dan itu tetap pilihan user lewat pemilih - bukan tebakan.
-// App tidak pernah menebak medianya.
-//
-// Yang dinegosiasi OTOMATIS ada di lapis lain: format frame. Apakah device
-// mendukung frame biner ditentukan lewat percobaan nyata, bukan lewat membaca
-// nomor versi firmware. Alasannya, cara lain rapuh - perangkat yang sama bisa
-// punya build berbeda, dan nomor versi tidak menjamin apa pun tentang kemampuan
-// yang diaktifkan.
+// Catatan soal "negosiasi": backend fisik (usb/ble) dipilih user lewat
+// pemilih, atau oleh auto-connect saat device ditemukan. Auto-connect hanya
+// memprobe; backend tidak diganti sampai ada device yang benar-benar akan
+// dipakai. Format frame tetap dinegosiasi lewat percobaan nyata, bukan lewat
+// nomor versi firmware.
 //
 // setTransportBackend dengan id yang tidak dikenal tidak mengubah apa pun dan
 // mengembalikan backendId yang sekarang, supaya keadaan internal dan yang
@@ -132,24 +157,62 @@ export function initActiveBackend() { backend.initTransport(pendingHooks); }
 export async function setTransportBackend(id) {
   if (id === backendId) return backendId;
   if (id !== 'usb' && id !== 'ble') return backendId;
+  // Timer retry backend lama harus dibatalkan EKSPLISIT. disconnect(true)
+  // memang mematikan autoReconnect, tapi timer yang sudah terlanjur arm tetap
+  // bisa bangun dan mencoba connect ke transport yang sudah tidak aktif.
+  if (typeof backend.stopAutoRetry === 'function') backend.stopAutoRetry();
   // Putuskan backend lama DULUAN supaya hook onDisconnected sempat jalan: badge
   // profil dan meter baterai harus ikut kosong, kalau tidak user mengira device
   // lama masih hidup setelah beralih ke backend lain.
   await backend.disconnect(true);
-  backend = id === 'usb' ? serialBackend : await import('./ble-transport.js');
+  backend = id === 'usb' ? serialBackend : await loadBleModule();
   backendId = id;
+  // Backend yang baru dipasang juga dibersihkan dari retry lama.
+  if (typeof backend.stopAutoRetry === 'function') backend.stopAutoRetry();
   backend.initTransport(pendingHooks);
-  try { localStorage.setItem(LAST_TRANSPORT_KEY, id); } catch (e) { }
   return backendId;
 }
 
 // Backend BLE yang sudah terpasang, atau null kalau transport-nya USB.
 //
-// scan() hanya hidup di backend BLE, jadi main.js perlu mengambil backend
-// lewat sini - bukan meng-import './ble-transport.js' langsung. Import
-// langsung mengembalikan SALINAN MODUL YANG BERBEDA kalau ever terjadi
-// (Vite/HMR bisa memuat dua kali), dan scan yang mengisi dropdown akan
-// menulis ke instance yang bukan yang sedang dipakai.
+// Dipertahankan untuk kompatibilitas kontrak facade dan test. Jalur scan
+// auto-connect TIDAK memakai ini (lihat probeBleDevice di bawah): probe harus
+// bisa berjalan tanpa mengaktifkan backend BLE.
 export function bleBackend() {
   return backendId === 'ble' ? backend : null;
+}
+
+// ---- Probe untuk auto-connect ----
+//
+// Probe sengaja TIDAK mengganti backend. Manager hanya perlu tahu apakah ada
+// device; backend baru diaktifkan kalau device itu benar-benar akan dipakai.
+// Dengan begitu app tidak bolak-balik switch (dan memicu notifikasi putus)
+// hanya untuk memindai transport lain.
+export function probeUsbDevice(only) {
+  return serialBackend.findAvailableDevice(only);
+}
+
+export async function probeBleDevice(only) {
+  const mod = await loadBleModule();
+  return mod.findAvailableDevice(only);
+}
+
+// Dipakai tombol ↻ di panel manual: enumerasi murah, tanpa connect. Sekaligus
+// reset penanda probe supaya manager memprobe ulang semua port dari awal -
+// perilaku yang sama dengan tombol Refresh lama (autoDetect).
+export function refreshUsbPorts() {
+  serialBackend.resetProbeState();
+  return serialBackend.refreshPorts(null, true);
+}
+
+export function markUsbPortFailed(path) {
+  serialBackend.markPortFailed(path);
+}
+
+// Saat manager aktif, backend tidak lagi menjalankan auto-connect sendiri.
+// Manual/fallback tetap bisa memanggil autoDetect() langsung.
+export function setManagerMode(v) {
+  managerMode = !!v;
+  serialBackend.setManagerMode(managerMode);
+  if (bleModule && typeof bleModule.setManagerMode === 'function') bleModule.setManagerMode(managerMode);
 }

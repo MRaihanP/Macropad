@@ -160,6 +160,10 @@ let notifySubscribed = false;  // true setelah read loop pertama sukses
 let deviceWasLost = false;
 let autoReconnect = true;   // false setelah user menekan Disconnect sendiri
 let autoBusy = false;
+// Saat true, connection-manager.js yang memiliki siklus auto-connect. Retry
+// lokal tidak boleh dijadwalkan: dua loop yang mencoba connect bersamaan bisa
+// membuka link BLE ganda atau berebut transport yang sudah tidak aktif.
+let managerMode = false;
 // Single-flight connect. True selama connect() berjalan. Tanpa ini beberapa
 // jalur (klik Connect, scheduleRetry, tryAutoConnect) bisa membuka link BLE
 // bersamaan dan saling menabrak. Lihat catatan lengkap di connect().
@@ -598,14 +602,18 @@ export async function scan() {
   }
 }
 
-export async function scanAndUpdateSelect() {
+export async function scanAndUpdateSelect(quiet) {
   const devices = await scan();
   // Log panel app, bukan hanya stderr Rust. User tidak pernah melihat stderr;
   // tanpa baris ini, "scan tidak menemukan apa pun" di panel log sama sekali
   // tidak bisa dibedakan dari "app belum pernah memanggil scan".
-  log(devices.length === 0
-    ? t('ble.traceNone')
-    : t('ble.traceFound', { count: devices.length, names: devices.map(d => d.name).join(', ') }));
+  // Saat quiet (probe auto-connect berulang), log dilewati supaya panel tidak
+  // dibanjiri baris "tidak ditemukan" tiap beberapa detik.
+  if (!quiet) {
+    log(devices.length === 0
+      ? t('ble.traceNone')
+      : t('ble.traceFound', { count: devices.length, names: devices.map(d => d.name).join(', ') }));
+  }
   const sel = el('bleDeviceSelect');
   if (!sel) return devices;
   const keep = sel.value;
@@ -618,6 +626,22 @@ export async function scanAndUpdateSelect() {
   });
   if (keep && devices.some(d => d.id === keep)) sel.value = keep;
   return devices;
+}
+
+// Cari device BLE untuk auto-connect TANPA mengaktifkan backend BLE.
+//
+// Aturan paired-only sama dengan tryAutoConnect(false): membuka GATT ke device
+// yang sedang pairing mengganggu proses pairing Windows. Device terakhir yang
+// sukses tetap boleh dicoba walau belum muncul sebagai paired.
+export async function findAvailableDevice(only) {
+  if (connected) return null;
+  const devices = await scanAndUpdateSelect(true);
+  let targets = devices;
+  if (only && only.length) targets = targets.filter(d => only.includes(d.id));
+  targets = targets.filter(d => d.isPaired || d.id === lastGoodDeviceId);
+  if (targets.length === 0) return null;
+  targets = [...targets].sort((a, b) => (b.id === lastGoodDeviceId) - (a.id === lastGoodDeviceId));
+  return targets[0];
 }
 
 // ---- Connect / disconnect ----
@@ -784,11 +808,12 @@ export async function disconnect(manual) {
   // backend LAMA setiap kali selector transport berubah - termasuk saat
   // berubah dari USB ke BLE, di mana BLE memang belum pernah tersambung.
   if (!connected) {
-    if (manual) autoReconnect = false;
+    if (manual) { autoReconnect = false; stopAutoRetry(); }
     return;
   }
   if (manual) {
     autoReconnect = false;
+    stopAutoRetry();
     deviceWasLost = false;
     hooks.notify(t('ble.notifDisconnected'), 'disconnect');
     log(t('ble.autoPausedLog'));
@@ -859,6 +884,12 @@ const RETRY_BASE_MS = 2500;
 const RETRY_MAX_MS = 20000;
 const retryDelay = (n) => Math.min(RETRY_BASE_MS * n, RETRY_MAX_MS);
 
+// Batalkan retry yang sudah terjadwal. Dipakai facade saat berpindah backend
+// dan saat user memutus manual: timer lama tidak boleh bangun lalu connect ke
+// BLE padahal transport aktif sudah USB.
+export function stopAutoRetry() { clearTimeout(retryTimer); retryTimer = null; }
+export function setManagerMode(v) { managerMode = !!v; }
+
 // Hitungan read error berturuh. Setelah burst error baca, adapter
 // Windows perlu waktu ekstra untuk pulih — reconnect langsung setelah burst
 // sering dapat 0x800704C7 (operation canceled) atau GATT cache corrupt.
@@ -870,6 +901,8 @@ let burstBackoffActive = false;
 
 export function scheduleRetry(only, attempt = 1) {
   clearTimeout(retryTimer);
+  // Manager lintas-transport yang mengurus retry saat mode ini aktif.
+  if (managerMode) return;
   if (attempt > RETRY_MAX_ATTEMPTS) {
     burstBackoffActive = false;
     readErrorCount = 0;

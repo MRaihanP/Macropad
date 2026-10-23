@@ -67,7 +67,13 @@ console.log('\n--- D. Auto-connect tetap jadi jalur utama ---');
 ok(/export async function autoDetect/.test(serial), 'autoDetect() masih ada');
 ok(/export async function pollPorts/.test(serial), 'pollPorts() masih ada (polling daftar port)');
 ok(/export async function tryAutoConnect/.test(serial), 'tryAutoConnect() masih ada (probe WHOAMI)');
-ok(/autoDetect\(\);/.test(main), 'autoDetect() tetap dipanggil saat start');
+ok(/startAutoConnect\(\{/.test(main), 'startAutoConnect() dipanggil saat start (USB + BLE)');
+ok(/from "\.\/connection-manager\.js"/.test(main),
+  'main.js memakai connection-manager untuk siklus auto-connect');
+ok(/pauseAutoConnect\(\)/.test(main) && /resumeAutoConnect\(\)/.test(main),
+  'panel manual bisa menjeda/melanjutkan auto-connect (override)');
+ok(!/if \(savedTransport === 'ble'\)/.test(main),
+  'pemicu BLE tidak lagi bergantung pada transport tersimpan');
 // Poll lewat facade supaya backend aktif yang memutuskan apa yang dipantau,
 // tapi jeda 2 detik dan fungsi pollPorts()-nya sendiri tidak boleh hilang.
 ok(/setInterval\(\(\) => \{ poll\(\); \}, 2000\)/.test(main), 'poll() facade tetap dipanggil tiap 2 detik');

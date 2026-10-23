@@ -21,10 +21,15 @@ import {
 // di bawah ikut ke device yang benar tanpa perlu tahu mana yang sedang hidup.
 import {
   initTransport, sendLine, sendBatch, connect, disconnect,
-  autoDetect, poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
+  poll, isConnected, isAutoBusy, enableAutoReconnect, deviceWasLost,
   updateConnectButton, setPendingTransportHooks, initActiveBackend,
-  setTransportBackend, transportId, bleBackend, lastTransport, lastGoodDeviceId,
+  setTransportBackend, transportId, lastTransport, rememberTransport,
+  refreshUsbPorts,
 } from "./transport.js";
+import {
+  startAutoConnect, pauseAutoConnect, resumeAutoConnect,
+  setPreferredTransport, isAutoConnectPaused, isAutoConnectBusy,
+} from "./connection-manager.js";
 // Adaptive Key Bind: manajemen preset + runtime auto-switch.
 import {
   initAdaptive, initAdaptivePage, presetsData, editingPresetId, loadPresets,
@@ -159,6 +164,13 @@ initProtocolParser({
 // sisi aplikasi disuntikkan di sini - titik pertemuan tunggal antara transport
 // dan app. Hook disimpan dulu di facade supaya backend yang diganti
 // (mis. user pilih BLE) juga menerimanya, bukan cuma backend awal.
+//
+// Selector transport diambil di sini (bukan di blok UI bawah) supaya hook
+// onConnected bisa menyamakannya dengan backend yang baru aktif.
+const transportSel = el('transportSelect');
+// True selama handler UI sedang mengganti backend. Tombol Connect dan handler
+// lain menolak berjalan di tengah switch supaya tidak connect ke backend lama.
+let transportSwitching = false;
 setPendingTransportHooks({
   // Setiap baris dari device berakhir di protocol-parser.js. Transport hanya
   // hanya pemisah baris; ia tidak tahu apa arti baris-baris itu.
@@ -175,6 +187,11 @@ setPendingTransportHooks({
     resetAdaptiveOnConnect();
     notify(deviceWasLost() ? t('main.reconnectedNotif') : t('main.connectedNotif'), 'connect');
     switchPage('home');   // Home selalu tampil saat pertama kali connect
+    // Ingat transport yang BENAR-BENAR berhasil, bukan sekadar pilihan
+    // dropdown. Nilai ini yang dipakai startup berikutnya sebagai prioritas.
+    rememberTransport(transportId());
+    setPreferredTransport(transportId());
+    syncTransportUi();
   },
   onDisconnected: () => {
     // Jangan biarkan angka device sebelumnya tertinggal di UI setelah putus: profile
@@ -183,6 +200,10 @@ setPendingTransportHooks({
     resetDeviceProfile();
     clearBattery();
     renderDeviceProfileBadge();
+    // Selama loop auto-connect masih aktif, status jangan berhenti di "Tidak
+    // tersambung": device mungkin hanya belum dicolok. Kecuali user sengaja
+    // memutus (autoHold), di mana "tidak tersambung" memang jawaban akhir.
+    if (!isAutoConnectPaused()) setSearchingStatus(true);
   },
   // Saat koneksi putus, state yang BARU BOLEH ada di device hilang sekalian -
   // tidak ada yang perlu "menunggu upload", karena isi RAM device ikut hilang.
@@ -207,47 +228,98 @@ setPendingTransportHooks({
 // Pasang hook ke backend yang aktif sekarang (default USB). Kalau user nanti
 // ganti ke BLE, facade memasang ulang hook yang sama di backend BLE.
 initActiveBackend();
-el('btnRefreshPorts').onclick = autoDetect;
+
+// ---- Status & selector transport ----
+// Satu sumber untuk menyamakan dropdown dengan backend yang benar-benar aktif.
+// Dipanggil saat startup, setiap kali manager berpindah backend, dan saat
+// onConnected. Tanpa ini, panel manual bisa menampilkan BLE padahal backend
+// yang aktif masih USB (atau sebaliknya).
+function syncTransportUi() {
+  if (!transportSel) return;
+  transportSel.value = transportId();
+  const isBle = transportSel.value === 'ble';
+  const bleRow = el('bleRow');
+  if (bleRow) bleRow.style.display = isBle ? '' : 'none';
+  const usbRow = el('usbRow');
+  if (usbRow) usbRow.style.display = isBle ? 'none' : '';
+  const usbLabel = el('usbPortLabel');
+  if (usbLabel) usbLabel.style.display = isBle ? 'none' : '';
+}
+
+// Status selama loop masih mencari device. Jangan menimpa status "Tersambung".
+function setSearchingStatus(on) {
+  if (isConnected()) return;
+  const status = el('statusText');
+  if (status) status.textContent = on ? t('auto.searchingStatus') : t('transport.notConnected');
+}
+
+el('btnRefreshPorts').onclick = async () => {
+  if (transportSwitching || isAutoConnectBusy() || isAutoBusy()) {
+    log(t('transport.autoBusy'));
+    return;
+  }
+  transportSwitching = true;
+  try {
+    // Refresh USB = user minta transport USB. Jadikan prioritas dan biarkan
+    // manager yang memprobe; enumerasi murah dilakukan lebih dulu supaya
+    // dropdown langsung terisi.
+    pauseAutoConnect();
+    setPreferredTransport('usb');
+    if (transportId() !== 'usb') {
+      await setTransportBackend('usb');
+      syncTransportUi();
+      updateConnectButton(isConnected());
+    }
+    await refreshUsbPorts();
+  } catch (e) {
+    log(t('transport.portListError', { err: e }), 'err');
+  } finally {
+    // Kalau enumerasi/ganti backend gagal, loop tetap harus hidup lagi.
+    transportSwitching = false;
+    resumeAutoConnect();
+  }
+};
+
 // Label tombol sambung/putus berasal dari JS (berubah sesuai status koneksi),
 // jadi applyI18n() akan menimpanya dengan teks statis setiap kali user ganti
 // bahasa. Daftarkan render ulang agar label ikut diterjemahkan DAN tetap
 // mencerminkan status koneksi yang sedang berjalan.
 registerRerender(() => updateConnectButton(isConnected()));
-el('btnConnect').onclick = () => {
-  if (isConnected()) { disconnect(true); return; }
-  if (isAutoBusy()) { log(t('transport.autoBusy')); return; }
+el('btnConnect').onclick = async () => {
+  if (transportSwitching) {
+    log(t('transport.autoBusy'));
+    return;
+  }
+  if (isConnected()) {
+    // Disconnect manual = user sengaja memutus. Jeda loop supaya device tidak
+    // langsung tersambung lagi sebelum user memintanya.
+    pauseAutoConnect();
+    await disconnect(true);
+    return;
+  }
+  if (isAutoBusy() || isAutoConnectBusy()) {
+    log(t('transport.autoBusy'));
+    return;
+  }
+  const id = transportId();
+  setPreferredTransport(id);
+  pauseAutoConnect();          // cegah loop menyalip percobaan manual ini
   enableAutoReconnect();
-  connect();
+  try {
+    await connect();
+  } catch (e) {
+    log(t('main.connectError', { err: e }), 'err');
+  } finally {
+    // Berhasil -> loop hanya memantau; gagal -> loop lanjut ke prioritas
+    // berikutnya tanpa menunggu user menekan tombol lagi.
+    resumeAutoConnect();
+  }
 };
 
-// Coba auto-connect ke device BLE terakhir yang sukses, atau device paired pertama.
-// Dipakai saat switch transport ke BLE, saat klik Refresh BLE, dan saat startup.
-async function attemptBleAutoConnect(devices) {
-  const ble = bleBackend();
-  if (!ble || isConnected() || isAutoBusy()) return false;
-  if (!devices) {
-    devices = await ble.scanAndUpdateSelect();
-  }
-  if (devices.length === 0) return false;
-
-  const lgd = lastGoodDeviceId();
-  // Device terakhir yang berhasil selalu dicoba lebih dulu.
-  if (lgd && devices.some(d => d.id === lgd)) {
-    log(t('ble.autoConnecting'), 'ok');
-    if (await connect(lgd)) return true;
-  }
-  // Coba device paired lain yang belum dicoba.
-  const paired = devices.filter(d => d.isPaired && d.id !== lgd);
-  for (const d of paired) {
-    if (await connect(d.id)) return true;
-  }
-  return false;
-}
-
 // ---- Pemilih transport (USB / BLE) ----
-// Backend BLE dimuat lewat import() dinamis di facade, jadi modul baru diunduh
-// hanya kalau user benar-benar memilih BLE.
-const transportSel = el('transportSelect');
+// Backend BLE dimuat lewat import() dinamis di facade dan di-cache. Modul baru
+// diunduh saat user memilih BLE atau saat manager memprobe BLE sebagai fallback;
+// probe tidak mengaktifkan backend-nya.
 if (transportSel) {
   transportSel.innerHTML = '';
   for (const opt of [
@@ -260,67 +332,80 @@ if (transportSel) {
   }
   // Nilai awal harus dipasang SEBELUM onchange dipasang. Kalau dibalik,
   // menugaskan .value memicu event 'change' dan menjalankan onchange - sehingga
-  // scan berjalan dua kali: sekali dari inisialisasi, sekali dari klik user.
+  // pencarian berjalan dua kali: sekali dari inisialisasi, sekali dari klik user.
   transportSel.value = transportId();
 
-  // Baris device BLE hanya relevan di mode BLE. Port USB disembunyikan
-  // sebaliknya supaya user tidak memilih endpoint yang tidak akan dipakai.
-  const syncTransportRows = () => {
-    const isBle = transportSel.value === 'ble';
-    const bleRow = el('bleRow');
-    if (bleRow) bleRow.style.display = isBle ? '' : 'none';
-    const usbRow = el('usbRow');
-    if (usbRow) usbRow.style.display = isBle ? 'none' : '';
-    const usbLabel = el('usbPortLabel');
-    if (usbLabel) usbLabel.style.display = isBle ? 'none' : '';
-  };
   transportSel.onchange = async () => {
+    const id = transportSel.value;
+    // Jangan ganti backend di tengah probe/connect: backend lama bisa
+    // diputus saat connect sedang berjalan. Kembalikan dropdown ke backend
+    // yang benar-benar aktif.
+    if (transportSwitching || isAutoConnectBusy() || isAutoBusy()) {
+      log(t('transport.autoBusy'));
+      transportSel.value = transportId();
+      return;
+    }
+    transportSwitching = true;
     try {
-      await setTransportBackend(transportSel.value);
-      syncTransportRows();
+      // Pilihan user adalah override: hentikan loop sebentar supaya tidak
+      // berebut, lalu mulai lagi dengan transport ini sebagai prioritas.
+      // Scan/probe tetap dilakukan manager - bukan langsung di handler ini -
+      // supaya hanya ada satu pemilik siklus connect.
+      pauseAutoConnect();
+      setPreferredTransport(id);
+      await setTransportBackend(id);
+      syncTransportUi();
       updateConnectButton(isConnected());
-      // Baru scan setelah backend benar-benar terpasang. Tanpa ini, user
-      // memilih BLE lalu dropdown device tetap kosong dan tidak ada yang
-      // memberi tahu -_DEVICE_ yang harus dipilih tidak pernah muncul.
-      const ble = bleBackend();
-      if (transportSel.value === 'ble') {
-        if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
-        log(t('ble.traceSwitched'));
-        const devices = await ble.scanAndUpdateSelect();
-        await attemptBleAutoConnect(devices);
-      }
     } catch (e) {
       log(t('main.transportSwitchError', { err: e }), 'err');
       transportSel.value = transportId();   // kembalikan ke yang benar-benar aktif
+    } finally {
+      transportSwitching = false;
+      resumeAutoConnect();
     }
   };
-  syncTransportRows();
+  syncTransportUi();
 
-  // Jika transport terakhir adalah BLE, pulihkan dan coba auto-connect otomatis.
+  // Pulihkan transport terakhir yang SUKSES sebagai titik awal. Backend
+  // benar-benar dipindah sekarang supaya dropdown dan backend tidak berbeda;
+  // manager yang akan mencoba connect (dan fallback) setelah ini.
   const savedTransport = lastTransport();
-  if (savedTransport === 'ble') {
-    transportSel.value = 'ble';
-    await setTransportBackend('ble');
-    syncTransportRows();
-    updateConnectButton(isConnected());
-    const ble = bleBackend();
-    if (ble) {
-      const devices = await ble.scanAndUpdateSelect();
-      await attemptBleAutoConnect(devices);
+  if ((savedTransport === 'usb' || savedTransport === 'ble') && savedTransport !== transportId()) {
+    try {
+      await setTransportBackend(savedTransport);
+      syncTransportUi();
+      updateConnectButton(isConnected());
+    } catch (e) {
+      log(t('main.transportSwitchError', { err: e }), 'err');
     }
   }
 }
 const btnRefreshBle = el('btnRefreshBle');
 if (btnRefreshBle) {
   btnRefreshBle.onclick = async () => {
-    const ble = bleBackend();
-    if (!ble) { log(t('ble.pickTransportFirst'), 'err'); return; }
+    if (transportSwitching || isAutoConnectBusy() || isAutoBusy()) {
+      log(t('transport.autoBusy'));
+      return;
+    }
+    transportSwitching = true;
     try {
-      enableAutoReconnect();   // ↻ aktifkan kembali auto-connect setelah putus manual
-      const found = await ble.scanAndUpdateSelect();
-      if (found.length) log(t('ble.foundLog', { count: found.length }), 'ok');
-      await attemptBleAutoConnect(found);
-    } catch (e) { log(t('ble.scanError', { err: e }), 'err'); }
+      // Refresh BLE = user minta transport BLE. Jadikan prioritas dan biarkan
+      // manager yang memindai + menyambung (jalur yang sama dengan startup).
+      pauseAutoConnect();
+      setPreferredTransport('ble');
+      if (transportId() !== 'ble') {
+        await setTransportBackend('ble');
+        syncTransportUi();
+        updateConnectButton(isConnected());
+      }
+    } catch (e) {
+      log(t('ble.scanError', { err: e }), 'err');
+    } finally {
+      // Ganti backend bisa gagal (mis. modul BLE tidak termuat); loop tetap
+      // harus hidup lagi supaya fallback USB tidak ikut mati.
+      transportSwitching = false;
+      resumeAutoConnect();
+    }
   };
 }
 el('btnRefresh').onclick = () => loadLayer(currentLayer);
@@ -364,7 +449,14 @@ el('btnApply').onclick = async () => {
 };
 
 renderTabs(); renderGrid(); renderEncoderList();
-autoDetect();
+// Auto-connect lintas transport: prioritas transport terakhir yang sukses,
+// lalu fallback ke transport lain. Manager yang memegang retry, jadi tidak ada
+// dua jalur yang menyambung bersamaan. Loop tetap berjalan selama belum ada
+// device - app boleh aktif lebih dulu, device dicolok belakangan.
+startAutoConnect({
+  onTransportChange: syncTransportUi,
+  onSearching: setSearchingStatus,
+});
 // initAdaptivePage() memasang kontrol preset (tambah/rename/hapus, tombol Done/Cancel
 // editor) DAN memulai polling window foreground. Kalau ini terlewat, daftar preset
 // tetap tampil tapi tidak pernah auto-switch.

@@ -118,7 +118,7 @@ try {
 const out = execSync(`node "${smoke}"`, { encoding: 'utf8' });
   ok(out.includes('HASIL: startup app tidak melempar error dan port terbaca'),
     'main.js dimuat tanpa exception dan dropdown COM terisi');
-  ok(out.includes('available_ports() dipanggil'), 'autoDetect() memanggil enumerasi port saat start');
+  ok(out.includes('available_ports() dipanggil'), 'auto-connect start memanggil enumerasi port saat start');
 } catch (e) {
   const msg = String(e.stdout || '') + String(e.message);
   ok(false, 'startup-smoke-test gagal:\n' + msg.split('\n').slice(0, 8).join('\n'));

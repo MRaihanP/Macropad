@@ -79,7 +79,7 @@ if (err) {
 console.log('\n--- 2. Stub plugin serial terpakai ---');
 ok(S.serialConstructed > 0, `SerialPort dipakai (${S.serialConstructed} instance)`);
 
-console.log('\n--- 3. autoDetect() benar-benar memanggil enumerasi port ---');
+console.log('\n--- 3. Auto-connect start benar-benar memanggil enumerasi port ---');
 ok(S.invoked.available_ports > 0, `available_ports() dipanggil ${S.invoked.available_ports}x saat start`);
 
 console.log('\n--- 4. Dropdown COM terisi hasil enumerasi ---');

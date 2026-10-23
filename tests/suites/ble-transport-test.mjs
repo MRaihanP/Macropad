@@ -263,28 +263,33 @@ eq(F.dumpInProgress(), true, 'setter facade mengubah state backend');
 F.setDumpInProgress(false);
 eq(F.dumpInProgress(), false, 'setter facade bisa mengosongkan lagi');
 
-console.log('\n--- 9b. Memilih transport BLE harus langsung scan device ---');
-// Dari log user: device BERHASIL ditemukan (scan menemukan 1 device), tapi
-// dropdown device tidak pernah terisi. Sebabnya memilih transport BLE hanya
-// mengganti backend - tidak ada yang memicu scan, jadi user tidak pernah
-// punya device untuk dipilih dan tidak bisa menekan Sambung.
+console.log('\n--- 9b. Memilih transport BLE memicu scan lewat manager ---');
+// Desain baru: onchange TIDAK lagi memanggil scan langsung. Ia mengganti
+// backend lalu menyerahkan siklus ke connection-manager, yang memprobe BLE
+// (scanAndUpdateSelect) sebelum/ketika akan connect. Dengan begitu hanya ada
+// satu pemilik retry dan scan tidak berjalan dua kali.
 const mainSrc = fs.readFileSync(`${SRC}/main.js`, 'utf8');
-ok(/bleBackend\(\)/.test(mainSrc),
-  'main.js mengambil backend BLE lewat facade (bukan import langsung)');
+const managerSrc = fs.readFileSync(`${SRC}/connection-manager.js`, 'utf8');
+const coreSrc = fs.readFileSync(`${SRC}/auto-connect-core.js`, 'utf8');
+const bleSrcEarly = fs.readFileSync(`${SRC}/ble-transport.js`, 'utf8');
 ok(!/await import\('\.\/ble-transport\.js'\)/.test(mainSrc),
   'tidak ada import langsung ble-transport.js di main.js (bisa dapat modul berbeda)');
+ok(/probeBleDevice/.test(managerSrc),
+  'connection-manager memakai probeBleDevice dari facade');
+ok(/scanAndUpdateSelect\(true\)/.test(bleSrcEarly),
+  'findAvailableDevice() memindai device lewat scanAndUpdateSelect(true)');
 const switchBody = mainSrc.match(/transportSel\.onchange = async \(\) => \{([\s\S]*?)\n  \};/);
 ok(!!switchBody, 'badan onchange handler terambil');
 if (switchBody) {
   ok(/setTransportBackend\(/.test(switchBody[1]), 'onchange mengganti backend');
-  ok(/scanAndUpdateSelect\(\)/.test(switchBody[1]),
-    'onchange LANGSUNG scan setelah backend terpasang (dropdown tidak boleh kosong)');
-  // Urutan: ganti backend DULU, baru scan. Kalau scan dulu, yang dipanggil
-  // scan() dari instance modul yang belum jadi backend aktif.
+  ok(/resumeAutoConnect\(\)/.test(switchBody[1]),
+    'onchange memulai lagi auto-connect (memicu probe/scan)');
   ok(switchBody[1].indexOf('setTransportBackend')
-      < switchBody[1].indexOf('scanAndUpdateSelect'),
-    'setTransportBackend() dijalankan SEBELUM scanAndUpdateSelect()');
+      < switchBody[1].indexOf('resumeAutoConnect'),
+    'backend diganti SEBELUM auto-connect dipicu');
 }
+ok(/setTransportBackend/.test(coreSrc) && /probeBle/.test(coreSrc),
+  'core memprobe dulu, backend baru diganti saat device ditemukan');
 ok(/export function bleBackend/.test(
     fs.readFileSync(`${SRC}/transport.js`, 'utf8')),
   'facade mengekspor bleBackend()');
@@ -362,7 +367,8 @@ const cBody = fs.readFileSync(`${SRC}/ble-transport.js`, 'utf8')
 ok(cBody && /setConnected\(true\)/.test(cBody[0]),
   'connect() memanggil setConnected(true) - UI muncul setelah tersambung');
 // onchange harus membaca nilai awal SEBELUM dipasang, kalau tidak scan
-ok(switchBody && switchBody[1].indexOf('scanAndUpdateSelect') > -1, 'onchange tetap scan');
+ok(switchBody && switchBody[1].indexOf('resumeAutoConnect') > -1,
+  'onchange memicu auto-connect (scan lewat manager)');
 const mainCode = fs.readFileSync(`${SRC}/main.js`, 'utf8');
 const valueAt = mainCode.indexOf('transportSel.value = transportId()');
 const onchangeAt = mainCode.indexOf('transportSel.onchange');
