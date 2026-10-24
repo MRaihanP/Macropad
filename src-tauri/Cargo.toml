@@ -34,6 +34,7 @@ windows-future = "0.2"
 # Foundation* pernah ada tapi tidak direferensikan di mana pun - menambah waktu
 # kompilasi tanpa fungsi. Kalau nanti BLE benar-benar dikerjakan (Phase 10),
 # tambahkan kembali di sini.
+cpal = "0.15"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",

@@ -34,6 +34,13 @@ use windows::core::{PWSTR, PCWSTR, Interface};
 mod ble;
 use ble::{BleStats, BleTransport};
 
+// =================== AUDIO MIXING (Fase 2A: enum + config only) ===================
+mod audio;
+use audio::AudioManager;
+// Import command functions ke crate root agar #[tauri::command] macro-generated
+// internals dapat di-resolve oleh generate_handler!.
+use audio::{audio_devices, set_audio_output, audio_set_mic, audio_set_mix_levels, audio_enqueue};
+
 // Codec frame protokol v2. Fase 1: sudah ada dan sudah diuji, tapi BELUM
 // tersambung ke link BLE apa pun. Sengaja ditahan di sini supaya bisa diuji
 // silang dengan firmware dan frontend tanpa perangkat.
@@ -531,14 +538,6 @@ fn save_sounds(app: &tauri::AppHandle, d: &SoundData) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
-fn sound_id() -> String {
-    format!("snd_{}_{}", now_secs(), (nonce_u64() % 100000))
-}
-
-fn nonce_u64() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
-}
-
 fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, String> {
     let dir = sounds_dir(app).ok_or("gagal dapatkan folder sounds")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -690,7 +689,7 @@ fn soundboard_rename(app: tauri::AppHandle, id: String, new_name: String) -> Res
     let idx = data.sounds.iter().position(|s| s.id == id)
         .ok_or(format!("suara \"{}\" tidak ditemukan", id))?;
     // --- PATCH: Auto-numbering bila nama baru bentrok ---
-    let final_name = if data.sounds.iter().enumerate().any(|(i, s)| s.id != id && s.name == new_name) {
+    let final_name = if data.sounds.iter().any(|s| s.id != id && s.name == new_name) {
         let stem = new_name.clone();
         let mut counter = 1;
         loop {
@@ -1486,6 +1485,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // Register audio manager state (Fase 2A: config only, no stream init)
+            app.manage(AudioManager::new());
             setup_tray(app)?;
             APP_STARTED.store(now_ms(), Ordering::SeqCst);
             // Self-heal jendela putih (lihat WATCHDOG PAINT di atas).
@@ -1552,6 +1553,12 @@ pub fn run() {
             soundboard_delete,
             soundboard_read,
             soundboard_rename,
+            // Fase 2B-2C: Audio device enumeration, WASAPI output/capture + mixing
+            audio_devices,
+            set_audio_output,
+            audio_set_mic,
+            audio_set_mix_levels,
+            audio_enqueue,
             show_main_window,
             hide_to_tray,
             quit_app,

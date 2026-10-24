@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   clearScreen: false,
   root: "src",
+  publicDir: "public", // AudioWorklet processor (mixer-processor.js) + aset statis
   server: {
     port: 1420,
     strictPort: true,

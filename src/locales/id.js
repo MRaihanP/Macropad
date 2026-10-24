@@ -105,6 +105,16 @@ export const id = {
 'settings.language': 'Bahasa',
 'settings.languageHint': 'Antarmuka dan notifikasi. Awalnya mengikuti bahasa Windows.',
 
+// ---- Audio mixing (Fase 2A) ----
+'settings.audio': 'Audio Output',
+'settings.audioOutput': 'Output Device',
+'settings.audioOutputHint': 'Choose where the mixed audio goes. For Discord, select "CABLE Output (VB-Cable)".',
+'settings.includeMic': 'Sertakan Mikrofon',
+'settings.includeMicHint': 'Campurkan suara mikrofon Anda ke stream audio.',
+'settings.micDevice': 'Device Mikrofon',
+'settings.micVolume': 'Volume Mic',
+'settings.sfxVolume': 'Volume Soundboard',
+
 // ---- Halaman RGB ----
 'rgb.subtitle': 'Pencahayaan per-key. Pengaturan ini dikendalikan lewat companion app.',
 'rgb.enable': 'Aktifkan RGB',

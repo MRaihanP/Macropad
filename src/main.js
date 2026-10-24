@@ -48,7 +48,7 @@ import { switchPage, initSidebar, initRouter } from "./ui-router.js";
 // Picker aplikasi (dipakai juga oleh home-page untuk binding bertipe APP).
 import { initAppPicker } from "./app-picker.js";
 // Soundboard: manajemen suara + Web Audio API playback engine.
-import { initSoundPicker } from "./soundboard.js";
+import { initSoundPicker, initAudioSettings } from "./soundboard.js";
 // Halaman Home: tab layer, grid tombol, daftar knob, panel editor, rekam keyboard.
 // Ketiganya satu modul karena saling memanggil (klik sel -> openEditor -> rekam;
 // tab -> switchLayer -> loadLayer -> renderGrid); dipisah akan muncul siklus import.
@@ -492,6 +492,9 @@ el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { forc
 // Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
 // dipantau (port COM untuk USB, status GATT untuk BLE).
 setInterval(() => { poll(); }, 2000);
+
+// Fase 2A: Audio device enumeration + mic mixing config UI
+initAudioSettings();
 
 // Halaman RGB di-wire di dalam modusnya sendiri; transport serial disuntikkan supaya
 // tidak ada import bolak-balik antara main.js dan rgb-page.js.

@@ -108,6 +108,16 @@ export const en = {
 'settings.language': 'Language',
 'settings.languageHint': 'Interface and notifications. Initially follows your Windows language.',
 
+// ---- Audio mixing (Fase 2A) ----
+'settings.audio': 'Audio Output',
+'settings.audioOutput': 'Output Device',
+'settings.audioOutputHint': 'Choose where the mixed audio goes. For Discord, select "CABLE Output (VB-Cable)".',
+'settings.includeMic': 'Include Microphone',
+'settings.includeMicHint': 'Mix your mic with soundboard audio into one stream.',
+'settings.micDevice': 'Microphone Device',
+'settings.micVolume': 'Mic Volume',
+'settings.sfxVolume': 'Soundboard Volume',
+
 // ---- Halaman RGB ----
 'rgb.subtitle': 'Per-key lighting. These settings are controlled through the companion app.',
 'rgb.enable': 'Enable RGB',

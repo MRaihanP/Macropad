@@ -304,7 +304,12 @@ input[readonly] { color: var(--accent); cursor: default; }
 #page-settings .panel + .panel { margin-top: 14px; }
 #page-settings .panel:last-child { margin-bottom: 22px; }
 
-/* ===== RGB page ===== */
+/* Volume slider rows: label | slider | percentage, equal width, aligned */
+.vol-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+.vol-label { width: 150px; flex-shrink: 0; font-size: 0.86rem; }
+.vol-row input[type=range] { flex: 1; accent-color: var(--accent); }
+.vol-val { width: 44px; flex-shrink: 0; text-align: right; font-size: 0.86rem; }
+#page-settings .vol-row:first-of-type { border-top: none; }
 .rgb-slider-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 0.82rem; color: var(--muted); }
 /* Selector menyertakan <label> sejak Phase 9.4: teks slider RGB diubah dari
    <span> ke <label for> supaya screen reader membacakan nama slider, bukan

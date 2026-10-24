@@ -333,6 +333,48 @@
         </div>
       </div>
       <div class="panel">
+        <h2 data-i18n="settings.audio">Audio Output</h2>
+
+        <!-- Pilih output device -->
+        <div class="setting-row">
+          <div>
+            <div class="setting-name" data-i18n="settings.audioOutput">Output Device</div>
+            <div class="hint" data-i18n="settings.audioOutputHint">Choose where the mixed audio goes. For Discord, select "CABLE Output (VB-Cable)".</div>
+          </div>
+          <select id="audioOutputSelect"></select>
+        </div>
+
+        <!-- Include Mic toggle -->
+        <div class="setting-row">
+          <div>
+            <div class="setting-name" data-i18n="settings.includeMic">Include Microphone</div>
+            <div class="hint" data-i18n="settings.includeMicHint">Mix your mic with soundboard audio into one stream.</div>
+          </div>
+          <label class="toggle-switch"><input type="checkbox" id="micIncludeToggle"><span class="toggle-slider"></span></label>
+        </div>
+
+        <!-- Mikrofon device + volume sliders -->
+        <div id="micDeviceRow" style="display:none;">
+          <div class="setting-row">
+            <div>
+              <div class="setting-name" data-i18n="settings.micDevice">Microphone Device</div>
+            </div>
+            <select id="micDeviceSelect"></select>
+          </div>
+
+          <div class="vol-row">
+            <label for="micVolume" class="vol-label" data-i18n="settings.micVolume">Mic Volume</label>
+            <input type="range" id="micVolume" min="0" max="100" value="70">
+            <span id="micVolumeVal" class="vol-val">70%</span>
+          </div>
+          <div class="vol-row">
+            <label for="sfxVolume" class="vol-label" data-i18n="settings.sfxVolume">Soundboard Volume</label>
+            <input type="range" id="sfxVolume" min="0" max="100" value="90">
+            <span id="sfxVolumeVal" class="vol-val">90%</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
         <h2 data-i18n="settings.power">Daya (wireless)</h2>
         <div class="setting-row">
           <div>
