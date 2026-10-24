@@ -51,6 +51,9 @@ pub struct AudioManager {
     /// Fase 2E: monitor device hotplug, auto-reconnect VB-Cable.
     pub device_monitoring: Arc<AtomicBool>,
     pub last_output_device: Mutex<Option<String>>,
+    /// Track worker thread handles supaya tidak di-drop pasca-spawn
+    pub output_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    pub capture_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl AudioManager {
@@ -63,6 +66,8 @@ impl AudioManager {
             capture_active: Arc::new(AtomicBool::new(false)),
             device_monitoring: Arc::new(AtomicBool::new(false)),
             last_output_device: Mutex::new(None),
+            output_worker: Mutex::new(None),
+            capture_worker: Mutex::new(None),
         }
     }
 
@@ -78,12 +83,11 @@ impl AudioManager {
         let mic_buf: RingBuffer = Arc::clone(&self.mic_buffer);
         let routing_flag: Arc<AtomicBool> = Arc::clone(&self.routing_active);
         let capture_flag: Arc<AtomicBool> = Arc::clone(&self.capture_active);
-        let cfg: Arc<Mutex<AudioMixConfig>> = Arc::new(Mutex::new(
-            self.config.lock().unwrap().clone(),
-        ));
+        let cfg: Arc<Mutex<AudioMixConfig>> =
+            Arc::new(Mutex::new(self.config.lock().unwrap().clone()));
 
         let dev = device_name.clone();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("wasapi-output-worker".into())
             .spawn(move || {
                 if let Err(e) = run_wasapi_output_loop(&dev, ring_buf, mic_buf, routing_flag, capture_flag, cfg) {
@@ -91,6 +95,9 @@ impl AudioManager {
                 }
             })
             .map_err(|e| format!("Gagal spawn WASAPI worker thread: {}", e))?;
+        
+        // Simpan handle supaya bisa di-join saat cleanup
+        *self.output_worker.lock().unwrap() = Some(handle);
 
         // Fase 2E: device hotplug monitor.
         *self.last_output_device.lock().unwrap() = Some(device_name.clone());
@@ -155,6 +162,23 @@ impl AudioManager {
         self.routing_active.store(false, Ordering::SeqCst);
         self.capture_active.store(false, Ordering::SeqCst);
         self.device_monitoring.store(false, Ordering::SeqCst);
+        
+        // Join worker threads yang sedang berjalan supaya benar-benar berhenti
+        // sebelum kita spawn thread baru
+        {
+            let mut w = self.output_worker.lock().unwrap();
+            if let Some(handle) = w.take() {
+                // Timeout 3 detik untuk graceful shutdown
+                let _ = handle.join();
+            }
+        }
+        {
+            let mut w = self.capture_worker.lock().unwrap();
+            if let Some(handle) = w.take() {
+                let _ = handle.join();
+            }
+        }
+        
         let mut buf = self.ring_buffer.lock().unwrap();
         buf.clear();
         let mut mic = self.mic_buffer.lock().unwrap();
@@ -167,7 +191,7 @@ impl AudioManager {
         let capture_flag: Arc<AtomicBool> = Arc::clone(&self.capture_active);
 
         let dev = device_name.clone();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("wasapi-capture-worker".into())
             .spawn(move || {
                 if let Err(e) = run_wasapi_capture_loop(&dev, mic_buf, capture_flag) {
@@ -175,6 +199,9 @@ impl AudioManager {
                 }
             })
             .map_err(|e| format!("Gagal spawn WASAPI capture worker thread: {}", e))?;
+        
+        // Simpan handle untuk graceful shutdown
+        *self.capture_worker.lock().unwrap() = Some(handle);
 
         eprintln!("[audio] WASAPI capture stream initialized from: {}", device_name);
         Ok(())
@@ -317,9 +344,11 @@ pub fn audio_enqueue(state: State<AudioManager>, pcm_chunk: Vec<i16>) {
 fn device_present_in_system(device_name: &str) -> bool {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
+    let target = device_name.to_lowercase();
     if let Ok(iter) = host.output_devices() {
         for d in iter {
-            if d.name().map(|n| n == device_name).unwrap_or(false) {
+            let name = d.name().unwrap_or_default().to_lowercase();
+            if name.contains(&target) || name.contains("cable input") {
                 return true;
             }
         }
@@ -348,8 +377,15 @@ fn run_wasapi_output_loop(
         .output_devices()
         .map_err(|e| format!("Gagal enumerasi output device: {}", e))
         .and_then(|mut iter| {
-            iter.find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
-                .ok_or_else(|| format!("Device tidak ditemukan: {}", device_name))
+            iter.find(|d| {
+                let name = d.name().unwrap_or_default().to_lowercase();
+                let target = device_name.to_lowercase();
+                name.contains(&target) || name.contains("cable input")
+            })
+                .ok_or_else(|| {
+                    eprintln!("[audio] Device tidak ditemukan: '{}' (mencari di daftar output device)", device_name);
+                    format!("Device tidak ditemukan: {}", device_name)
+                })
         })?;
 
     let sample_rate = 44100;
@@ -418,8 +454,15 @@ fn run_wasapi_capture_loop(
         .input_devices()
         .map_err(|e| format!("Gagal enumerasi input device: {}", e))
         .and_then(|mut iter| {
-            iter.find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
-                .ok_or_else(|| format!("Device tidak ditemukan: {}", device_name))
+            iter.find(|d| {
+                let name = d.name().unwrap_or_default().to_lowercase();
+                let target = device_name.to_lowercase();
+                name.contains(&target) || name.contains("microphone")
+            })
+                .ok_or_else(|| {
+                    eprintln!("[audio] Capture device tidak ditemukan: '{}'", device_name);
+                    format!("Device tidak ditemukan: {}", device_name)
+                })
         })?;
 
     let sample_rate = 44100;

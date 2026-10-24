@@ -48,7 +48,7 @@ export async function initAudioWorklet(force = false) {
   if (typeof SharedArrayBuffer === 'undefined') {
     _audioCfg.sab_supported = false;
     _audioCfg.worklet_ready = false;
-    eprintln('[audio] SharedArrayBuffer tidak tersedia — pakai fallback AudioBuffer export (Fase 2B)');
+    log('[audio] SharedArrayBuffer tidak tersedia — pakai fallback AudioBuffer export (Fase 2B)');
     return;
   }
 
@@ -59,7 +59,7 @@ export async function initAudioWorklet(force = false) {
     await ctx.audioWorklet.addModule('/mixer-processor.js');
     _audioCfg.sab_supported = true;
     _audioCfg.worklet_ready = true;
-    eprintln('[audio] AudioWorklet initialized (Fase 2D low-latency path)');
+    log('[audio] AudioWorklet initialized (Fase 2D low-latency path)');
   } catch (e) {
     _audioCfg.sab_supported = false;
     _audioCfg.worklet_ready = false;
@@ -199,10 +199,7 @@ export async function playSound(id) {
     }
     const source = ctx.createBufferSource();
     source.buffer = audioBuf;
-    source.connect(ctx.destination);
     source.onended = () => { if (currentSource === source) currentSource = null; };
-    source.start(0);
-    currentSource = source;
 
     // Fase 2B/2D dual-path — duplikat audio ke Rust WASAPI ring buffer
     // (ke CABLE Input / VB-Cable) bila routing aktif. playSound tetap pakai
@@ -213,18 +210,25 @@ export async function playSound(id) {
     // Rust ring buffer async.
     // Fase 2B (fallback): decode AudioBuffer → Int16Array → invoke('audio_enqueue')
     const cfg = getAudioConfig();
-    if (cfg.vb_cable_routing && cfg.worklet_ready) {
-      // Worklet path: connect source ke worklet node (input channel)
-      source.disconnect();
+    if (cfg.vb_cable_routing && cfg.worklet_ready && workletNode) {
+      // Worklet path: connect source ke worklet node (input channel) dan
+      // destination (monitor) SEBELUM start() supaya worklet benar-benar
+      // menangkap audio.
+      source.connect(workletNode);
       source.connect(ctx.destination); // monitor lokal
-      if (workletNode) source.connect(workletNode);
-    } else if (cfg.vb_cable_routing) {
-      // Fallback Fase 2B: export full buffer via invoke (10-50ms latency)
-      const ch = audioBuf.getChannelData(0);
-      const i16 = new Int16Array(ch.length);
-      for (let i = 0; i < ch.length; i++) i16[i] = Math.max(-1, Math.min(1, ch[i])) * 0x7FFF;
-      invoke('audio_enqueue', { pcm_chunk: Array.from(i16) }).catch(() => {});
+    } else {
+      // Fallback: connect langsung ke destination untuk monitor
+      source.connect(ctx.destination);
+      if (cfg.vb_cable_routing) {
+        // Fallback Fase 2B: export full buffer via invoke (10-50ms latency)
+        const ch = audioBuf.getChannelData(0);
+        const i16 = new Int16Array(ch.length);
+        for (let i = 0; i < ch.length; i++) i16[i] = Math.max(-1, Math.min(1, ch[i])) * 0x7FFF;
+        invoke('audio_enqueue', { pcm_chunk: Array.from(i16) }).catch(() => {});
+      }
     }
+    source.start(0);
+    currentSource = source;
 
     log('[soundboard] memutar: ' + label, 'ok');
   } catch (e) {
