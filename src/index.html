@@ -177,6 +177,7 @@
                     <option value="3" data-i18n="editor.type.3">TEXT — teks panjang</option>
                     <option value="4" data-i18n="editor.type.4">CONSUMER — media/volume</option>
                     <option value="5" data-i18n="editor.type.5">APP — buka aplikasi (via companion)</option>
+                    <option value="6" data-i18n="editor.type.6">SOUND — putar suara (via companion)</option>
                   </select>
                 </div>
                 <div class="row">
@@ -210,6 +211,15 @@
                     </label>
                   </div>
                   <div class="hint" data-i18n="appPicker.hint">Aksi APP dibuka oleh companion app di PC (jalan di tray). Kalau app ini tidak berjalan, device otomatis mengetik nama aplikasi lewat Windows Search.</div>
+                </div>
+                <div id="soundPicker" style="display:none;">
+                  <div class="row">
+                    <input type="text" id="soundSearch" data-i18n-attr="placeholder:soundPicker.searchPlaceholder" placeholder="Cari suara...">
+                    <button class="small" id="btnPickSoundFiles" data-i18n="soundPicker.pickFiles">+ Pilih file</button>
+                    <button class="small" id="btnPickSoundFolder" data-i18n="soundPicker.pickFolder"><svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18v2H3zM5 10h14l-1 8H6l-1-8zM9 14v3M15 14v3"/></svg> Folder</button>
+                  </div>
+                  <div class="app-list" id="soundList"></div>
+                  <div class="hint" data-i18n="soundPicker.hint">Suara diputar via companion app ke sistem audio default. Dapat ditangkap Discord, aplikasi streaming, dsb.</div>
                 </div>
                 <div class="hint" id="recordHint" data-i18n="editor.recordHint">Merekam otomatis: tekan tombol fisik langsung, tiap tombol digabung dengan "+". Backspace = hapus token terakhir, Delete = hapus semua. Tombol media (volume/play) langsung terdeteksi.</div>
                 <div class="row" style="margin-top:12px;">

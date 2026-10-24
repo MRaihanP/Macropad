@@ -2,7 +2,7 @@
   --bg: #12151a; --panel: #1a1e25; --panel-hi: #232830; --line: #2b313c;
   --text: #e7ebf0; --muted: #8b93a1; --accent: #4ecdc4; --accent-dim: #2f7a74;
   --err: #e8604c;
-  --type-key: #4ecdc4; --type-combo: #f2a154; --type-text: #7c9cf2; --type-consumer: #c792ea; --type-app: #86d0a0;
+  --type-key: #4ecdc4; --type-combo: #f2a154; --type-text: #7c9cf2; --type-consumer: #c792ea; --type-app: #86d0a0; --type-sound: #ff9f70;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -140,8 +140,9 @@ body.no-select { user-select: none; -webkit-user-select: none; }
 .cell.type-text { border-left: 3px solid var(--type-text); }
 .cell.type-consumer { border-left: 3px solid var(--type-consumer); }
 .cell.type-app { border-left: 3px solid var(--type-app); }
+.cell.type-sound { border-left: 3px solid var(--type-sound); }
 .cell.empty.type-key, .cell.empty.type-combo, .cell.empty.type-text, .cell.empty.type-consumer,
-.cell.empty.type-app { border-left-color: var(--line); }
+.cell.empty.type-app, .cell.empty.type-sound { border-left-color: var(--line); }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
 .log { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); white-space: pre-wrap;
@@ -159,6 +160,7 @@ body.no-select { user-select: none; -webkit-user-select: none; }
 .enc-row.type-text { border-left-color: var(--type-text); }
 .enc-row.type-consumer { border-left-color: var(--type-consumer); }
 .enc-row.type-app { border-left-color: var(--type-app); }
+.enc-row.type-sound { border-left-color: var(--type-sound); }
 .enc-row.empty { border-left-color: var(--line); opacity: 0.7; }
 .enc-row .label { font-size: 0.76rem; color: var(--muted); }
 .enc-row .val { font-family: var(--mono); font-size: 0.85rem; }
@@ -197,6 +199,30 @@ input[readonly] { color: var(--accent); cursor: default; }
 .app-ttl { display: flex; align-items: center; gap: 8px; margin: 0; }
 .app-ttl select { flex: none; min-width: 0; padding: 4px 8px; font-size: 0.74rem; }
 .app-row { display: flex; gap: 4px; flex: 0 0 auto; align-items: stretch; }
+
+/* Sound picker (aksi SOUND) */
+#soundPicker { margin-bottom: 8px; }
+#soundPicker .row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+#soundPicker .row input[type="text"] { flex: 1 1 auto; min-width: 120px; padding: 4px 8px; font-size: 0.8rem; }
+#soundSearch { background: var(--panel-hi); border: 1px solid var(--line); border-radius: 6px; color: var(--text); }
+#soundList::-webkit-scrollbar { width: 6px; }
+#soundPicker.dragover { border: 2px dashed var(--accent); background: rgba(78,204,160,0.08); }
+
+/* Sound list item (mirip .app-item tapi lebih ringkas) */
+.sound-row { display: flex; gap: 4px; align-items: stretch; }
+.sound-item { flex: 1 1 auto; min-height: 26px; min-width: 0; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  padding: 4px 10px; font-size: 0.8rem; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--text); }
+.sound-item:hover { background: var(--panel-hi); border-color: var(--line); }
+.sound-item.active { background: var(--type-sound); color: #fff; border-color: var(--type-sound); }
+.sound-play { flex: none; width: 26px; padding: 0 6px; font-size: 0.7rem;
+  background: var(--panel-hi); border: 1px solid var(--line); border-radius: 6px; }
+.sound-play:hover { background: var(--line); }
+.sound-rename { width: 26px; padding: 0 4px; font-size: 0; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--muted); }
+.sound-rename:hover { background: var(--panel-hi); border-color: var(--line); color: var(--text); }
+.sound-delete { width: 26px; padding: 0 4px; font-size: 0; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--muted); }
+.sound-delete:hover { background: var(--err); border-color: var(--err); color: #fff; }
 .app-del { flex: none; padding: 0 9px; color: var(--muted); background: transparent; border-color: transparent; }
 .app-del:hover { color: var(--err); border-color: var(--err); }
 

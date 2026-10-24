@@ -54,6 +54,7 @@ export const en = {
 'editor.type.3': 'TEXT — long text',
 'editor.type.4': 'CONSUMER — media/volume',
 'editor.type.5': 'APP — launch an app (via companion)',
+'editor.type.6': 'SOUND — play a sound (via companion)',
 'editor.valuePlaceholder': 'e.g. a / CTRL+C / hello world',
 'editor.consumer.VOLUP': 'Vol +',
 'editor.consumer.VOLDOWN': 'Vol −',
@@ -71,6 +72,10 @@ export const en = {
 'appPicker.rescanEvery': 'Rescan every',
 'appPicker.days': '{n} days',
 'appPicker.hint': 'APP actions are executed by the companion app on this PC (runs in the tray). If it is not running, the device types the app name via Windows Search instead.',
+'soundPicker.searchPlaceholder': 'Search sounds...',
+'soundPicker.pickFiles': '+ Pick files',
+'soundPicker.pickFolder': 'Folder',
+'soundPicker.hint': 'Sounds are played by the companion app to the default system audio device. Can be captured by Discord, streaming apps, etc.',
 
 // ---- Halaman Adaptive Key Bind ----
 'adaptive.subtitle': 'Switch presets automatically when a given app becomes the active window.',
@@ -249,6 +254,7 @@ export const en = {
 'editor.prefixEnc': 'Encoder — ',
 'editor.phText': 'type text here',
 'editor.phApp': 'pick an app from the list below',
+'editor.phSound': 'pick a sound from the list below',
 'editor.phCapture': 'press the physical keys...',
 'editor.empty': 'empty',
 'layer.n': 'Layer {n}',
@@ -258,6 +264,8 @@ export const en = {
 'parser.dumpInvalid': '[ERROR] Invalid DUMP line, skipped: {line}',
 'parser.namesInvalid': '[ERROR] Invalid NAMES line, skipped: {line}',
 'parser.appError': '[ERROR] {err}',
+'parser.soundTrigger': '[SOUND] Playing: {id}',
+'parser.soundError': '[SOUND] Error: {err}',
 'notif.overlayError': '[ERROR] Overlay: {err}',
 'app.openAction': 'Open {name}',
 
@@ -448,6 +456,7 @@ export const en = {
 'editor.prefixEnc': 'Encoder - ',
 'editor.phText': 'type text here',
 'editor.phApp': 'pick an app from the list below',
+'editor.phSound': 'pick a sound from the list below',
 'editor.phCapture': 'press the physical keys...',
 'editor.empty': 'empty',
 'layer.n': 'Layer {n}',
@@ -456,6 +465,8 @@ export const en = {
 'parser.dumpInvalid': '[ERROR] Invalid DUMP line, skipped: {line}',
 'parser.namesInvalid': '[ERROR] Invalid NAMES line, skipped: {line}',
 'parser.appError': '[ERROR] {err}',
+'parser.soundTrigger': '[SOUND] Playing: {id}',
+'parser.soundError': '[SOUND] Error: {err}',
 'notif.overlayError': '[ERROR] Overlay: {err}',
 'app.openAction': 'Open {name}',
 

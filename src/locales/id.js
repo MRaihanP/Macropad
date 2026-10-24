@@ -51,6 +51,7 @@ export const id = {
 'editor.type.3': 'TEXT — teks panjang',
 'editor.type.4': 'CONSUMER — media/volume',
 'editor.type.5': 'APP — buka aplikasi (via companion)',
+'editor.type.6': 'SOUND — putar suara (via companion)',
 'editor.valuePlaceholder': 'mis. a / CTRL+C / hello world',
 'editor.consumer.VOLUP': 'Vol +',
 'editor.consumer.VOLDOWN': 'Vol −',
@@ -68,6 +69,10 @@ export const id = {
 'appPicker.rescanEvery': 'Pindai ulang tiap',
 'appPicker.days': '{n} hari',
 'appPicker.hint': 'Aksi APP dibuka oleh companion app di PC (jalan di tray). Kalau app ini tidak berjalan, device otomatis mengetik nama aplikasi lewat Windows Search.',
+'soundPicker.searchPlaceholder': 'Cari suara...',
+'soundPicker.pickFiles': '+ Pilih file',
+'soundPicker.pickFolder': 'Folder',
+'soundPicker.hint': 'Suara diputar via companion app ke sistem audio default. Dapat ditangkap Discord, aplikasi streaming, dsb.',
 
 // ---- Halaman Adaptive Key Bind ----
 'adaptive.subtitle': 'Pindah preset otomatis saat aplikasi tertentu jadi window aktif.',
@@ -246,6 +251,7 @@ export const id = {
 'editor.prefixEnc': 'Encoder — ',
 'editor.phText': 'ketik teks di sini',
 'editor.phApp': 'pilih aplikasi dari daftar di bawah',
+'editor.phSound': 'pilih suara dari daftar di bawah',
 'editor.phCapture': 'tekan tombol fisik...',
 'editor.empty': 'kosong',
 'layer.n': 'Layer {n}',
@@ -255,6 +261,8 @@ export const id = {
 'parser.dumpInvalid': '[ERROR] Baris DUMP tidak valid, dilewati: {line}',
 'parser.namesInvalid': '[ERROR] Baris NAMES tidak valid, dilewati: {line}',
 'parser.appError': '[ERROR] {err}',
+'parser.soundTrigger': '[SOUND] Memutar: {id}',
+'parser.soundError': '[SOUND] Error: {err}',
 'notif.overlayError': '[ERROR] Overlay: {err}',
 'app.openAction': 'Open {name}',
 
@@ -445,6 +453,7 @@ export const id = {
 'editor.prefixEnc': 'Encoder - ',
 'editor.phText': 'ketik teks di sini',
 'editor.phApp': 'pilih aplikasi dari daftar di bawah',
+'editor.phSound': 'pilih suara dari daftar di bawah',
 'editor.phCapture': 'tekan tombol fisik...',
 'editor.empty': 'kosong',
 'layer.n': 'Layer {n}',
@@ -453,6 +462,8 @@ export const id = {
 'parser.dumpInvalid': '[ERROR] Baris DUMP tidak valid, dilewati: {line}',
 'parser.namesInvalid': '[ERROR] Baris NAMES tidak valid, dilewati: {line}',
 'parser.appError': '[ERROR] {err}',
+'parser.soundTrigger': '[SOUND] Memutar: {id}',
+'parser.soundError': '[SOUND] Error: {err}',
 'notif.overlayError': '[ERROR] Overlay: {err}',
 'app.openAction': 'Open {name}',
 

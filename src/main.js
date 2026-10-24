@@ -47,6 +47,8 @@ import { showModalBase, showPromptModal, showConfirmModal, clipUtf8 } from "./ui
 import { switchPage, initSidebar, initRouter } from "./ui-router.js";
 // Picker aplikasi (dipakai juga oleh home-page untuk binding bertipe APP).
 import { initAppPicker } from "./app-picker.js";
+// Soundboard: manajemen suara + Web Audio API playback engine.
+import { initSoundPicker } from "./soundboard.js";
 // Halaman Home: tab layer, grid tombol, daftar knob, panel editor, rekam keyboard.
 // Ketiganya satu modul karena saling memanggil (klik sel -> openEditor -> rekam;
 // tab -> switchLayer -> loadLayer -> renderGrid); dipisah akan muncul siklus import.
@@ -137,6 +139,7 @@ initSidebar();
 initHomePage({ markDirty: () => { dirty = true; } });
 initEditorPanel();
 initAppPicker();
+initSoundPicker();
 
 // Tray & autostart. initTray() menyuntikkan flag "belum tersimpan" supaya modul tray
 // tidak perlu menyimpan salinannya.
@@ -436,8 +439,14 @@ el('btnApply').onclick = async () => {
   if (!selected) return;
   stopRecordingContinuous();
   dirty = true;
-  const type = TYPE_NAMES[parseInt(el('editType').value)];
-  const value = el('editValue').value;
+  let type = TYPE_NAMES[parseInt(el('editType').value)];
+  let value = el('editValue').value;
+  // Type SOUND (6) dikonversi ke APP (5) + prefix "SOUND:" di value.
+  // Firmware tidak perlu tahu; device kirim EVT:APP:SOUND:<id> yang ditangkap.
+  if (parseInt(el('editType').value) === 6) {
+    type = 'APP';
+    if (!value.startsWith('SOUND:')) value = 'SOUND:' + value;
+  }
   if (selected.kind === 'key') {
     await sendLine(`SET:${currentLayer}:${selected.r}:${selected.c}:${type}:${value}`);
     setTimeout(() => loadLayer(currentLayer), 300);

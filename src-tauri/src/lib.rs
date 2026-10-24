@@ -474,6 +474,240 @@ async fn launch_app(app: tauri::AppHandle, name: String) -> Result<String, Strin
         .map_err(|e| e.to_string())?
 }
 
+// ==================== SOUND BOARD ====================
+// Soundboard: file audio disimpan di app_data_dir/sounds/ + metadata di
+// sounds.json. Frontend baca file sebagai bytes via soundboard_read, decode
+// & putar lewat Web Audio API (output ke system default audio device).
+//
+// Trigger: firmware kirim EVT:APP:SOUND:<id>, protocol-parser arahkan ke
+// playSound(). Firmware tidak perlu tahu tentang soundboard (pakai type APP).
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct SoundEntry {
+    id: String,
+    name: String,
+    rel_path: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    duration_ms: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct SoundData { sounds: Vec<SoundEntry> }
+
+#[derive(Serialize, Clone)]
+struct SoundView { sounds: Vec<SoundEntry> }
+
+#[derive(Serialize)]
+struct SoundBytes { id: String, data: Vec<u8> }
+
+fn sounds_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("sounds.json"))
+}
+
+fn sounds_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("sounds"))
+}
+
+fn load_sounds(app: &tauri::AppHandle) -> SoundData {
+    match sounds_path(app) {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => SoundData::default(),
+        },
+        None => SoundData::default(),
+    }
+}
+
+fn save_sounds(app: &tauri::AppHandle, d: &SoundData) -> Result<(), String> {
+    let p = sounds_path(app).ok_or("path app data tidak tersedia")?;
+    if let Some(dir) = p.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+    let s = serde_json::to_string(d).map_err(|e| e.to_string())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+fn sound_id() -> String {
+    format!("snd_{}_{}", now_secs(), (nonce_u64() % 100000))
+}
+
+fn nonce_u64() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
+fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, String> {
+    let dir = sounds_dir(app).ok_or("gagal dapatkan folder sounds")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+    let mut rel = format!("{}.{}", stem, ext);
+    let mut dest = dir.join(&rel);
+    let mut counter = 1;
+    while dest.exists() {
+        rel = format!("{}_{}.{}", stem, counter, ext);
+        dest = dir.join(&rel);
+        counter += 1;
+    }
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    // --- PATCH: Auto-numbering jika nama suara sudah ada di metadata ---
+    let existing = load_sounds(app);
+    let mut sound_name = stem.to_string();
+    let mut counter = 1;
+    loop {
+        if !existing.sounds.iter().any(|e| e.name == sound_name) {
+            break;
+        }
+        if counter > 999 { break; } // safety limit
+        sound_name = format!("{}_{}", stem, counter);
+        counter += 1;
+    }
+    Ok(SoundEntry {
+            // --- PATCH: Gunakan nama file (auto-numbering) sebagai ID ---
+            id: sound_name.clone(),
+            name: sound_name,
+        rel_path: rel,
+        size,
+        duration_ms: 0,
+    })
+}
+
+const AUDIO_EXTS: &[&str] = &["wav", "mp3", "ogg", "m4a", "flac", "aiff", "aif"];
+
+fn collect_audio(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_audio(&path, out);
+            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if AUDIO_EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn soundboard_list(app: tauri::AppHandle) -> SoundView {
+    SoundView { sounds: load_sounds(&app).sounds }
+}
+
+#[tauri::command]
+async fn soundboard_pick_files(app: tauri::AppHandle) -> Result<Vec<SoundEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SoundEntry>, String> {
+        let picked = app
+            .dialog()
+            .file()
+            .add_filter("Audio files", AUDIO_EXTS)
+            .blocking_pick_files();
+        let Some(files) = picked else { return Ok(Vec::new()) };
+        let mut data = load_sounds(&app);
+        let mut imported = Vec::new();
+        for fp in files {
+            let path = fp.into_path().map_err(|e| e.to_string())?;
+            match import_sound_file(&app, &path) {
+                Ok(entry) => { data.sounds.push(entry.clone()); imported.push(entry); }
+                Err(e) => eprintln!("[soundboard] gagal import {}: {}", path.display(), e),
+            }
+        }
+        if let Err(e) = save_sounds(&app, &data) {
+            eprintln!("[soundboard] gagal simpan: {}", e);
+        }
+        Ok(imported)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn soundboard_pick_folder(app: tauri::AppHandle) -> Result<Vec<SoundEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SoundEntry>, String> {
+        let picked = app.dialog().file().blocking_pick_folder();
+        let Some(fp) = picked else { return Ok(Vec::new()) };
+        let folder = fp.into_path().map_err(|e| e.to_string())?;
+        let mut files = Vec::new();
+        collect_audio(&folder, &mut files);
+        files.sort();
+        let mut data = load_sounds(&app);
+        let mut imported = Vec::new();
+        for f in files {
+            match import_sound_file(&app, &f) {
+                Ok(entry) => { data.sounds.push(entry.clone()); imported.push(entry); }
+                Err(e) => eprintln!("[soundboard] gagal import {}: {}", f.display(), e),
+            }
+        }
+        if let Err(e) = save_sounds(&app, &data) {
+            eprintln!("[soundboard] gagal simpan: {}", e);
+        }
+        Ok(imported)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn soundboard_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dir = sounds_dir(&app).ok_or("gagal dapatkan folder sounds")?;
+    let mut data = load_sounds(&app);
+    let len = data.sounds.len();
+    data.sounds.retain(|s| {
+        if s.id == id {
+            let fpath = dir.join(&s.rel_path);
+            if let Err(e) = std::fs::remove_file(&fpath) {
+                eprintln!("[soundboard] gagal hapus {}: {}", fpath.display(), e);
+            }
+            false
+        } else { true }
+    });
+    if data.sounds.len() == len {
+        return Err(format!("suara \"{}\" tidak ditemukan", id));
+    }
+    save_sounds(&app, &data)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn soundboard_read(app: tauri::AppHandle, id: String) -> Result<SoundBytes, String> {
+    let dir = sounds_dir(&app).ok_or("gagal dapatkan folder sounds")?;
+    let data = load_sounds(&app);
+    let entry = data.sounds.iter().find(|s| s.id == id)
+        .ok_or(format!("suara \"{}\" tidak ditemukan", id))?;
+    let fpath = dir.join(&entry.rel_path);
+    let bytes = std::fs::read(&fpath)
+        .map_err(|e| format!("gagal baca {}: {}", fpath.display(), e))?;
+    Ok(SoundBytes { id: entry.id.clone(), data: bytes })
+}
+
+#[tauri::command]
+fn soundboard_rename(app: tauri::AppHandle, id: String, new_name: String) -> Result<(), String> {
+    let mut data = load_sounds(&app);
+    let idx = data.sounds.iter().position(|s| s.id == id)
+        .ok_or(format!("suara \"{}\" tidak ditemukan", id))?;
+    // --- PATCH: Auto-numbering bila nama baru bentrok ---
+    let final_name = if data.sounds.iter().enumerate().any(|(i, s)| s.id != id && s.name == new_name) {
+        let stem = new_name.clone();
+        let mut counter = 1;
+        loop {
+            let candidate = format!("{}_{}", stem, counter);
+            if !data.sounds.iter().any(|s| s.id != id && s.name == candidate) {
+                break candidate;
+            }
+            counter += 1;
+        }
+    } else {
+        new_name
+    };
+    data.sounds[idx].name = final_name;
+    save_sounds(&app, &data)?;
+    Ok(())
+}
+
 // ==================== TRAY ====================
 const MAIN_WINDOW: &str = "main";
 
@@ -1312,6 +1546,12 @@ pub fn run() {
             apps_add_custom,
             apps_remove_custom,
             launch_app,
+            soundboard_list,
+            soundboard_pick_files,
+            soundboard_pick_folder,
+            soundboard_delete,
+            soundboard_read,
+            soundboard_rename,
             show_main_window,
             hide_to_tray,
             quit_app,

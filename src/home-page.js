@@ -17,6 +17,7 @@ import {
 import { el, escapeHtml } from './dom.js';
 import { sendLine } from './transport.js';
 import { openAppPicker } from './app-picker.js';
+import { openSoundPicker } from './soundboard.js';
 import { t } from './i18n.js';
 
 // Nilai di sini adalah KUNCI tabel i18n; diterjemahkan saat pemakaian,
@@ -219,6 +220,15 @@ async function moveLayerTo(srcIndex, targetIndex) {
 }
 
 // ==================== GRID & DAFTAR KNOB ====================
+
+/// Display type untuk cell rendering. Binding SOUND disimpan di device sebagai
+/// APP (type 5), tapi value diawali "SOUND:" — tampilkan sebagai "SOUND".
+function displayType(data) {
+  if (!data || data.type === 0) return 'NONE';
+  if (data.type === 5 && data.value && data.value.startsWith('SOUND:')) return 'SOUND';
+  return TYPE_NAMES[data.type];
+}
+
 export function renderGrid() {
   const grid = el('grid');
   grid.style.gridTemplateColumns = 'repeat(' + COLS + ', 1fr)';
@@ -226,13 +236,14 @@ export function renderGrid() {
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
     const data = mapping[currentLayer][r][c];
     const isEmpty = !data || data.type === 0;
-    const typeClass = 'type-' + (data ? TYPE_NAMES[data.type] : 'NONE').toLowerCase();
+    const dt = displayType(data);
+    const typeClass = 'type-' + dt.toLowerCase();
     const cell = document.createElement('div');
     cell.className = 'cell' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
-    cell.innerHTML = `<div class="type">R${r}C${c} · ${data ? TYPE_NAMES[data.type] : '...'}</div>
-                       <div class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</div>`;
+    cell.innerHTML = `<div class="type">R${r}C${c} · ${dt}</div>` +
+                     `<div class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</div>`;
     const label = t('grid.cellLabel', { r: r + 1, c: c + 1 }) +
-      (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : t('editor.empty'));
+      (data && data.type !== 0 ? data.value || dt : t('editor.empty'));
     makeInteractive(cell, () => openEditor('key', { r, c }), label);
     grid.appendChild(cell);
   }
@@ -251,12 +262,13 @@ export function renderEncoderList() {
     ['CW', 'CCW', 'BTN'].forEach(which => {
       const data = (encConfig[i] || {})[which];
       const isEmpty = !data || data.type === 0;
-      const typeClass = 'type-' + (data ? TYPE_NAMES[data.type] : 'NONE').toLowerCase();
+      const dt = displayType(data);
+      const typeClass = 'type-' + dt.toLowerCase();
       const row = document.createElement('div');
       row.className = 'enc-row' + (isEmpty ? ' empty' : '') + ' ' + typeClass;
       row.innerHTML = `<span class="label">${t(ENC_LABELS[which])}</span><span class="val">${data ? (isEmpty ? '—' : escapeHtml(data.value)) : '...'}</span>`;
       const label = (NUM_ENCODERS > 1 ? t('enc.knobLabel', { n: i + 1 }) : '') +
-        t(ENC_LABELS[which]) + ': ' + (data && data.type !== 0 ? data.value || TYPE_NAMES[data.type] : t('editor.empty'));
+        t(ENC_LABELS[which]) + ': ' + (data && data.type !== 0 ? data.value || dt : t('editor.empty'));
       makeInteractive(row, () => openEditor('enc', { idx: i, which }), label);
       list.appendChild(row);
     });
@@ -267,12 +279,15 @@ export function renderEncoderList() {
 export function updateEditorFieldsVisibility() {
   const type = parseInt(el('editType').value);
   const isCaptureType = (type === 1 || type === 2 || type === 4);
-  el('editValue').style.display = (type >= 1 && type <= 5) ? 'block' : 'none';
-  el('editValue').readOnly = isCaptureType || type === 5;
+  el('editValue').style.display = (type >= 1 && type <= 6) ? 'block' : 'none';
+  el('editValue').readOnly = isCaptureType || type === 5 || type === 6;
   el('editValue').placeholder = type === 3 ? t('editor.phText')
-    : (type === 5 ? t('editor.phApp') : (isCaptureType ? t('editor.phCapture') : ''));
+    : (type === 5 ? t('editor.phApp')
+    : (type === 6 ? t('editor.phSound')
+    : (isCaptureType ? t('editor.phCapture') : '')));
   el('consumerButtons').style.display = (type === 4) ? 'flex' : 'none';
   el('appPicker').style.display = (type === 5) ? 'block' : 'none';
+  el('soundPicker').style.display = (type === 6) ? 'block' : 'none';
   document.querySelectorAll('#consumerButtons button').forEach(b => b.classList.toggle('active', b.dataset.val === el('editValue').value));
 }
 
@@ -287,7 +302,10 @@ export function openEditor(kind, params) {
     const prefix = NUM_ENCODERS > 1 ? t('editor.prefixKnob', { idx: params.idx }) : t('editor.prefixEnc');
     el('editTitle').textContent = t('editor.titleEnc', { prefix, label: t(ENC_LABELS[params.which]) });
   }
-  el('editType').value = data.type;
+  // Binding SOUND (type 5 + value "SOUND:") ditampilkan sebagai type 6 di editor.
+  let displayTypeVal = data.type;
+  if (data.type === 5 && data.value && data.value.startsWith('SOUND:')) displayTypeVal = 6;
+  el('editType').value = displayTypeVal;
   el('editValue').value = data.type === 0 ? '' : data.value;
   recordTokens = data.value ? data.value.split('+') : [];
   updateEditorFieldsVisibility();
@@ -297,6 +315,7 @@ export function openEditor(kind, params) {
   const type = parseInt(el('editType').value);
   if (type === 1 || type === 2 || type === 4) startRecordingContinuous(); else stopRecordingContinuous();
   if (type === 5) openAppPicker();
+  if (type === 6) openSoundPicker();
 }
 
 // Baca isi layer l ke UI TANPA memindahkan layer aktif device.
@@ -431,6 +450,7 @@ export function initEditorPanel() {
     updateEditorFieldsVisibility();
     if (type === 1 || type === 2 || type === 4) startRecordingContinuous(); else stopRecordingContinuous();
     if (type === 5) openAppPicker();
+    if (type === 6) openSoundPicker();
   };
 
   document.querySelectorAll('#consumerButtons button').forEach(b => {

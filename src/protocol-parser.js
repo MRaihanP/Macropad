@@ -40,6 +40,7 @@ import {
 } from './transport.js';
 import { handleRgbLine } from './rgb-page.js';
 import { reportPong } from './pong-probe.js';
+import { playSound } from './soundboard.js';
 import { battUI, setBatteryFromKv, setChargeState, markBatterySimulated } from './battery-ui.js';
 import {
   suppressDeviceEcho, activePresetName, activePresetLayers,
@@ -212,6 +213,14 @@ function handleRealtimeLine(line) {
   if (line.startsWith('EVT:APP:')) {
     if (eventsSuppressed()) { log(t('parser.staleEvent')); return; }
     const name = line.substring(8);
+    // Prefix "SOUND:" pada value APP berarti trigger soundboard, bukan launch_app.
+    if (name.startsWith('SOUND:')) {
+      const soundId = name.substring(6);
+      playSound(soundId)
+        .then(() => log(t('parser.soundTrigger', { id: soundId }), 'ok'))
+        .catch(e => log(t('parser.soundError', { err: e }), 'err'));
+      return;
+    }
     invoke('launch_app', { name })
       .then(n => log(t('parser.appOpening', { name: n }), 'ok'))
       .catch(e => log(t('parser.appError', { err: e }), 'err'));
