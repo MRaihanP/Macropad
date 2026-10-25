@@ -531,10 +531,12 @@ fn save_sounds(app: &tauri::AppHandle, d: &SoundData) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 fn sound_id() -> String {
     format!("snd_{}_{}", now_secs(), (nonce_u64() % 100000))
 }
 
+#[allow(dead_code)]
 fn nonce_u64() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
 }
@@ -690,7 +692,7 @@ fn soundboard_rename(app: tauri::AppHandle, id: String, new_name: String) -> Res
     let idx = data.sounds.iter().position(|s| s.id == id)
         .ok_or(format!("suara \"{}\" tidak ditemukan", id))?;
     // --- PATCH: Auto-numbering bila nama baru bentrok ---
-    let final_name = if data.sounds.iter().enumerate().any(|(i, s)| s.id != id && s.name == new_name) {
+    let final_name = if data.sounds.iter().enumerate().any(|(_i, s)| s.id != id && s.name == new_name) {
         let stem = new_name.clone();
         let mut counter = 1;
         loop {

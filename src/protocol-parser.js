@@ -253,6 +253,13 @@ function handleRealtimeLine(line) {
     if (n !== currentLayer && applyLayerEvent(n)) {
       // Device sudah pindah layer dengan sendirinya (long-press knob), jadi jangan
       // kirim LAYER: balik - cukup baca isinya.
+      // Notifikasi floating: beri tahu user layer berubah via hardware.
+      // Format: "{presetName} · {layerName}" — konsisten dengan notifikasi di key handler.
+      const ap = activePresetName();
+      const apLayers = activePresetLayers();
+      const pname = ap ? (typeof ap === 'string' ? ap : (ap.name || ap.code || ap)) : 'Default';
+      const lname = (apLayers ? apLayers[n]?.name : layerNames[n]) || ('Layer ' + n);
+      hooks.notify(t('parser.layerNotif', { from: pname, to: lname }), 'layer');
       hooks.renderTabs();
       hooks.loadLayer(n);
     }

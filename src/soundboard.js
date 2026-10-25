@@ -218,7 +218,7 @@ export function renderSoundPicker() {
     // --- Tombol delete ---
     const db = document.createElement('button');
     db.className = 'sound-delete small';
-    db.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 9 12 3 18"/><line x1="17" y1="6" x2="21" y2="6"/><polyline points="9 12l9 0"/><line x1="17" y1="18" x2="21" y2="18"/></svg>';
+    db.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 9 12 3 18"/><line x1="17" y1="6" x2="21" y2="6"/><polyline points="12 6 12 18"/><line x1="17" y1="18" x2="21" y2="18"/></svg>';
     db.title = 'Hapus';
     db.onclick = async (e) => {
       e.stopPropagation();
