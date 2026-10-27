@@ -132,36 +132,42 @@ impl MicProcessor {
             }
         }
 
-        // 2. Noise gate (soft-knee dengan attack/release envelope)
+        // 2. Noise gate (hard gate dengan hysteresis)
         if pre.noise_gate_enabled {
             let threshold_lin = Self::db_to_linear(pre.noise_gate_threshold);
             let rms_now = Self::rms(samples);
-            // Gain reduction: di bawah threshold, attenuasi progresif.
-            // ratio=10 berarti: 10dB di bawah threshold → gain ≈ 0.1
-            let db_over = 20.0 * (rms_now / threshold_lin).log10();
-            let target_gain = if db_over >= 0.0 {
-                1.0
+            // Hysteresis: gunakan threshold yang sedikit lebih tinggi untuk
+            // membuka gate dan lebih rendah untuk menutup — mencegah flapping
+            // pada noise floor yang rapuh (mis. gemerisik kabel).
+            let open_threshold = threshold_lin;
+            let close_threshold = threshold_lin * 0.5; // 6dB lebih rendah
+            // Attack/release envelope — transisi mulus antara open/close.
+            let target_gain = if rms_now > open_threshold {
+                1.0 // sinyal jelas → gate terbuka penuh
+            } else if rms_now < close_threshold {
+                0.0 // di bawah hysteresis → gate tertutup total
             } else {
-                let reduction_db = db_over * (pre.noise_gate_ratio.max(1.0) / 10.0).clamp(0.0, 1.0);
-                Self::db_to_linear(reduction_db)
+                // Zona hysteresis: pertahankan state gate lama (hold).
+                self.gate_gain
             };
-            // Attack/release smoothing berdasarkan sample rate.
-            // attack_ms=5, release_ms=30 pada 48kHz.
-            let attack_coef = (pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
-            let release_coef = (pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
-            let coef = if target_gain > self.gate_gain {
-                1.0 / attack_coef // attack cepat
+            // Smoothing: attack cepat, release lambat.
+            let attack_step = (pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
+            let release_step = (pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
+            let step = if target_gain > self.gate_gain {
+                1.0 / attack_step // attack cepat (gate terbuka)
+            } else if target_gain < self.gate_gain {
+                1.0 / release_step // release lambat (gate menutup)
             } else {
-                1.0 / release_coef // release lambat
+                0.5 // pertahankan
             };
-            self.gate_gain = self.gate_gain + coef * (target_gain - self.gate_gain);
-            if self.gate_gain > 0.0 {
+            self.gate_gain = (self.gate_gain + step * (target_gain - self.gate_gain)).clamp(0.0, 1.0);
+            // Jika gate_gain sangat kecil (di bawah 1%), anggap tertutup total.
+            if self.gate_gain < 0.01 {
+                samples.fill(0.0);
+            } else {
                 for s in samples.iter_mut() {
                     *s *= self.gate_gain;
                 }
-            } else {
-                // Gate tertutup total → silence agar tidak ada noise bleed.
-                samples.fill(0.0);
             }
         }
 
