@@ -91,7 +91,9 @@ pub struct MixerSettings {
 #[derive(Clone)]
 pub struct MicProcessor {
     settings: MicSettings,
-    /// State untuk noise gate envelope (attack/release smoothing).
+    /// RMS envelope untuk noise gate (attack/release smoothing).
+    rms_envelope: f32,
+    /// State gain gate terakhir (untuk UI visualisasi).
     gate_gain: f32,
 }
 
@@ -99,6 +101,7 @@ impl MicProcessor {
     pub fn new(settings: MicSettings) -> Self {
         Self {
             settings,
+            rms_envelope: 0.0,
             gate_gain: 0.0, // mulai di muted (noise floor)
         }
     }
@@ -132,43 +135,34 @@ impl MicProcessor {
             }
         }
 
-        // 2. Noise gate (hard gate dengan hysteresis)
+        // 2. Noise gate (envelope follower + hard gate)
         if pre.noise_gate_enabled {
             let threshold_lin = Self::db_to_linear(pre.noise_gate_threshold);
             let rms_now = Self::rms(samples);
-            // Hysteresis: gunakan threshold yang sedikit lebih tinggi untuk
-            // membuka gate dan lebih rendah untuk menutup — mencegah flapping
-            // pada noise floor yang rapuh (mis. gemerisik kabel).
-            let open_threshold = threshold_lin;
-            let close_threshold = threshold_lin * 0.5; // 6dB lebih rendah
-            // Attack/release envelope — transisi mulus antara open/close.
-            let target_gain = if rms_now > open_threshold {
-                1.0 // sinyal jelas → gate terbuka penuh
-            } else if rms_now < close_threshold {
-                0.0 // di bawah hysteresis → gate tertutup total
+            // Envelope follower: track RMS kecepatan attack cepat, release lambat.
+            // Ini mencegah gate bereaksi pada transient kecil (gemerisik).
+            let attack_coef = (-1.0 / ((pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp();
+            let release_coef = (-1.0 / ((pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp();
+            if rms_now > self.rms_envelope {
+                self.rms_envelope = attack_coef * self.rms_envelope + (1.0 - attack_coef) * rms_now;
             } else {
-                // Zona hysteresis: pertahankan state gate lama (hold).
-                self.gate_gain
-            };
-            // Smoothing: attack cepat, release lambat.
-            let attack_step = (pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
-            let release_step = (pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
-            let step = if target_gain > self.gate_gain {
-                1.0 / attack_step // attack cepat (gate terbuka)
-            } else if target_gain < self.gate_gain {
-                1.0 / release_step // release lambat (gate menutup)
+                self.rms_envelope = release_coef * self.rms_envelope + (1.0 - release_coef) * rms_now;
+            }
+            // Hard gate: jika envelope di bawah threshold → zerokan total.
+            // Jika di atas → pass-through penuh (gain = 1.0, tidak ada attenuation).
+            let gate_gain = if self.rms_envelope < threshold_lin {
+                0.0 // gate tertutup total — hilangkan noise & gemerisik
             } else {
-                0.5 // pertahankan
+                1.0 // gate terbuka penuh — tidak ada attenuasi pada sinyal jelas
             };
-            self.gate_gain = (self.gate_gain + step * (target_gain - self.gate_gain)).clamp(0.0, 1.0);
-            // Jika gate_gain sangat kecil (di bawah 1%), anggap tertutup total.
-            if self.gate_gain < 0.01 {
+            if gate_gain == 0.0 {
                 samples.fill(0.0);
             } else {
                 for s in samples.iter_mut() {
-                    *s *= self.gate_gain;
+                    *s *= gate_gain;
                 }
             }
+            self.gate_gain = gate_gain; // simpan untuk visualisasi di UI
         }
 
         // 3. Compressor (soft-knee)
