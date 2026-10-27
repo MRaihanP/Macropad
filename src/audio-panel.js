@@ -10,6 +10,7 @@ import {
   setAudioOutput,
   setAudioMonitor,
   setAudioMic,
+  setAudioMicPre,
   setAudioGain,
   setAudioMute,
   setAudioMode,
@@ -280,6 +281,17 @@ function bindSlider(id, labelId, bus) {
   });
 }
 
+/// Update label value real-time untuk slider non-persentase (mis. dB, ratio).
+function bindRangeLabel(id, labelId, formatter) {
+  const slider = $(id);
+  const label = $(labelId);
+  if (!slider || !label) return;
+  label.textContent = formatter(Number(slider.value));
+  slider.addEventListener('input', () => {
+    label.textContent = formatter(Number(slider.value));
+  });
+}
+
 function withError(promise, fallback = 'audio.commandFailed') {
   return promise.catch((error) => {
     toast(t(fallback, { error }), 'error');
@@ -380,6 +392,37 @@ function bindControls() {
   bindSlider('sfxGain', 'sfxGainVal', 'sfx');
   bindSlider('masterGain', 'masterGainVal', 'master');
   bindSlider('monitorVolume', 'monitorVolumeVal', 'monitor');
+
+  // ---- Mic Preprocessing Filter Controls ----
+  bindRangeLabel('micBoost', 'micBoostVal', (v) => (v / 100).toFixed(1) + '×');
+  bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => v + ' dB');
+  bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => v + ':1');
+  bindRangeLabel('eqLow', 'eqLowVal', (v) => v + ' dB');
+  bindRangeLabel('eqMid', 'eqMidVal', (v) => v + ' dB');
+  bindRangeLabel('eqHigh', 'eqHighVal', (v) => v + ' dB');
+
+  $('btnApplyMicPre')?.addEventListener('click', () => {
+    const settings = {
+      micBoost: Number($('micBoost')?.value || 200) / 100,
+      noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
+      noiseGateThreshold: Number($('noiseGateThreshold')?.value || -45),
+      noiseGateAttackMs: 5.0,
+      noiseGateReleaseMs: 30.0,
+      noiseGateRatio: 10.0,
+      compressorEnabled: !!$('compressorEnabled')?.checked,
+      compressorThreshold: -25.0,
+      compressorRatio: Number($('compressorRatio')?.value || 4),
+      compressorMakeupGain: 3.0,
+      limiterEnabled: !!$('limiterEnabled')?.checked,
+      limiterCeiling: -0.5,
+      equalizerEnabled: !!$('equalizerEnabled')?.checked,
+      equalizerLow: Number($('eqLow')?.value || 0),
+      equalizerMid: Number($('eqMid')?.value || 0),
+      equalizerHigh: Number($('eqHigh')?.value || 0),
+    };
+    withError(setAudioMicPre(settings));
+    soundLog('mic filter applied', 'info');
+  });
 }
 
 // ---- Meter ----

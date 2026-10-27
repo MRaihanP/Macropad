@@ -425,6 +425,91 @@
           </div>
         </div>
 
+        <div class="audio-section" id="micPreSection">
+          <div class="audio-section-title" data-i18n="audio.sectionMicPre">Proses Mic</div>
+
+          <!-- Mic Boost -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Mic Boost</div>
+              <div class="hint">Amplifikasi dasar (1×–5×)</div>
+            </div>
+            <div class="audio-row-controls audio-gain-controls">
+              <div class="audio-gain-line">
+                <input type="range" id="micBoost" class="audio-slider" min="100" max="500" value="200">
+                <span class="audio-value" id="micBoostVal">2.0×</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Noise Gate -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Noise Gate</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="Aktifkan noise gate">
+                <input type="checkbox" id="noiseGateEnabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <input type="range" id="noiseGateThreshold" class="audio-slider-small" min="-60" max="-20" value="-45">
+              <span class="audio-value" id="noiseGateThresholdVal">-45 dB</span>
+            </div>
+          </div>
+
+          <!-- Compressor -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Compressor</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="Aktifkan compressor">
+                <input type="checkbox" id="compressorEnabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <input type="range" id="compressorRatio" class="audio-slider-small" min="2" max="20" value="4">
+              <span class="audio-value" id="compressorRatioVal">4:1</span>
+            </div>
+          </div>
+
+          <!-- Limiter -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Limiter</div>
+              <div class="hint">Mencegah clipping digital (default: aktif)</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="Aktifkan limiter">
+                <input type="checkbox" id="limiterEnabled" checked>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 3-Band EQ -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Equalizer (3-band)</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="Aktifkan EQ">
+                <input type="checkbox" id="equalizerEnabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <input type="range" id="eqLow" class="audio-slider-small" min="-12" max="12" value="0">
+              <span class="audio-value" id="eqLowVal">0 dB</span>
+              <input type="range" id="eqMid" class="audio-slider-small" min="-12" max="12" value="0">
+              <span class="audio-value" id="eqMidVal">0 dB</span>
+              <input type="range" id="eqHigh" class="audio-slider-small" min="-12" max="12" value="0">
+              <span class="audio-value" id="eqHighVal">0 dB</span>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <button class="btn btn-apply" id="btnApplyMicPre">Apply Filter</button>
+          </div>
+        </div>
+
         <div class="audio-section">
           <div class="audio-section-title" data-i18n="audio.sectionSoundboard">Soundboard</div>
 

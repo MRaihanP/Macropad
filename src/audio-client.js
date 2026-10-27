@@ -93,6 +93,10 @@ export function setAudioMic(device, enabled, gain) {
   return invoke('audio_set_mic', { device, enabled, gain });
 }
 
+export function setAudioMicPre(settings) {
+  return invoke('audio_set_mic_pre', { settings });
+}
+
 export function setAudioGain(bus, value) {
   return invoke('audio_set_gain', { bus, value });
 }
