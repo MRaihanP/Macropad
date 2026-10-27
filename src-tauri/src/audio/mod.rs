@@ -16,6 +16,7 @@ pub mod types;
 pub use engine::AudioEngine;
 
 use crate::audio::types::{AudioDevices, AudioState, Bus, PlayMode, ToneTarget};
+use crate::audio::settings::MicSettings;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -51,6 +52,14 @@ pub fn audio_set_mic(
     gain: f32,
 ) -> Result<(), String> {
     engine.set_mic(device, enabled, gain)
+}
+
+#[tauri::command]
+pub fn audio_set_mic_pre(
+    engine: State<'_, AudioEngine>,
+    settings: MicSettings,
+) -> Result<(), String> {
+    engine.set_mic_pre(settings)
 }
 
 #[tauri::command]

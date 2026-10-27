@@ -9,7 +9,7 @@ use crate::audio::mixer::{Counters, Mixer, MixerCommand, MixerSettings};
 use crate::audio::output::{self, InputHandle, OutputHandle};
 use crate::audio::resample::{StreamResampler, ENGINE_SAMPLE_RATE};
 use crate::audio::ring::SpscRing;
-use crate::audio::settings::{self, AudioSettings};
+use crate::audio::settings::{self, AudioSettings, MicSettings};
 use crate::audio::types::{AudioState, Bus, PlayMode, StreamStatus, ToneTarget};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,6 +35,7 @@ pub enum EngineCommand {
         gain: f32,
         reply: Sender<Result<(), String>>,
     },
+    SetMicPre(MicSettings),
     SetGain {
         bus: Bus,
         value: f32,
@@ -148,6 +149,12 @@ impl AudioEngine {
             gain,
             reply,
         })
+    }
+
+    pub fn set_mic_pre(&self, settings: MicSettings) -> Result<(), String> {
+        self.tx
+            .send(EngineCommand::SetMicPre(settings))
+            .map_err(|_| "audio engine tidak berjalan".to_string())
     }
 
     pub fn set_buffer(&self, ms: u32) -> Result<(), String> {
@@ -591,6 +598,11 @@ impl Engine {
             }
             EngineCommand::Stop { id } => {
                 let _ = self.mixer_tx.send(MixerCommand::Stop { id });
+            }
+            EngineCommand::SetMicPre(settings) => {
+                self.settings.mic_pre = settings.clone();
+                let _ = self.mixer_tx.send(MixerCommand::SetMicPre(settings));
+                self.dirty = true;
             }
             EngineCommand::Shutdown => return false,
         }
