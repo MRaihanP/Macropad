@@ -669,6 +669,11 @@ fn unique_sound_name(existing: &SoundData, stem: &str) -> String {
     name
 }
 
+/// Panjang maksimum id sound yang didukung firmware.
+/// Firmware memotong sound id yang dikirim via EVT:APP:SOUND:<id>,
+/// jadi kita perlu memastikan id tidak melebihi ini saat import.
+const MAX_SOUND_ID_LEN: usize = 32;
+
 /// Path relatif unik di folder sounds. File yang namanya sama diberi akhiran
 /// angka, bukan ditimpa.
 fn unique_rel_path(dir: &Path, stem: &str, ext: &str) -> (String, PathBuf) {
@@ -721,6 +726,9 @@ fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, S
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+    // Potong stem agar id yang dihasilkan (dari rel_path) tidak melebihi
+    // batas panjang firmware. unique_rel_path akan menambah counter jika collision.
+    let stem = &stem[..stem.char_indices().nth(MAX_SOUND_ID_LEN).map_or(stem.len(), |(i, _)| i)];
     let (rel, dest) = unique_rel_path(&dir, stem, ext);
     std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
     let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
@@ -867,6 +875,7 @@ async fn soundboard_import_data(
             }
             let src = Path::new(&file.name);
             let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
+            let stem = &stem[..stem.char_indices().nth(MAX_SOUND_ID_LEN).map_or(stem.len(), |(i, _)| i)];
             let ext = src
                 .extension()
                 .and_then(|e| e.to_str())
