@@ -47,8 +47,10 @@ import { showModalBase, showPromptModal, showConfirmModal, clipUtf8 } from "./ui
 import { switchPage, initSidebar, initRouter } from "./ui-router.js";
 // Picker aplikasi (dipakai juga oleh home-page untuk binding bertipe APP).
 import { initAppPicker } from "./app-picker.js";
-// Soundboard: manajemen suara + Web Audio API playback engine.
+// Soundboard: manajemen suara + playback lewat audio engine Rust.
 import { initSoundPicker } from "./soundboard.js";
+// Panel audio Settings: routing CABLE/monitor, mic, meter, diagnostik.
+import { initAudioPanel } from "./audio-panel.js";
 // Halaman Home: tab layer, grid tombol, daftar knob, panel editor, rekam keyboard.
 // Ketiganya satu modul karena saling memanggil (klik sel -> openEditor -> rekam;
 // tab -> switchLayer -> loadLayer -> renderGrid); dipisah akan muncul siklus import.
@@ -488,6 +490,8 @@ el('globalAdaptiveToggle').onchange = (e) => {
     .catch(err => log(t('main.adaptiveSaveError', { err }), 'err'));
   syncGlobalToggles();
 };
+// Audio panel (test tone, CABLE status, mic passthrough) in Settings.
+initAudioPanel().catch(e => console.error('[main] initAudioPanel failed:', e));
 el('btnTestNotif').onclick = () => notify(t('main.testNotif'), 'connect', { force: true });
 // Poll lewat facade, bukan pollPorts: backend aktif yang memutuskan apa yang
 // dipantau (port COM untuk USB, status GATT untuk BLE).

@@ -1,80 +1,78 @@
 // ==================== SOUND BOARD ====================
 //
-// Sound manager + Web Audio API playback engine.
-// Suara diputar ke sistem audio default (bisa ditangkap Discord/streaming).
+// Manajemen library suara + trigger playback.
+// Playback sepenuhnya didelegasikan ke audio engine Rust (audio-client.js):
+// decode, resampling, mixing, dan routing ke CABLE + monitor dilakukan backend.
 //
 // Trigger dari device: firmware kirim EVT:APP:SOUND:<id>; protocol-parser.js
 // mendeteksi prefix "SOUND:" dan memanggil playSound(id) di sini.
 //
 // Penyimpanan: file audio + metadata dikelola oleh Rust (app_data_dir/sounds/).
-// Frontend cukup invoke command untuk ambil list, pilih file/folder, atau baca
-// bytes audio untuk didekode oleh Web Audio API.
+// Frontend hanya invoke command untuk list/pick/rename/delete/play.
 
 import { invoke } from '@tauri-apps/api/core';
 import { el, log } from './dom.js';
 import { showConfirmModal, showPromptModal } from './ui-modal.js';
+import { playSoundById, stopSounds, getAudioState } from './audio-client.js';
+
+// ---- Sound-specific logger (Fase 2F: debug audio routing) ----
+// Format: [SOUND timestamp] LEVEL message
+const SOUND_LOG_PREFIX = '[SOUND]';
+let _logBox = null;
+const _getLogBox = () => {
+  if (_logBox === null) _logBox = document.getElementById('audioDebugLog');
+  return _logBox;
+};
+export const soundLog = (msg, level = 'info') => {
+  const ts = new Date().toISOString().slice(11, 23);
+  const line = `${SOUND_LOG_PREFIX} ${ts} [${level.toUpperCase()}] ${msg}\n`;
+  // Console fallback
+  if (level === 'error') { console.error(line, []); console.trace(''); }
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+  // UI log box (hanya di Settings → Audio panel)
+  const box = _getLogBox();
+  if (box) {
+    box.textContent += line;
+    box.scrollTop = box.scrollHeight;
+  }
+};
+window.soundLog = soundLog;
 
 // ---- State ----
 let soundList = [];
-let currentSource = null;   // AudioBufferSourceNode yang sedang diputar
-let audioCtx = null;
 
-// ---- Web Audio ----
+// ---- Playback (delegated ke audio engine Rust) ----
 
-function ensureAudioContext() {
-  if (!audioCtx) {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) {
-      log('Web Audio API tidak tersedia', 'err');
-      return null;
-    }
-    audioCtx = new AudioContext();
-  }
-  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-  return audioCtx;
-}
-
-/// Putar suara dengan ID tertentu. Interrupt: hentikan source yang sedang
-/// diputar sebelum memulai source baru agar tidak bentrok.
+/// Putar suara dengan ID tertentu. Engine yang menangani interrupt/restart,
+/// decode, resampling, dan routing ke CABLE + monitor.
 export async function playSound(id) {
-  const entry = soundList.find(s => s.id === id);
-  if (!entry) {
-    console.warn('[soundboard] playSound: id tidak ditemukan:', id);
-    return;
-  }
+  const entry = soundList.find((sound) => sound.id === id);
+  const displayName = entry?.name || id;
 
-  const ctx = ensureAudioContext();
-  if (!ctx) return;
+  // Kalau bus SFX di-mute, playback tetap jalan tapi tidak akan terdengar.
+  // Beri tahu penyebabnya supaya tidak dikira engine rusak.
+  if (getAudioState()?.sfxMuted) {
+    soundLog('soundboard sedang MUTE — matikan toggle Mute di Settings → Audio', 'warn');
+    log('Soundboard sedang mute: matikan toggle "Mute" pada Volume soundboard.', 'err');
+  }
 
   try {
-    const bytes = await invoke('soundboard_read', { id });
-    const buf = new Uint8Array(bytes.data).buffer;
-    const audioBuf = await ctx.decodeAudioData(buf.slice(0));
-
-    // Interrupt: stop current playback
-    if (currentSource) {
-      try { currentSource.stop(0); } catch (_) {}
-      currentSource = null;
-    }
-
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuf;
-    source.connect(ctx.destination);
-    source.onended = () => { if (currentSource === source) currentSource = null; };
-    source.start(0);
-    currentSource = source;
-
-    log('[soundboard] memutar: ' + entry.name, 'ok');
+    soundLog('play: id=' + id + ' name=' + displayName);
+    await playSoundById(id);
+    log('[soundboard] memutar: ' + displayName, 'ok');
   } catch (e) {
-    log('Gagal putar suara "' + entry.name + '": ' + e, 'err');
+    soundLog('play gagal: ' + e, 'error');
+    log('Gagal putar suara "' + displayName + '": ' + e, 'err');
   }
 }
 
-/// Hentikan suara yang sedang diputar.
-export function stopSound() {
-  if (currentSource) {
-    try { currentSource.stop(0); } catch (_) {}
-    currentSource = null;
+/// Hentikan semua suara yang sedang diputar.
+export async function stopSound() {
+  try {
+    await stopSounds(null);
+  } catch (e) {
+    soundLog('stop gagal: ' + e, 'error');
   }
 }
 

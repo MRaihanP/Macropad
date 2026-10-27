@@ -287,6 +287,199 @@
           <label class="toggle-switch"><input type="checkbox" id="globalRgbToggle"><span class="toggle-slider"></span></label>
         </div>
       </div>
+      <div class="panel audio-panel">
+        <div class="audio-panel-header">
+          <div>
+            <h2 data-i18n="settings.audio">Audio</h2>
+            <div class="hint" data-i18n="settings.audioHint">Rute suara soundboard + mikrofon ke VB-Cable untuk Discord.</div>
+          </div>
+          <span class="audio-chip" id="audioEngineChip">…</span>
+        </div>
+
+        <div class="audio-section">
+          <div class="audio-section-title" data-i18n="audio.sectionRouting">Routing</div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.discordOutput">Output Discord</div>
+              <div class="hint" data-i18n="audio.discordOutputHint">Soundboard dan mic dikirim ke CABLE Input. Discord menangkapnya dari CABLE Output.</div>
+            </div>
+            <div class="audio-row-controls">
+              <span class="audio-chip" id="cableChip">…</span>
+              <select id="audioOutputSelect" class="audio-select"></select>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.monitor">Monitor</div>
+              <div class="hint" data-i18n="audio.monitorHint">Dengarkan suara yang sama di speaker. CABLE Input tidak bisa didengar langsung.</div>
+            </div>
+            <div class="audio-row-controls audio-device-controls">
+              <div class="audio-device-top">
+                <span class="audio-chip" id="monitorChip">…</span>
+                <label class="toggle-switch" title="Aktifkan monitor">
+                  <input type="checkbox" id="audioMonitorToggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <select id="audioMonitorSelect" class="audio-select"></select>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.monitorVolume">Volume monitor</div>
+            </div>
+            <div class="audio-row-controls audio-gain-controls">
+              <div class="audio-gain-line">
+                <input type="range" id="monitorVolume" class="audio-slider" min="0" max="100" value="100">
+                <span class="audio-value" id="monitorVolumeVal">100%</span>
+              </div>
+              <div class="audio-meter"><div class="audio-meter-fill" id="monitorMeter"></div></div>
+            </div>
+          </div>
+
+          <div class="audio-note">
+            <strong data-i18n="audio.discordSetupTitle">Setup Discord:</strong>
+            <span data-i18n="audio.discordSetup">Input device = CABLE Output (VB-Audio Virtual Cable). Matikan Noise Suppression / Krisp agar soundboard tidak terpotong.</span>
+          </div>
+        </div>
+
+        <div class="audio-section">
+          <div class="audio-section-title" data-i18n="audio.sectionMic">Mikrofon</div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.micDevice">Device mikrofon</div>
+              <div class="hint" data-i18n="audio.micDeviceHint">Mic digabung ke output Discord dan monitor.</div>
+            </div>
+            <div class="audio-row-controls audio-device-controls">
+              <div class="audio-device-top">
+                <label class="toggle-switch" title="Aktifkan mic">
+                  <input type="checkbox" id="audioMicToggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <select id="audioMicSelect" class="audio-select"></select>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.micGain">Volume mic</div>
+            </div>
+            <div class="audio-row-controls audio-gain-controls">
+              <div class="audio-gain-top">
+                <span class="audio-toggle-label" id="micMuteLabel" data-i18n="audio.mute">Mute</span>
+                <label class="toggle-switch audio-mute" title="Mute mic">
+                  <input type="checkbox" id="audioMicMute">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="audio-gain-line">
+                <input type="range" id="micGain" class="audio-slider" min="0" max="100" value="100">
+                <span class="audio-value" id="micGainVal">100%</span>
+              </div>
+              <div class="audio-meter"><div class="audio-meter-fill" id="micMeter"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="audio-section">
+          <div class="audio-section-title" data-i18n="audio.sectionSoundboard">Soundboard</div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.sfxVolume">Volume soundboard</div>
+              <div class="hint" data-i18n="audio.sfxVolumeHint">Toggle Mute mematikan soundboard sepenuhnya (Discord dan monitor).</div>
+            </div>
+            <div class="audio-row-controls audio-gain-controls">
+              <div class="audio-gain-top">
+                <span class="audio-toggle-label" id="sfxMuteLabel" data-i18n="audio.mute">Mute</span>
+                <label class="toggle-switch audio-mute" title="Mute soundboard">
+                  <input type="checkbox" id="audioSfxMute">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="audio-gain-line">
+                <input type="range" id="sfxGain" class="audio-slider" min="0" max="100" value="100">
+                <span class="audio-value" id="sfxGainVal">100%</span>
+              </div>
+              <div class="audio-meter"><div class="audio-meter-fill" id="sfxMeter"></div></div>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.masterVolume">Volume master</div>
+            </div>
+            <div class="audio-row-controls audio-gain-controls">
+              <div class="audio-gain-line">
+                <input type="range" id="masterGain" class="audio-slider" min="0" max="100" value="100">
+                <span class="audio-value" id="masterGainVal">100%</span>
+              </div>
+              <div class="audio-meter"><div class="audio-meter-fill" id="masterMeter"></div></div>
+            </div>
+          </div>
+
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name" data-i18n="audio.playMode">Mode playback</div>
+              <div class="hint" data-i18n="audio.playModeHint">Interrupt: suara baru menghentikan suara lama. Mix: boleh tumpang tindih.</div>
+            </div>
+            <div class="audio-row-controls">
+              <select id="audioPlayMode" class="audio-select">
+                <option value="interrupt" data-i18n="audio.modeInterrupt">Interrupt</option>
+                <option value="mix" data-i18n="audio.modeMix">Mix</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <details class="audio-details" id="audioDiagnostics">
+          <summary data-i18n="audio.diagnostics">Diagnostik</summary>
+          <div class="audio-details-body">
+            <div class="audio-actions">
+              <button class="small" id="btnTestToneCable" data-i18n="audio.testCable">Test tone → Discord</button>
+              <button class="small" id="btnTestToneMonitor" data-i18n="audio.testMonitor">Test tone → Monitor</button>
+              <button class="small" id="btnTestToneBoth" data-i18n="audio.testBoth">Test tone → Keduanya</button>
+              <button class="small" id="btnAudioRefreshDevices" data-i18n="audio.refreshDevices">Muat ulang device</button>
+            </div>
+
+            <div class="audio-row audio-row-compact">
+              <div class="audio-row-main">
+                <div class="setting-name" data-i18n="audio.buffer">Buffer latency</div>
+                <div class="hint" data-i18n="audio.bufferHint">Kecil = respons cepat. Besar = lebih stabil saat CPU sibuk.</div>
+              </div>
+              <div class="audio-row-controls">
+                <select id="audioBufferSelect" class="audio-select audio-select-sm">
+                  <option value="0" data-i18n="audio.bufferDefault">Default perangkat</option>
+                  <option value="10">10 ms</option>
+                  <option value="20">20 ms</option>
+                  <option value="40">40 ms</option>
+                  <option value="80">80 ms</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="audio-status-head">
+              <span data-i18n="audio.colRole">Role</span>
+              <span data-i18n="audio.colDevice">Device</span>
+              <span data-i18n="audio.colFormat">Format</span>
+              <span data-i18n="audio.colState">Status</span>
+              <span data-i18n="audio.underruns">Underrun</span>
+            </div>
+            <div class="audio-status-grid" id="audioStatusGrid"></div>
+
+            <div class="audio-log-head">
+              <span data-i18n="audio.logTitle">Log audio</span>
+              <button class="small" id="btnAudioClearLog" data-i18n="audio.clearLog">Bersihkan</button>
+            </div>
+            <div id="audioDebugLog" class="audio-log"></div>
+          </div>
+        </details>
+      </div>
       <div class="panel">
         <h2 data-i18n="settings.notifications">Notifikasi</h2>
         <div class="setting-row">

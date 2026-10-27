@@ -34,6 +34,16 @@ use windows::core::{PWSTR, PCWSTR, Interface};
 mod ble;
 use ble::{BleStats, BleTransport};
 
+// =================== AUDIO ENGINE ===================
+mod audio;
+pub use audio::AudioEngine;
+// Import command functions ke crate root agar #[tauri::command] macro-generated
+// internals dapat di-resolve oleh generate_handler!.
+use audio::{
+    audio_devices, audio_play, audio_set_buffer, audio_set_gain, audio_set_mic, audio_set_mode,
+    audio_set_monitor, audio_set_mute, audio_set_output, audio_state, audio_stop, audio_test_tone,
+};
+
 // Codec frame protokol v2. Fase 1: sudah ada dan sudah diuji, tapi BELUM
 // tersambung ke link BLE apa pun. Sengaja ditahan di sini supaya bisa diuji
 // silang dengan firmware dan frontend tanpa perangkat.
@@ -492,6 +502,25 @@ struct SoundEntry {
     size: u64,
     #[serde(default)]
     duration_ms: u32,
+    /// Volume per suara (1.0 = 100%).
+    #[serde(default = "default_sound_volume")]
+    volume: f32,
+    #[serde(default)]
+    trim_start_ms: u32,
+    #[serde(default)]
+    trim_end_ms: u32,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+fn default_sound_volume() -> f32 {
+    1.0
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -531,16 +560,6 @@ fn save_sounds(app: &tauri::AppHandle, d: &SoundData) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
-#[allow(dead_code)]
-fn sound_id() -> String {
-    format!("snd_{}_{}", now_secs(), (nonce_u64() % 100000))
-}
-
-#[allow(dead_code)]
-fn nonce_u64() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
-}
-
 fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, String> {
     let dir = sounds_dir(app).ok_or("gagal dapatkan folder sounds")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -575,6 +594,13 @@ fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, S
         rel_path: rel,
         size,
         duration_ms: 0,
+        volume: 1.0,
+        trim_start_ms: 0,
+        trim_end_ms: 0,
+        tags: Vec::new(),
+        favorite: false,
+        color: None,
+        mode: None,
     })
 }
 
@@ -664,6 +690,7 @@ fn soundboard_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
             if let Err(e) = std::fs::remove_file(&fpath) {
                 eprintln!("[soundboard] gagal hapus {}: {}", fpath.display(), e);
             }
+            crate::audio::decode::invalidate(&id);
             false
         } else { true }
     });
@@ -692,7 +719,7 @@ fn soundboard_rename(app: tauri::AppHandle, id: String, new_name: String) -> Res
     let idx = data.sounds.iter().position(|s| s.id == id)
         .ok_or(format!("suara \"{}\" tidak ditemukan", id))?;
     // --- PATCH: Auto-numbering bila nama baru bentrok ---
-    let final_name = if data.sounds.iter().enumerate().any(|(_i, s)| s.id != id && s.name == new_name) {
+    let final_name = if data.sounds.iter().any(|s| s.id != id && s.name == new_name) {
         let stem = new_name.clone();
         let mut counter = 1;
         loop {
@@ -1488,6 +1515,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // Audio engine v2: satu thread pemilik semua stream cpal.
+            app.manage(AudioEngine::new(app.handle().clone()));
             setup_tray(app)?;
             APP_STARTED.store(now_ms(), Ordering::SeqCst);
             // Self-heal jendela putih (lihat WATCHDOG PAINT di atas).
@@ -1554,6 +1583,19 @@ pub fn run() {
             soundboard_delete,
             soundboard_read,
             soundboard_rename,
+            // Audio engine v2
+            audio_devices,
+            audio_state,
+            audio_set_output,
+            audio_set_monitor,
+            audio_set_mic,
+            audio_set_gain,
+            audio_set_mute,
+            audio_set_mode,
+            audio_set_buffer,
+            audio_test_tone,
+            audio_play,
+            audio_stop,
             show_main_window,
             hide_to_tray,
             quit_app,
