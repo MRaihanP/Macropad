@@ -56,6 +56,10 @@ pub enum EngineCommand {
     Play {
         id: String,
         clip: Arc<Clip>,
+        /// Gain tambahan dari entry.volume, diterapkan di mixer.
+        /// Dipisahkan dari clip.gain (yang selalu 1.0) sehingga
+        /// mengubah volume tidak memicu decode ulang cache.
+        gain: f32,
         reply: Sender<Result<(), String>>,
     },
     Stop {
@@ -178,8 +182,10 @@ impl AudioEngine {
             .map_err(|_| "audio engine tidak berjalan".to_string())
     }
 
-    pub fn play(&self, id: String, clip: Arc<Clip>) -> Result<(), String> {
-        self.request(|reply| EngineCommand::Play { id, clip, reply })
+    /// Gain diterapkan di play-time dari entry.volume, bukan di decode-time.
+    /// Ini memungkinkan mengubah volume tanpa dekode ulang clip yang dicache.
+    pub fn play(&self, id: String, clip: Arc<Clip>, gain: f32) -> Result<(), String> {
+        self.request(|reply| EngineCommand::Play { id, clip, gain, reply })
     }
 
     pub fn stop(&self, id: Option<String>) -> Result<(), String> {
@@ -571,8 +577,10 @@ impl Engine {
                     duration_ms,
                 });
             }
-            EngineCommand::Play { id, clip, reply } => {
-                let gain = clip.gain;
+            EngineCommand::Play { id, clip, gain: play_gain, reply } => {
+                // clip.gain selalu 1.0 (gain diterapkan di play-time).
+                // Kombinasikan clip.gain (1.0) dengan play_gain (entry.volume).
+                let gain = play_gain;
                 let _ = self.mixer_tx.send(MixerCommand::Play {
                     id,
                     samples: Arc::clone(&clip.samples),

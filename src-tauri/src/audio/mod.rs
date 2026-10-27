@@ -99,6 +99,15 @@ pub async fn audio_play(
     engine: State<'_, AudioEngine>,
     id: String,
 ) -> Result<(), String> {
+    // Baca gain di sini (di luar spawn_blocking) karena entry.volume adalah
+    // bagian dari metadata sounds.json, bukan hasil decode. Gain diterapkan
+    // di play-time sehingga perubahan volume tidak memicu decode ulang.
+    let gain = crate::load_sounds(&app)
+        .sounds
+        .iter()
+        .find(|sound| sound.id == id)
+        .map(|entry| entry.volume)
+        .unwrap_or(1.0);
     let engine = engine.inner().clone();
     let clip = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
@@ -107,8 +116,7 @@ pub async fn audio_play(
     })
     .await
     .map_err(|e| format!("decode task gagal: {e}"))??;
-
-    engine.play(id, clip)
+    engine.play(id, clip, gain)
 }
 
 #[tauri::command]

@@ -21,6 +21,10 @@ const CACHE_LIMIT_BYTES: usize = 128 * 1024 * 1024;
 pub struct Clip {
     /// Interleaved stereo 48 kHz.
     pub samples: Arc<Vec<f32>>,
+    /// Gain diterapkan di play-time (engine.play), bukan di decode-time.
+    /// Nilai ini selalu 1.0 karena gain dihitung di mixer dari entry.volume
+    /// yang dibaca di audio_play. Ini memungkinkan mengubah volume tanpa
+    /// decode ulang clip yang dicache.
     pub gain: f32,
 }
 
@@ -48,6 +52,11 @@ pub fn invalidate(id: &str) {
 }
 
 /// Ambil clip dari cache, atau decode dari disk.
+///
+/// Gain diterapkan di play-time, bukan di sini. `decode_file` selalu dipanggil
+/// dengan gain = 1.0 sehingga clip yang dicache bersih dan dapat dipakai kembali
+/// walaupun entry.volume berubah. Engine.play() yang kemudian menerima gain
+/// terpisah dari entry.volume dan meneruskan ke mixer.
 pub fn load_clip(app: &tauri::AppHandle, id: &str) -> Result<Arc<Clip>, String> {
     if let Ok(map) = cache().lock() {
         if let Some(clip) = map.get(id) {
@@ -64,7 +73,8 @@ pub fn load_clip(app: &tauri::AppHandle, id: &str) -> Result<Arc<Clip>, String> 
 
     let dir = crate::sounds_dir(app).ok_or("folder sounds tidak tersedia")?;
     let path = dir.join(&entry.rel_path);
-    let clip = decode_file(&path, entry.volume, entry.trim_start_ms, entry.trim_end_ms)?;
+    // Gain = 1.0: gain diterapkan di engine.play() dari entry.volume.
+    let clip = decode_file(&path, 1.0, entry.trim_start_ms, entry.trim_end_ms)?;
     let clip = Arc::new(clip);
 
     if let Ok(mut map) = cache().lock() {
@@ -179,4 +189,79 @@ fn decode_file(
         samples: Arc::new(samples),
         gain: gain.clamp(0.0, 4.0),
     })
+}
+
+/// Durasi file dalam milidetik, tanpa menyimpan hasil decode ke cache.
+///
+/// Jalur cepat memakai metadata container (`n_frames` + `time_base`); kalau
+/// tidak tersedia (mis. sebagian MP3), file di-decode sekali untuk menghitung
+/// frame. Hasilnya dipakai UI trim dan ditampilkan di kartu library.
+pub fn probe_duration_ms(path: &Path) -> Result<u32, String> {
+    let file = File::open(path).map_err(|e| format!("gagal buka {}: {e}", path.display()))?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("format audio tidak dikenali: {e}"))?;
+
+    let mut format = probed.format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| "file tidak punya track audio".to_string())?;
+    let track_id = track.id;
+    let params = track.codec_params.clone();
+    let sample_rate = params.sample_rate.unwrap_or(ENGINE_SAMPLE_RATE).max(1) as u64;
+
+    if let (Some(frames), Some(time_base)) = (params.n_frames, params.time_base) {
+        if time_base.denom > 0 {
+            let seconds = frames as f64 * time_base.numer as f64 / time_base.denom as f64;
+            if seconds.is_finite() && seconds > 0.0 {
+                let ms = (seconds * 1000.0).round();
+                if ms >= 1.0 {
+                    return Ok((ms as u64).min(u32::MAX as u64) as u32);
+                }
+            }
+        }
+    }
+
+    // Fallback: hitung frame hasil decode. Tidak di-resample karena durasi
+    // tidak berubah oleh resampling.
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&params, &DecoderOptions::default())
+        .map_err(|e| format!("codec tidak didukung: {e}"))?;
+    let mut frames = 0u64;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(Error::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(Error::ResetRequired) => break,
+            Err(err) => return Err(format!("gagal membaca audio: {err}")),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(decoded) => frames += decoded.frames() as u64,
+            Err(Error::DecodeError(_)) => continue,
+            Err(Error::IoError(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(format!("gagal decode audio: {err}")),
+        }
+    }
+
+    if frames == 0 {
+        return Err("tidak ada sample audio yang berhasil dibaca".into());
+    }
+    let ms = frames.saturating_mul(1000) / sample_rate;
+    Ok(ms.min(u32::MAX as u64) as u32)
 }
