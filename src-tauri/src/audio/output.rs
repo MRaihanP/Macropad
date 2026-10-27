@@ -232,7 +232,7 @@ where
     }
 
     if sample_rate == SAMPLE_RATE as u32 {
-        const CHUNK_FRAMES: usize = 512;
+        const CHUNK_FRAMES: usize = 1024;
         let mut scratch = [0.0f32; CHUNK_FRAMES * 2];
         let mut underrun = false;
         let mut frame_index = 0usize;

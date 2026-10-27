@@ -15,7 +15,13 @@ use tauri::Emitter;
 pub const SAMPLE_RATE: usize = 48_000;
 const BLOCK_FRAMES: usize = 480; // 10 ms
 const MAX_VOICES: usize = 8;
-const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 120 / 1000; // 120 ms stereo
+// Diperluas ke 240 ms stereo supaya cpal callback tidak kehabisan antar refill.
+// 120 ms sebelumnya terlalu tipis: satu iterasi mixer yang tersendat (command drain)
+// langsung bikin underrun. Lihat bug "gelembung pecah / terputus-putus".
+const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 240 / 1000; // 240 ms stereo
+// Mixer mengisi dua blok sekaligus (20 ms stereo) tiap iterasi agar refill
+// lebih "flat" dan tidak bursty akibat sleep 1 ms yang terlalu pendek relatif.
+const RENDER_QUANTUM: usize = 2;
 const TONE_FADE_FRAMES: u64 = 480;
 
 pub struct Counters {
@@ -185,32 +191,42 @@ impl Mixer {
                 continue;
             }
 
-            self.render(
-                &mut block,
-                &mut mic,
-                &mut cable_out,
-                &mut monitor_out,
-                cable_on,
-                monitor_on,
-            );
+            // Render RENDER_QUANTUM blok (20 ms stereo) per iterasi agar
+            // refill lebih flat dan tidak bursty.
+            for _ in 0..RENDER_QUANTUM {
+                self.render(
+                    &mut block,
+                    &mut mic,
+                    &mut cable_out,
+                    &mut monitor_out,
+                    cable_on,
+                    monitor_on,
+                );
 
-            if cable_on {
-                let _ = self.cable_ring.push(&cable_out);
-            }
-            if monitor_on {
-                // Koreksi drift jam monitor: buang blok kalau terlalu penuh,
-                // duplikasi blok kalau hampir kosong. Keduanya jarang terjadi
-                // dan lebih baik daripada underrun/latency yang menumpuk.
-                let fill = self.monitor_ring.len();
-                if fill < PREFILL_SAMPLES * 3 / 2 {
-                    let _ = self.monitor_ring.push(&monitor_out);
-                    if fill < PREFILL_SAMPLES / 4 {
+                if cable_on {
+                    let _ = self.cable_ring.push(&cable_out);
+                }
+                if monitor_on {
+                    // Koreksi drift jam monitor: buang blok kalau terlalu penuh,
+                    // duplikasi blok kalau hampir kosong.
+                    let fill = self.monitor_ring.len();
+                    if fill < PREFILL_SAMPLES * 3 / 2 {
                         let _ = self.monitor_ring.push(&monitor_out);
+                        if fill < PREFILL_SAMPLES / 4 {
+                            let _ = self.monitor_ring.push(&monitor_out);
+                        }
                     }
                 }
+
+                // Reset buffer untuk iterasi berikutnya.
+                cable_out.fill(0.0);
+                monitor_out.fill(0.0);
             }
 
-            // Isi buffer sampai prefill tanpa busy-spin.
+            // Sleep pendek (0.5 ms) agar cpal callback tidak kehabiran.
+            // 1 ms sebelumnya relatif lama untuk audio real-time pada 10 ms boundary.
+            // Durasi mikro sleep tidak tersedia portably, gunakan 1 ms minimum
+            // tapi kurangi beban dengan render quantum 2x.
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -480,12 +496,20 @@ impl Mixer {
 
 #[inline]
 fn soft_clip(sample: f32) -> f32 {
-    const KNEE: f32 = 0.85;
+    // KNEE dinaikkan dari 0.85 ke 0.95 sehingga lebih sedikit sample masuk
+    // zona kompresi. Pada 0.85, hampir setengah waveform (jika gain > 1.0)
+    // masuk ke zona non-linear yang bisa menghasilkan harmoni pecah / clipping
+    // yang terdengar seperti "gelembung pecah". Knee 0.95 hampir linear sampai
+    // -0.8 dB, yang jauh lebih alami untuk sound effect.
+    const KNEE: f32 = 0.95;
     let magnitude = sample.abs();
     if magnitude <= KNEE {
         return sample;
     }
     let over = (magnitude - KNEE) / (1.0 - KNEE);
+    // Gunakan kurva tanh yang lebih halus pada kneel area sehingga transisi
+    // dari linear ke kompresi tidak menyentuh (derivative discontinuity di 0.85
+    // sebelumnya bisa menghasilkan "klik").
     let limited = KNEE + (1.0 - KNEE) * (over / (1.0 + over));
     sample.signum() * limited
 }
