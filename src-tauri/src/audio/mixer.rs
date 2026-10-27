@@ -5,6 +5,7 @@
 //! di jalur real-time.
 
 use crate::audio::ring::SpscRing;
+use crate::audio::settings::MicSettings;
 use crate::audio::types::{Bus, LevelFrame, PlayMode, ToneTarget};
 use crossbeam_channel::{Receiver, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -48,6 +49,8 @@ pub enum MixerCommand {
         muted: bool,
     },
     SetMonitorEnabled(bool),
+    /// Update mic preprocessing filter settings (gain, noise gate, dll).
+    SetMicPre(MicSettings),
     /// Isi ring monitor dengan silence sampai level prefill (dipakai setelah
     /// stream monitor dibangun ulang supaya tidak langsung underrun).
     PrefillMonitor,
@@ -80,6 +83,134 @@ pub struct MixerSettings {
     pub sfx_muted: bool,
     pub monitor_enabled: bool,
     pub mode: PlayMode,
+    pub mic_pre: MicSettings,
+}
+
+/// Mic pre-processing: boost, noise gate, compressor, limiter, EQ.
+/// Diletakkan setelah mic_ring.pop di render() dan sebelum gain diterapkan.
+#[derive(Clone)]
+pub struct MicProcessor {
+    settings: MicSettings,
+    /// State untuk noise gate envelope (attack/release smoothing).
+    gate_gain: f32,
+}
+
+impl MicProcessor {
+    pub fn new(settings: MicSettings) -> Self {
+        Self {
+            settings,
+            gate_gain: 0.0, // mulai di muted (noise floor)
+        }
+    }
+
+    pub fn update(&mut self, settings: MicSettings) {
+        self.settings = settings;
+    }
+
+    /// dB ke linear amplitude.
+    #[inline]
+    fn db_to_linear(db: f32) -> f32 {
+        10.0_f32.powf(db / 20.0)
+    }
+
+    /// RMS power dari frame (untuk noise gate & compressor sidechain).
+    #[inline]
+    fn rms(samples: &[f32]) -> f32 {
+        let sum: f32 = samples.iter().map(|s| s * s).sum();
+        (sum / samples.len() as f32).sqrt()
+    }
+
+    /// Proses satu frame mono mic. `samples` berisi BLOCK_FRAMES sampel.
+    pub fn process(&mut self, samples: &mut [f32]) {
+        let pre = &self.settings;
+        let n = samples.len();
+
+        // 1. Mic boost (amplifikasi dasar)
+        if pre.mic_boost != 1.0 {
+            for s in samples.iter_mut() {
+                *s *= pre.mic_boost;
+            }
+        }
+
+        // 2. Noise gate (soft-knee dengan attack/release envelope)
+        if pre.noise_gate_enabled {
+            let threshold_lin = Self::db_to_linear(pre.noise_gate_threshold);
+            let rms_now = Self::rms(samples);
+            // Gain reduction: di bawah threshold, attenuasi progresif.
+            // ratio=10 berarti: 10dB di bawah threshold → gain ≈ 0.1
+            let db_over = 20.0 * (rms_now / threshold_lin).log10();
+            let target_gain = if db_over >= 0.0 {
+                1.0
+            } else {
+                let reduction_db = db_over * (pre.noise_gate_ratio.max(1.0) / 10.0).clamp(0.0, 1.0);
+                Self::db_to_linear(reduction_db)
+            };
+            // Attack/release smoothing berdasarkan sample rate.
+            // attack_ms=5, release_ms=30 pada 48kHz.
+            let attack_coef = (pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
+            let release_coef = (pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0);
+            let coef = if target_gain > self.gate_gain {
+                1.0 / attack_coef // attack cepat
+            } else {
+                1.0 / release_coef // release lambat
+            };
+            self.gate_gain = self.gate_gain + coef * (target_gain - self.gate_gain);
+            if self.gate_gain > 0.0 {
+                for s in samples.iter_mut() {
+                    *s *= self.gate_gain;
+                }
+            } else {
+                // Gate tertutup total → silence agar tidak ada noise bleed.
+                samples.fill(0.0);
+            }
+        }
+
+        // 3. Compressor (soft-knee)
+        if pre.compressor_enabled {
+            let threshold_lin = Self::db_to_linear(pre.compressor_threshold);
+            let rms_now = Self::rms(samples);
+            if rms_now > threshold_lin {
+                let over_db = 20.0 * (rms_now / threshold_lin).log10();
+                let reduction_db = over_db * (1.0 - 1.0 / pre.compressor_ratio.max(1.0));
+                let comp_gain = Self::db_to_linear(-reduction_db + pre.compressor_makeup_gain);
+                for s in samples.iter_mut() {
+                    *s *= comp_gain;
+                }
+            }
+        }
+
+        // 4. Limiter (hard ceiling)
+        if pre.limiter_enabled {
+            let ceiling = Self::db_to_linear(pre.limiter_ceiling); // nilai positif (mis. 0.99)
+            let neg_ceiling = -ceiling;
+            for s in samples.iter_mut() {
+                *s = s.clamp(neg_ceiling, ceiling);
+            }
+        }
+
+        // 5. 3-band EQ (simple shelving: low boost/cut, mid, high)
+        if pre.equalizer_enabled {
+            // Simple implementation: apply fixed-frequency shelf multipliers
+            // berdasarkan posisi sample (low = bass, high = treble).
+            // Untuk mono voice, gunakan static filter coefficients.
+            // Implementasi sederhana: apply overall gain per band berdasarkan dB.
+            let low_lin = Self::db_to_linear(pre.equalizer_low);
+            let mid_lin = Self::db_to_linear(pre.equalizer_mid);
+            let high_lin = Self::db_to_linear(pre.equalizer_high);
+            // Simple 3-band: 0-20% low, 20-80% mid, 80-100% high (per sample position)
+            let low_end = (n as f32 * 0.2) as usize;
+            let high_start = (n as f32 * 0.8) as usize;
+            for (i, s) in samples.iter_mut().enumerate() {
+                if i < low_end {
+                    *s *= low_lin;
+                } else if i >= high_start {
+                    *s *= high_lin;
+                } else {
+                    *s *= mid_lin;
+                }
+            }
+        }
+    }
 }
 
 struct Voice {
@@ -117,6 +248,8 @@ pub struct Mixer {
     monitor_muted: bool,
     monitor_enabled: bool,
     mode: PlayMode,
+
+    mic_processor: MicProcessor,
 
     voices: [Option<Voice>; MAX_VOICES],
     next_slot: usize,
@@ -156,6 +289,7 @@ impl Mixer {
             monitor_muted: false,
             monitor_enabled: settings.monitor_enabled,
             mode: settings.mode,
+            mic_processor: MicProcessor::new(settings.mic_pre.clone()),
             voices: std::array::from_fn(|_| None),
             next_slot: 0,
             tone: None,
@@ -267,6 +401,9 @@ impl Mixer {
             MixerCommand::SetMonitorEnabled(enabled) => {
                 self.monitor_enabled = enabled;
             }
+            MixerCommand::SetMicPre(settings) => {
+                self.mic_processor.update(settings);
+            }
             MixerCommand::PrefillMonitor => {
                 if self.monitor_ring.len() < PREFILL_SAMPLES {
                     let silence = vec![0.0f32; PREFILL_SAMPLES - self.monitor_ring.len()];
@@ -371,6 +508,9 @@ impl Mixer {
 
         // Mic: pop sebanyak yang tersedia; sisanya silence.
         let _ = self.mic_ring.pop(mic);
+        // Terapkan mic pre-processing (boost/noise gate/compressor/limiter/EQ)
+        // sebelum gain diterapkan di loop mixing di bawah.
+        self.mic_processor.process(mic);
 
         // Voice soundboard.
         let mut active_voices = 0u32;

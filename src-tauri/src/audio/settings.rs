@@ -42,6 +42,8 @@ pub struct MicSettings {
     /// Attack/release dalam ms.
     pub noise_gate_attack_ms: f32,
     pub noise_gate_release_ms: f32,
+    /// Noise gate strength: 1.0 = gentle, 20.0 = aggressive reduction.
+    pub noise_gate_ratio: f32,
     /// Compressor: perkecil dinamika untuk menjaga level konsisten.
     pub compressor_enabled: bool,
     /// Threshold dalam dBFS di atas mana kompresi diterapkan.
@@ -69,6 +71,7 @@ impl Default for MicSettings {
             noise_gate_threshold: -45.0,
             noise_gate_attack_ms: 5.0,
             noise_gate_release_ms: 30.0,
+            noise_gate_ratio: 10.0,
             compressor_enabled: false,
             compressor_threshold: -25.0,
             compressor_ratio: 4.0,

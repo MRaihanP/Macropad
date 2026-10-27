@@ -351,6 +351,7 @@ impl Engine {
                 sfx_muted: settings.sfx_muted,
                 monitor_enabled: settings.monitor_enabled,
                 mode: PlayMode::parse(&settings.mode),
+                mic_pre: settings.mic_pre.clone(),
             },
         );
         let mixer_handle = std::thread::Builder::new()
