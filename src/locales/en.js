@@ -115,6 +115,14 @@ export const en = {
 'sb.saveFailed': 'Failed to save: {error}',
 'sb.filterByTag': 'Filter by tag: {tag}',
 'sb.noTags': 'No tags',
+'sb.trim': 'Trim',
+'sb.trimProbing': 'Measuring duration...',
+'sb.trimProbeFailed': 'Failed to read duration: {error}',
+'sb.trimStart': 'Start',
+'sb.trimEnd': 'End',
+'sb.trimInfo': 'Total {total} · selected {length}',
+'sb.trimReset': 'Reset',
+'sb.trimHint': 'Saved automatically. Preview plays the selected range.',
 
 // ---- Halaman Adaptive Key Bind ----
 'adaptive.subtitle': 'Switch presets automatically when a given app becomes the active window.',
@@ -153,6 +161,8 @@ export const en = {
 'audio.micDevice': 'Microphone device',
 'audio.micDeviceHint': 'Mic is mixed into the Discord output and monitor.',
 'audio.micGain': 'Mic volume',
+'audio.sectionMicPre': 'Mic Processing',
+'audio.micBoost': 'Mic Boost',
 'audio.sectionSoundboard': 'Soundboard',
 'audio.sfxVolume': 'Soundboard volume',
 'audio.sfxVolumeHint': 'The Mute toggle silences the soundboard entirely (Discord and monitor).',

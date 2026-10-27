@@ -112,6 +112,14 @@ export const id = {
 'sb.saveFailed': 'Gagal menyimpan: {error}',
 'sb.filterByTag': 'Filter tag: {tag}',
 'sb.noTags': 'Belum ada tag',
+'sb.trim': 'Trim',
+'sb.trimProbing': 'Mengukur durasi...',
+'sb.trimProbeFailed': 'Gagal membaca durasi: {error}',
+'sb.trimStart': 'Mulai',
+'sb.trimEnd': 'Akhir',
+'sb.trimInfo': 'Total {total} · dipilih {length}',
+'sb.trimReset': 'Reset',
+'sb.trimHint': 'Tersimpan otomatis. Preview memutar bagian yang dipilih.',
 
 // ---- Halaman Adaptive Key Bind ----
 'adaptive.subtitle': 'Pindah preset otomatis saat aplikasi tertentu jadi window aktif.',
@@ -150,6 +158,8 @@ export const id = {
 'audio.micDevice': 'Device mikrofon',
 'audio.micDeviceHint': 'Mic digabung ke output Discord dan monitor.',
 'audio.micGain': 'Volume mic',
+'audio.sectionMicPre': 'Proses Mic',
+'audio.micBoost': 'Mic Boost',
 'audio.sectionSoundboard': 'Soundboard',
 'audio.sfxVolume': 'Volume soundboard',
 'audio.sfxVolumeHint': 'Toggle Mute mematikan soundboard sepenuhnya (Discord dan monitor).',
