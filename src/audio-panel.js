@@ -393,15 +393,8 @@ function bindControls() {
   bindSlider('masterGain', 'masterGainVal', 'master');
   bindSlider('monitorVolume', 'monitorVolumeVal', 'monitor');
 
-  // ---- Mic Preprocessing Filter Controls ----
-  bindRangeLabel('micBoost', 'micBoostVal', (v) => (v / 100).toFixed(1) + '×');
-  bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => v + ' dB');
-  bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => v + ':1');
-  bindRangeLabel('eqLow', 'eqLowVal', (v) => v + ' dB');
-  bindRangeLabel('eqMid', 'eqMidVal', (v) => v + ' dB');
-  bindRangeLabel('eqHigh', 'eqHighVal', (v) => v + ' dB');
-
-  $('btnApplyMicPre')?.addEventListener('click', () => {
+  // ---- Mic Preprocessing Filter Controls (auto-apply on change) ----
+  function applyMicPre() {
     const settings = {
       micBoost: Number($('micBoost')?.value || 200) / 100,
       noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
@@ -422,7 +415,28 @@ function bindControls() {
     };
     withError(setAudioMicPre(settings));
     soundLog('mic filter applied', 'info');
-  });
+  }
+
+  // Slider: update label + auto-apply
+  bindRangeLabel('micBoost', 'micBoostVal', (v) => (v / 100).toFixed(1) + '×');
+  bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => v + ' dB');
+  bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => v + ':1');
+  bindRangeLabel('eqLow', 'eqLowVal', (v) => v + ' dB');
+  bindRangeLabel('eqMid', 'eqMidVal', (v) => v + ' dB');
+  bindRangeLabel('eqHigh', 'eqHighVal', (v) => v + ' dB');
+
+  // Auto-apply on every slider/toggle change (debounced)
+  const micPreControls = [
+    'micBoost', 'noiseGateEnabled', 'noiseGateThreshold',
+    'compressorEnabled', 'compressorRatio',
+    'limiterEnabled', 'equalizerEnabled', 'eqLow', 'eqMid', 'eqHigh',
+  ];
+  for (const id of micPreControls) {
+    const el = $(id);
+    if (!el) continue;
+    const event = el.type === 'checkbox' ? 'change' : 'input';
+    el.addEventListener(event, () => debounce('micpre:' + id, applyMicPre, 150));
+  }
 }
 
 // ---- Meter ----
