@@ -21,7 +21,12 @@ const read = (p) => fs.readFileSync(p, 'utf8');
 
 console.log('--- 1. Navigasi sidebar bisa diakses keyboard ---');
 const navMatches = [...html.matchAll(/<(div|button)[^>]*class="nav-item[^"]*"[^>]*>/g)];
-ok(navMatches.length === 4, `ada 4 item navigasi (ditemukan ${navMatches.length})`);
+ok(navMatches.length === 5, `ada 5 item navigasi (ditemukan ${navMatches.length})`);
+// Setiap item navigasi harus punya halaman tujuan. Tanpa ini, klik item akan
+// menyembunyikan semua .page dan meninggalkan layar kosong tanpa pesan.
+const navPages = navMatches.map((m) => (m[0].match(/data-page="([^"]+)"/) || [])[1]);
+ok(navPages.every((name) => name && html.includes(`id="page-${name}"`)),
+  `setiap nav-item punya halaman tujuan (${navPages.join(', ')})`);
 ok(navMatches.every((m) => m[1] === 'button'),
   'semua nav-item adalah <button> - hanya <button> yang masuk tab order dan bisa Enter/Space');
 ok(navMatches.every((m) => m[0].includes('type="button"')),

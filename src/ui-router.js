@@ -31,6 +31,9 @@ export function switchPage(name, navOverride) {
     else i.removeAttribute('aria-current');
   });
   document.querySelectorAll('.page').forEach(p => p.style.display = (p.id === 'page-' + name) ? 'block' : 'none');
+  // Beri tahu modul halaman supaya bisa menyegarkan data saat halaman dibuka
+  // (mis. library soundboard yang berubah dari tempat lain).
+  document.dispatchEvent(new CustomEvent('page:change', { detail: name }));
 }
 
 // Hook halaman ikut dipasang di sini, tapi butuh adaptive.js (untuk

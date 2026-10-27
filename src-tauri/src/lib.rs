@@ -523,6 +523,64 @@ fn default_sound_volume() -> f32 {
     1.0
 }
 
+/// Patch metadata dari UI. Field yang tidak dikirim tidak diubah.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct SoundMetaPatch {
+    volume: Option<f32>,
+    tags: Option<Vec<String>>,
+    favorite: Option<bool>,
+    /// String kosong = hapus warna.
+    color: Option<String>,
+}
+
+/// File yang dikirim frontend lewat drag/drop (path asli tidak tersedia di
+/// WebView2 saat drag-drop native Tauri dimatikan).
+#[derive(Deserialize)]
+struct ImportFileData {
+    name: String,
+    data: Vec<u8>,
+}
+
+const SOUND_TAG_MAX: usize = 8;
+const SOUND_TAG_LEN: usize = 24;
+
+/// Rapikan tag: trim, buang '#' di depan, batasi panjang/jumlah, dedupe
+/// case-insensitive supaya "Meme" dan "meme" tidak tampil dua kali.
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in tags {
+        let tag = raw.trim().trim_start_matches('#').trim();
+        if tag.is_empty() {
+            continue;
+        }
+        let tag = clip_utf8(tag, SOUND_TAG_LEN).trim().to_string();
+        if tag.is_empty() || out.iter().any(|existing| existing.eq_ignore_ascii_case(&tag)) {
+            continue;
+        }
+        out.push(tag);
+        if out.len() >= SOUND_TAG_MAX {
+            break;
+        }
+    }
+    out
+}
+
+/// Warna disimpan sebagai `#rrggbb`. String kosong berarti tanpa warna.
+fn normalize_color(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let hex = value.trim_start_matches('#');
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(Some(format!("#{}", hex.to_ascii_lowercase())))
+    } else {
+        Err(format!("warna tidak valid: {value} (pakai format #rrggbb)"))
+    }
+}
+
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 struct SoundData { sounds: Vec<SoundEntry> }
@@ -560,11 +618,24 @@ fn save_sounds(app: &tauri::AppHandle, d: &SoundData) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
-fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, String> {
-    let dir = sounds_dir(app).ok_or("gagal dapatkan folder sounds")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+/// Nama suara unik (dipakai juga sebagai id) supaya dua file dengan stem sama
+/// tidak saling menimpa.
+fn unique_sound_name(existing: &SoundData, stem: &str) -> String {
+    let mut name = stem.to_string();
+    let mut counter = 1;
+    while existing.sounds.iter().any(|s| s.name == name) {
+        if counter > 999 {
+            break;
+        }
+        name = format!("{}_{}", stem, counter);
+        counter += 1;
+    }
+    name
+}
+
+/// Path relatif unik di folder sounds. File yang namanya sama diberi akhiran
+/// angka, bukan ditimpa.
+fn unique_rel_path(dir: &Path, stem: &str, ext: &str) -> (String, PathBuf) {
     let mut rel = format!("{}.{}", stem, ext);
     let mut dest = dir.join(&rel);
     let mut counter = 1;
@@ -573,25 +644,14 @@ fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, S
         dest = dir.join(&rel);
         counter += 1;
     }
-    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
-    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-    // --- PATCH: Auto-numbering jika nama suara sudah ada di metadata ---
-    let existing = load_sounds(app);
-    let mut sound_name = stem.to_string();
-    let mut counter = 1;
-    loop {
-        if !existing.sounds.iter().any(|e| e.name == sound_name) {
-            break;
-        }
-        if counter > 999 { break; } // safety limit
-        sound_name = format!("{}_{}", stem, counter);
-        counter += 1;
-    }
-    Ok(SoundEntry {
-            // --- PATCH: Gunakan nama file (auto-numbering) sebagai ID ---
-            id: sound_name.clone(),
-            name: sound_name,
-        rel_path: rel,
+    (rel, dest)
+}
+
+fn new_sound_entry(name: String, rel_path: String, size: u64) -> SoundEntry {
+    SoundEntry {
+        id: name.clone(),
+        name,
+        rel_path,
         size,
         duration_ms: 0,
         volume: 1.0,
@@ -601,7 +661,20 @@ fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, S
         favorite: false,
         color: None,
         mode: None,
-    })
+    }
+}
+
+fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, String> {
+    let dir = sounds_dir(app).ok_or("gagal dapatkan folder sounds")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
+    let (rel, dest) = unique_rel_path(&dir, stem, ext);
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    let existing = load_sounds(app);
+    let name = unique_sound_name(&existing, stem);
+    Ok(new_sound_entry(name, rel, size))
 }
 
 const AUDIO_EXTS: &[&str] = &["wav", "mp3", "ogg", "m4a", "flac", "aiff", "aif"];
@@ -624,6 +697,99 @@ fn collect_audio(dir: &Path, out: &mut Vec<PathBuf>) {
 #[tauri::command]
 fn soundboard_list(app: tauri::AppHandle) -> SoundView {
     SoundView { sounds: load_sounds(&app).sounds }
+}
+
+/// Simpan metadata library (volume, tag, favorit, warna). Volume ikut
+/// meng-invalidate cache decode karena `Clip.gain` dipanggang saat decode.
+#[tauri::command]
+fn soundboard_update_meta(
+    app: tauri::AppHandle,
+    id: String,
+    patch: SoundMetaPatch,
+) -> Result<SoundEntry, String> {
+    let mut data = load_sounds(&app);
+    let entry = data
+        .sounds
+        .iter_mut()
+        .find(|sound| sound.id == id)
+        .ok_or_else(|| format!("suara \"{id}\" tidak ditemukan"))?;
+
+    let volume_changed = patch.volume.is_some();
+    if let Some(volume) = patch.volume {
+        if !volume.is_finite() {
+            return Err("volume tidak valid".into());
+        }
+        entry.volume = volume.clamp(0.0, 4.0);
+    }
+    if let Some(tags) = patch.tags {
+        entry.tags = normalize_tags(tags);
+    }
+    if let Some(favorite) = patch.favorite {
+        entry.favorite = favorite;
+    }
+    if let Some(color) = patch.color {
+        entry.color = normalize_color(&color)?;
+    }
+    let updated = entry.clone();
+
+    save_sounds(&app, &data)?;
+    if volume_changed {
+        crate::audio::decode::invalidate(&id);
+    }
+    Ok(updated)
+}
+
+/// Import file yang di-drop ke webview. WebView2 tidak memberi path asli saat
+/// drag-drop native Tauri dimatikan, jadi isi file dikirim sebagai bytes.
+#[tauri::command]
+async fn soundboard_import_data(
+    app: tauri::AppHandle,
+    files: Vec<ImportFileData>,
+) -> Result<Vec<SoundEntry>, String> {
+    const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SoundEntry>, String> {
+        let dir = sounds_dir(&app).ok_or("gagal dapatkan folder sounds")?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut data = load_sounds(&app);
+        let mut imported = Vec::new();
+
+        for file in files {
+            if file.data.is_empty() {
+                continue;
+            }
+            if file.data.len() > MAX_FILE_BYTES {
+                eprintln!("[soundboard] lewati {}: file terlalu besar", file.name);
+                continue;
+            }
+            let src = Path::new(&file.name);
+            let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("sound");
+            let ext = src
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("wav")
+                .to_ascii_lowercase();
+            if !AUDIO_EXTS.iter().any(|e| e.eq_ignore_ascii_case(&ext)) {
+                eprintln!("[soundboard] lewati {}: ekstensi tidak didukung", file.name);
+                continue;
+            }
+
+            let (rel, dest) = unique_rel_path(&dir, stem, &ext);
+            if let Err(err) = std::fs::write(&dest, &file.data) {
+                eprintln!("[soundboard] gagal tulis {}: {}", dest.display(), err);
+                continue;
+            }
+            let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+            let name = unique_sound_name(&data, stem);
+            let entry = new_sound_entry(name, rel, size);
+            data.sounds.push(entry.clone());
+            imported.push(entry);
+        }
+
+        save_sounds(&app, &data)?;
+        Ok(imported)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1583,6 +1749,8 @@ pub fn run() {
             soundboard_delete,
             soundboard_read,
             soundboard_rename,
+            soundboard_update_meta,
+            soundboard_import_data,
             // Audio engine v2
             audio_devices,
             audio_state,
@@ -1629,7 +1797,10 @@ pub fn run() {
 #[cfg(test)]
 
 mod tests {
-    use super::{AppData, AppEntry, find_app, language_of, system_locale};
+    use super::{
+        find_app, language_of, normalize_color, normalize_tags, system_locale, AppData, AppEntry,
+        SOUND_TAG_LEN, SOUND_TAG_MAX,
+    };
 
     fn e(name: &str) -> AppEntry {
         AppEntry { name: name.to_string(), id: format!("C:\\{}.lnk", name), custom: false }
@@ -1732,5 +1903,42 @@ mod tests {
             // menyiapkan bahasa bawaan.
             None => { /* diterima */ }
         }
+    }
+
+    // ---- soundboard: metadata library ----
+
+    #[test]
+    fn tag_dirapikan_dan_didedupe() {
+        let tags = normalize_tags(vec![
+            "  Meme ".into(),
+            "#meme".into(),
+            "".into(),
+            "   ".into(),
+            "Discord".into(),
+            "discord".into(),
+        ]);
+        assert_eq!(tags, vec!["Meme", "Discord"]);
+    }
+
+    #[test]
+    fn tag_dibatasi_jumlah_dan_panjang() {
+        let banyak: Vec<String> = (0..20).map(|i| format!("tag-{i}")).collect();
+        let tags = normalize_tags(banyak);
+        assert_eq!(tags.len(), SOUND_TAG_MAX);
+
+        // 24 byte ASCII; emoji multibyte tidak boleh terpotong di tengah char.
+        let tags = normalize_tags(vec![format!("{}😀", "a".repeat(40))]);
+        assert_eq!(tags.len(), 1);
+        assert!(tags[0].len() <= SOUND_TAG_LEN);
+        assert!(tags[0].chars().all(|c| c != '\u{FFFD}'));
+    }
+
+    #[test]
+    fn warna_hex_divalidasi() {
+        assert_eq!(normalize_color("#4ECDC4").unwrap(), Some("#4ecdc4".into()));
+        assert_eq!(normalize_color("4ecdc4").unwrap(), Some("#4ecdc4".into()));
+        assert_eq!(normalize_color("   ").unwrap(), None);
+        assert!(normalize_color("#12345").is_err());
+        assert!(normalize_color("teal").is_err());
     }
 }

@@ -29,6 +29,10 @@
         <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.4.3.6.8.6 1.3V16h5.8v-.8c0-.5.2-1 .6-1.3A6 6 0 0 0 12 3Z"/></svg></span>
         <span class="nav-label" data-i18n="nav.rgb">RGB Setting</span>
       </button>
+      <button type="button" class="nav-item" data-page="soundboard" data-i18n-attr="title:nav.soundboard">
+        <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 6a9 9 0 0 1 0 12"/></svg></span>
+        <span class="nav-label" data-i18n="nav.soundboard">Soundboard</span>
+      </button>
     </nav>
     <nav class="sidebar-nav sidebar-bottom">
       <button type="button" class="nav-item" data-page="settings" data-i18n-attr="title:nav.settings">
@@ -260,6 +264,41 @@
       <div id="presetList" class="preset-list"></div>
 
       <button class="add-preset-bar" id="btnAddPreset" data-i18n="adaptive.addPreset">+ Tambah preset</button>
+    </div>
+
+    <!-- ============ PAGE: SOUNDBOARD ============ -->
+    <div id="page-soundboard" class="page" style="display:none;">
+      <div class="adaptive-header">
+        <div>
+          <h2 style="margin:0;">Soundboard</h2>
+          <div class="hint" data-i18n="sb.subtitle">Library suara, tag, favorit, warna, dan volume per suara.</div>
+        </div>
+        <div class="sb-header-actions">
+          <button class="small" id="sbImportFiles" data-i18n="sb.importFiles">+ File</button>
+          <button class="small" id="sbImportFolder" data-i18n="sb.importFolder">+ Folder</button>
+          <button class="small" id="sbStop" data-i18n="sb.stop">■ Stop</button>
+          <button class="small" id="sbRefresh" data-i18n-attr="title:sb.refresh|aria-label:sb.refresh">↻</button>
+        </div>
+      </div>
+
+      <div class="panel sb-panel" id="sbDropZone">
+        <div class="sb-toolbar">
+          <input type="text" id="sbSearch" class="sb-search"
+            data-i18n-attr="placeholder:sb.searchPlaceholder|aria-label:sb.searchPlaceholder"
+            placeholder="Cari nama atau tag...">
+          <select id="sbTagFilter" class="sb-tag-filter" data-i18n-attr="aria-label:sb.filterTag"></select>
+          <label class="toggle-row sb-fav-filter">
+            <input type="checkbox" id="sbFavFilter">
+            <span class="toggle-label-text" data-i18n="sb.favoritesOnly">Favorit saja</span>
+          </label>
+          <span class="hint sb-count" id="sbCount">—</span>
+        </div>
+
+        <div class="sb-grid" id="sbGrid"></div>
+        <div class="sb-empty" id="sbEmpty" style="display:none;">—</div>
+
+        <div class="hint sb-drop-hint" data-i18n="sb.dropHint">Tarik file audio ke halaman ini untuk menambahkan.</div>
+      </div>
     </div>
 
     <!-- ============ PAGE: SETTING ============ -->

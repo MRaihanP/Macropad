@@ -457,3 +457,75 @@ input[readonly] { color: var(--accent); cursor: default; }
   .audio-status-head, .audio-status-row { grid-template-columns: 64px minmax(0, 1.4fr) 70px 56px; }
   .audio-status-head span:nth-child(3), .audio-status-row > :nth-child(3) { display: none; }
 }
+
+/* ==================== SOUNDBOARD PAGE ==================== */
+.sb-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sb-panel { display: flex; flex-direction: column; gap: 12px; transition: border-color .15s ease, background .15s ease; }
+.sb-panel.dragover { border-color: var(--accent); border-style: dashed; background: rgba(78, 205, 196, 0.06); }
+
+.sb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sb-search { flex: 1 1 220px; min-width: 160px; padding: 7px 10px; }
+.sb-tag-filter { flex: 0 1 170px; min-width: 130px; }
+.sb-fav-filter { gap: 6px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.sb-count { margin-left: auto; white-space: nowrap; }
+
+.sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+
+.sb-card { display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--line); border-left: 3px solid var(--sb-color, var(--type-sound));
+  border-radius: 10px; background: var(--panel-hi); }
+.sb-card.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
+
+.sb-card-head { display: flex; align-items: flex-start; gap: 8px; }
+.sb-fav { flex: 0 0 auto; padding: 0 2px; border: none; background: transparent;
+  color: var(--line); font-size: 1.05rem; line-height: 1; }
+.sb-fav:hover { color: #f7d154; border-color: transparent; }
+.sb-fav.on { color: #f7d154; }
+
+.sb-title { flex: 1; min-width: 0; }
+.sb-name { font-size: 0.82rem; font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.sb-sub { margin-top: 2px; font-family: var(--mono); font-size: 0.64rem; color: var(--muted); }
+.sb-dot { flex: 0 0 auto; width: 10px; height: 10px; margin-top: 4px; border-radius: 50%;
+  background: var(--sb-color, var(--type-sound)); }
+
+.sb-tags { display: flex; flex-wrap: wrap; gap: 4px; min-height: 18px; }
+.sb-tag { padding: 2px 7px; border-radius: 999px; font-size: 0.62rem; font-weight: 500;
+  color: var(--accent); background: rgba(78, 205, 196, 0.10); border: 1px solid rgba(78, 205, 196, 0.25); }
+.sb-tag:hover { background: rgba(78, 205, 196, 0.20); border-color: var(--accent); }
+.sb-tags-empty { font-size: 0.64rem; font-style: italic; color: var(--muted); }
+
+.sb-controls { display: flex; align-items: center; gap: 8px; }
+.sb-play { flex: 0 0 auto; width: 30px; padding: 0; font-size: 0.7rem; }
+.sb-vol { flex: 1 1 auto; min-width: 60px; accent-color: var(--accent); }
+.sb-vol-val { flex: 0 0 38px; font-family: var(--mono); font-size: 0.66rem;
+  color: var(--muted); text-align: right; }
+
+.sb-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sb-actions button { padding: 4px 8px; font-size: 0.68rem; }
+.sb-edit-btn, .sb-rename-btn { background: transparent; }
+.sb-delete-btn { color: var(--muted); }
+.sb-delete-btn:hover { color: #fff; background: var(--err); border-color: var(--err); }
+
+.sb-edit { display: flex; flex-direction: column; gap: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line); }
+.sb-edit-label { display: flex; flex-direction: column; gap: 4px; font-size: 0.64rem;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.sb-tag-input { width: 100%; flex: none; padding: 6px 8px; font-size: 0.76rem; }
+.sb-color-row { display: flex; flex-direction: column; gap: 5px; }
+.sb-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.sb-swatch { width: 22px; height: 22px; padding: 0; border: 2px solid transparent; border-radius: 50%; }
+.sb-swatch:hover { border-color: var(--text); }
+.sb-swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--panel-hi); }
+.sb-swatch-clear { border: 1px dashed var(--line); background: transparent;
+  color: var(--muted); font-size: 0.8rem; }
+.sb-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+.sb-empty { padding: 24px 12px; text-align: center; color: var(--muted);
+  font-size: 0.78rem; border: 1px dashed var(--line); border-radius: 10px; }
+.sb-drop-hint { text-align: center; }
+
+@media (max-width: 720px) {
+  .sb-count { margin-left: 0; }
+  .sb-grid { grid-template-columns: 1fr; }
+}

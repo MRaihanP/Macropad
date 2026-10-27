@@ -42,6 +42,21 @@ window.soundLog = soundLog;
 // ---- State ----
 let soundList = [];
 
+// Listener perubahan list: dipakai halaman Soundboard supaya ikut ter-refresh
+// setelah import/rename/delete dari picker atau dari halaman lain.
+const listListeners = new Set();
+
+export function onSoundListChanged(fn) {
+  listListeners.add(fn);
+  return () => listListeners.delete(fn);
+}
+
+function emitSoundListChanged() {
+  for (const fn of listListeners) {
+    try { fn(soundList); } catch (e) { console.error('[soundboard] listener gagal:', e); }
+  }
+}
+
 // ---- Playback (delegated ke audio engine Rust) ----
 
 /// Putar suara dengan ID tertentu. Engine yang menangani interrupt/restart,
@@ -81,15 +96,59 @@ export async function stopSound() {
 export async function loadSoundList() {
   try {
     const view = await invoke('soundboard_list');
-    soundList = view.sounds || [];
+    soundList = view?.sounds || [];
   } catch (e) {
     console.error('[soundboard] gagal load list:', e);
     soundList = [];
   }
+  emitSoundListChanged();
 }
 
 export function getSoundList() {
   return soundList;
+}
+
+// ---- Metadata library ----
+
+/// Update sebagian metadata (volume/tags/favorite/color). Mengembalikan entry
+/// terbaru dan menyegarkan salinan lokal, tanpa memicu render ulang supaya
+/// slider volume tidak berhenti saat sedang digeser.
+export async function updateSoundMeta(id, patch) {
+  const entry = await invoke('soundboard_update_meta', { id, patch });
+  const index = soundList.findIndex((sound) => sound.id === id);
+  if (index >= 0) soundList[index] = entry;
+  return entry;
+}
+
+// Batas aman untuk drop file: isi file dikirim sebagai array byte lewat IPC.
+// Klip soundboard normalnya jauh di bawah ini.
+const MAX_DROP_BYTES = 8 * 1024 * 1024;
+const AUDIO_NAME_RE = /\.(wav|mp3|ogg|m4a|flac|aiff|aif)$/i;
+
+export function isAudioFileName(name) {
+  return AUDIO_NAME_RE.test(name || '');
+}
+
+/// Import file hasil drag/drop. Path asli tidak tersedia di WebView2 (drag-drop
+/// native Tauri dimatikan), jadi isi file dibaca di frontend lalu dikirim.
+export async function importSoundData(files) {
+  const picked = [...(files || [])].filter((file) => isAudioFileName(file.name));
+  if (picked.length === 0) return [];
+
+  const payload = [];
+  for (const file of picked) {
+    if (file.size > MAX_DROP_BYTES) {
+      log('Lewati "' + file.name + '": file lebih dari 8 MB.', 'err');
+      continue;
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    payload.push({ name: file.name, data: Array.from(bytes) });
+  }
+  if (payload.length === 0) return [];
+
+  const imported = await invoke('soundboard_import_data', { files: payload });
+  if (imported.length > 0) await loadSoundList();
+  return imported;
 }
 
 // ---- Import ----
@@ -131,6 +190,8 @@ export async function deleteSound(id) {
   if (!ok) return false;
   try {
     await invoke('soundboard_delete', { id });
+    // Jangan biarkan suara yang sudah dihapus terus berbunyi dari cache voice.
+    await stopSounds(id);
     await loadSoundList();
     return true;
   } catch (e) {
@@ -143,7 +204,8 @@ export async function deleteSound(id) {
 
 export async function renameSound(id, newName) {
   try {
-    await invoke('soundboard_rename', { id, new_name: newName });
+    // Tauri v2 memetakan argumen Rust `new_name` ke `newName` di JS.
+    await invoke('soundboard_rename', { id, newName });
     await loadSoundList();
     renderSoundPicker();
     return true;
@@ -257,12 +319,17 @@ export function initSoundPicker() {
       picker.classList.remove('dragover');
       const files = e.dataTransfer && e.dataTransfer.files;
       if (files && files.length > 0) {
-        await pickSoundFiles();
-        await openSoundPicker();
+        try {
+          const imported = await importSoundData(files);
+          if (imported.length > 0) log(imported.length + ' suara diimpor.', 'ok');
+        } catch (err) {
+          log('Gagal impor suara: ' + err, 'err');
+        }
       } else {
+        // Fallback: sebagian webview tidak memberi objek File saat drop.
         await pickSoundFiles();
-        await openSoundPicker();
       }
+      await openSoundPicker();
     });
   }
 }

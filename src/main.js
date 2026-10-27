@@ -49,6 +49,8 @@ import { switchPage, initSidebar, initRouter } from "./ui-router.js";
 import { initAppPicker } from "./app-picker.js";
 // Soundboard: manajemen suara + playback lewat audio engine Rust.
 import { initSoundPicker } from "./soundboard.js";
+// Halaman Soundboard: library, tag/favorit/warna, volume per suara.
+import { initSoundboardPage } from "./soundboard-page.js";
 // Panel audio Settings: routing CABLE/monitor, mic, meter, diagnostik.
 import { initAudioPanel } from "./audio-panel.js";
 // Halaman Home: tab layer, grid tombol, daftar knob, panel editor, rekam keyboard.
@@ -142,6 +144,7 @@ initHomePage({ markDirty: () => { dirty = true; } });
 initEditorPanel();
 initAppPicker();
 initSoundPicker();
+initSoundboardPage().catch((e) => console.error('[main] initSoundboardPage failed:', e));
 
 // Tray & autostart. initTray() menyuntikkan flag "belum tersimpan" supaya modul tray
 // tidak perlu menyimpan salinannya.
