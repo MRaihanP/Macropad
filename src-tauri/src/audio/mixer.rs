@@ -101,8 +101,12 @@ impl MicProcessor {
     pub fn new(settings: MicSettings) -> Self {
         Self {
             settings,
-            rms_envelope: 0.0,
-            gate_gain: 0.0, // mulai di muted (noise floor)
+            // Init ke threshold_lin supaya gate terbuka sejak frame pertama.
+            // Jika init ke 0.0, gate akan menutup total selama envelope
+            // follower belum naik ke threshold — ini bisa terasa seperti
+            // "mic tidak masuk" di awal.
+            rms_envelope: 0.1,
+            gate_gain: 1.0, // default pass-through (gate terbuka)
         }
     }
 
