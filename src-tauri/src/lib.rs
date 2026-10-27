@@ -532,6 +532,10 @@ struct SoundMetaPatch {
     favorite: Option<bool>,
     /// String kosong = hapus warna.
     color: Option<String>,
+    /// Trim non-destruktif dalam milidetik. `0/0` = tanpa trim; akhir 0 =
+    /// sampai akhir file.
+    trim_start_ms: Option<u32>,
+    trim_end_ms: Option<u32>,
 }
 
 /// File yang dikirim frontend lewat drag/drop (path asli tidak tersedia di
@@ -578,6 +582,38 @@ fn normalize_color(value: &str) -> Result<Option<String>, String> {
     } else {
         Err(format!("warna tidak valid: {value} (pakai format #rrggbb)"))
     }
+}
+
+/// Validasi trim terhadap durasi yang diketahui. Nilai melewati durasi
+/// dipotong, dan pemilihan seluruh file dinormalkan menjadi `0/0` (tanpa trim)
+/// supaya kalau file diganti tidak menyisakan rentang yang salah.
+fn normalize_trim(start_ms: u32, end_ms: u32, duration_ms: u32) -> Result<(u32, u32), String> {
+    let start = if duration_ms > 0 {
+        start_ms.min(duration_ms)
+    } else {
+        start_ms
+    };
+    let mut end = if duration_ms > 0 {
+        end_ms.min(duration_ms)
+    } else {
+        end_ms
+    };
+
+    // end == 0 berarti "sampai akhir", jadi hanya nilai eksplisit yang diuji.
+    if end > 0 && end <= start {
+        return Err(format!(
+            "trim tidak valid: akhir ({end} ms) harus setelah awal ({start} ms)"
+        ));
+    }
+    if end == 0 && duration_ms > 0 && start >= duration_ms {
+        return Err(format!(
+            "trim tidak valid: awal ({start} ms) harus sebelum akhir ({duration_ms} ms)"
+        ));
+    }
+    if start == 0 && duration_ms > 0 && end >= duration_ms {
+        end = 0;
+    }
+    Ok((start, end))
 }
 
 
@@ -647,13 +683,13 @@ fn unique_rel_path(dir: &Path, stem: &str, ext: &str) -> (String, PathBuf) {
     (rel, dest)
 }
 
-fn new_sound_entry(name: String, rel_path: String, size: u64) -> SoundEntry {
+fn new_sound_entry(name: String, rel_path: String, size: u64, duration_ms: u32) -> SoundEntry {
     SoundEntry {
         id: name.clone(),
         name,
         rel_path,
         size,
-        duration_ms: 0,
+        duration_ms,
         volume: 1.0,
         trim_start_ms: 0,
         trim_end_ms: 0,
@@ -661,6 +697,19 @@ fn new_sound_entry(name: String, rel_path: String, size: u64) -> SoundEntry {
         favorite: false,
         color: None,
         mode: None,
+    }
+}
+
+/// Durasi untuk ditampilkan dan dipakai UI trim. Kegagalan probe tidak
+/// menggagalkan import - entry tetap masuk dengan durasi 0 dan bisa di-probe
+/// ulang saat panel trim dibuka.
+fn probe_duration(path: &Path) -> u32 {
+    match crate::audio::decode::probe_duration_ms(path) {
+        Ok(ms) => ms,
+        Err(err) => {
+            eprintln!("[soundboard] gagal baca durasi {}: {}", path.display(), err);
+            0
+        }
     }
 }
 
@@ -674,7 +723,8 @@ fn import_sound_file(app: &tauri::AppHandle, src: &Path) -> Result<SoundEntry, S
     let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
     let existing = load_sounds(app);
     let name = unique_sound_name(&existing, stem);
-    Ok(new_sound_entry(name, rel, size))
+    let duration_ms = probe_duration(&dest);
+    Ok(new_sound_entry(name, rel, size, duration_ms))
 }
 
 const AUDIO_EXTS: &[&str] = &["wav", "mp3", "ogg", "m4a", "flac", "aiff", "aif"];
@@ -699,8 +749,48 @@ fn soundboard_list(app: tauri::AppHandle) -> SoundView {
     SoundView { sounds: load_sounds(&app).sounds }
 }
 
-/// Simpan metadata library (volume, tag, favorit, warna). Volume ikut
-/// meng-invalidate cache decode karena `Clip.gain` dipanggang saat decode.
+/// Ukur durasi file lalu simpan ke metadata. Dipakai library lama yang belum
+/// punya `durationMs` dan saat panel trim dibuka. Trim lama ikut dirapikan
+/// kalau ternyata melewati durasi sebenarnya.
+#[tauri::command]
+async fn soundboard_probe(app: tauri::AppHandle, id: String) -> Result<SoundEntry, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<SoundEntry, String> {
+        let dir = sounds_dir(&app).ok_or("gagal dapatkan folder sounds")?;
+        let mut data = load_sounds(&app);
+
+        let duration = {
+            let entry = data
+                .sounds
+                .iter()
+                .find(|sound| sound.id == id)
+                .ok_or_else(|| format!("suara \"{id}\" tidak ditemukan"))?;
+            let path = dir.join(&entry.rel_path);
+            crate::audio::decode::probe_duration_ms(&path)?
+        };
+
+        let entry = data
+            .sounds
+            .iter_mut()
+            .find(|sound| sound.id == id)
+            .ok_or_else(|| format!("suara \"{id}\" tidak ditemukan"))?;
+        entry.duration_ms = duration;
+        let (start, end) =
+            normalize_trim(entry.trim_start_ms, entry.trim_end_ms, duration).unwrap_or((0, 0));
+        entry.trim_start_ms = start;
+        entry.trim_end_ms = end;
+
+        let updated = entry.clone();
+        save_sounds(&app, &data)?;
+        crate::audio::decode::invalidate(&id);
+        Ok(updated)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Simpan metadata library (volume, tag, favorit, warna, trim). Perubahan
+/// volume/trim meng-invalidate cache decode karena nilai itu dipanggang saat
+/// decode (`Clip.gain` dan rentang sample).
 #[tauri::command]
 fn soundboard_update_meta(
     app: tauri::AppHandle,
@@ -714,12 +804,20 @@ fn soundboard_update_meta(
         .find(|sound| sound.id == id)
         .ok_or_else(|| format!("suara \"{id}\" tidak ditemukan"))?;
 
-    let volume_changed = patch.volume.is_some();
+    let _volume_changed = patch.volume.is_some();
     if let Some(volume) = patch.volume {
         if !volume.is_finite() {
             return Err("volume tidak valid".into());
         }
         entry.volume = volume.clamp(0.0, 4.0);
+    }
+    let trim_changed = patch.trim_start_ms.is_some() || patch.trim_end_ms.is_some();
+    if trim_changed {
+        let start = patch.trim_start_ms.unwrap_or(entry.trim_start_ms);
+        let end = patch.trim_end_ms.unwrap_or(entry.trim_end_ms);
+        let (start, end) = normalize_trim(start, end, entry.duration_ms)?;
+        entry.trim_start_ms = start;
+        entry.trim_end_ms = end;
     }
     if let Some(tags) = patch.tags {
         entry.tags = normalize_tags(tags);
@@ -733,7 +831,10 @@ fn soundboard_update_meta(
     let updated = entry.clone();
 
     save_sounds(&app, &data)?;
-    if volume_changed {
+    // Gain diterapkan di play-time (audio_play membaca entry.volume & meneruskan
+    // ke mixer), jadi mengubah volume tidak memerlukan invalidate cache clip.
+    // Hanya trim yang perlu invalidate karena memengaruhi sample hasil decode.
+    if trim_changed {
         crate::audio::decode::invalidate(&id);
     }
     Ok(updated)
@@ -780,7 +881,8 @@ async fn soundboard_import_data(
             }
             let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
             let name = unique_sound_name(&data, stem);
-            let entry = new_sound_entry(name, rel, size);
+            let duration_ms = probe_duration(&dest);
+            let entry = new_sound_entry(name, rel, size, duration_ms);
             data.sounds.push(entry.clone());
             imported.push(entry);
         }
@@ -1744,6 +1846,7 @@ pub fn run() {
             apps_remove_custom,
             launch_app,
             soundboard_list,
+            soundboard_probe,
             soundboard_pick_files,
             soundboard_pick_folder,
             soundboard_delete,
@@ -1798,8 +1901,8 @@ pub fn run() {
 
 mod tests {
     use super::{
-        find_app, language_of, normalize_color, normalize_tags, system_locale, AppData, AppEntry,
-        SOUND_TAG_LEN, SOUND_TAG_MAX,
+        find_app, language_of, normalize_color, normalize_tags, normalize_trim, system_locale,
+        AppData, AppEntry, SOUND_TAG_LEN, SOUND_TAG_MAX,
     };
 
     fn e(name: &str) -> AppEntry {
@@ -1940,5 +2043,38 @@ mod tests {
         assert_eq!(normalize_color("   ").unwrap(), None);
         assert!(normalize_color("#12345").is_err());
         assert!(normalize_color("teal").is_err());
+    }
+
+    // ---- soundboard: trim ----
+
+    #[test]
+    fn trim_penuh_dinormalkan_jadi_tanpa_trim() {
+        // Memilih seluruh file sama dengan tidak trim; simpan 0/0 supaya file
+        // yang diganti tidak mewarisi rentang lama.
+        assert_eq!(normalize_trim(0, 10_000, 10_000).unwrap(), (0, 0));
+        assert_eq!(normalize_trim(0, 0, 10_000).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn trim_di_clamp_ke_durasi() {
+        assert_eq!(normalize_trim(1_000, 99_000, 10_000).unwrap(), (1_000, 10_000));
+        assert_eq!(normalize_trim(5_000, 0, 10_000).unwrap(), (5_000, 0));
+        // Awal tepat di/lewat durasi berarti tidak ada audio yang tersisa.
+        assert!(normalize_trim(10_000, 0, 10_000).is_err());
+        assert!(normalize_trim(12_000, 0, 10_000).is_err());
+    }
+
+    #[test]
+    fn trim_akhir_harus_setelah_awal() {
+        assert!(normalize_trim(3_000, 1_000, 10_000).is_err());
+        assert!(normalize_trim(3_000, 3_000, 10_000).is_err());
+        // 0 berarti "sampai akhir", jadi awal 1 detik tetap valid.
+        assert_eq!(normalize_trim(1_000, 0, 10_000).unwrap(), (1_000, 0));
+    }
+
+    #[test]
+    fn trim_tanpa_durasi_tidak_menebak() {
+        assert_eq!(normalize_trim(500, 2_500, 0).unwrap(), (500, 2_500));
+        assert!(normalize_trim(2_500, 500, 0).is_err());
     }
 }
