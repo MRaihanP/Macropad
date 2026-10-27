@@ -684,8 +684,11 @@ fn unique_rel_path(dir: &Path, stem: &str, ext: &str) -> (String, PathBuf) {
 }
 
 fn new_sound_entry(name: String, rel_path: String, size: u64, duration_ms: u32) -> SoundEntry {
+    // id = rel_path tanpa extension — deterministik, persisten, tidak berubah
+    // saat user rename atau ada collision nama di library.
+    let id = rel_path.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or(rel_path.clone());
     SoundEntry {
-        id: name.clone(),
+        id,
         name,
         rel_path,
         size,
