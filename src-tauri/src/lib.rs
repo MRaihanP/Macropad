@@ -1012,7 +1012,13 @@ fn soundboard_rename(app: tauri::AppHandle, id: String, new_name: String) -> Res
     } else {
         new_name
     };
+    // id di-set sama dengan final_name agar konsisten dengan nama di JSON,
+    // tapi dipotong ke MAX_SOUND_ID_LEN karena firmware punya buffer limit.
+    let id = final_name.char_indices().nth(MAX_SOUND_ID_LEN)
+        .map(|(i, _)| final_name[..i].to_string())
+        .unwrap_or(final_name.clone());
     data.sounds[idx].name = final_name;
+    data.sounds[idx].id = id; // id ikut berubah saat rename
     save_sounds(&app, &data)?;
     Ok(())
 }
