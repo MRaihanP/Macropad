@@ -405,6 +405,24 @@ input[readonly] { color: var(--accent); cursor: default; }
 .audio-value { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); width: 40px;
   text-align: right; flex: 0 0 40px; }
 
+/* Slider kecil untuk filter (noise gate threshold, compressor ratio, EQ bands). */
+.audio-slider-small { -webkit-appearance: none; appearance: none;
+  flex: 0 0 90px; width: 90px; height: 4px; border-radius: 999px;
+  background: var(--line); outline: none; padding: 0; min-width: 0;
+  accent-color: var(--accent-dim); }
+.audio-slider-small::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent-dim); border: 2px solid var(--panel); cursor: pointer;
+  box-shadow: 0 0 0 1px var(--accent-dim); }
+.audio-slider-small::-moz-range-thumb { width: 9px; height: 9px; border-radius: 50%;
+  background: var(--accent-dim); border: 2px solid var(--panel); cursor: pointer; }
+
+/* Tombol Apply di section Mic Pre. */
+.btn-apply { background: var(--accent-dim); color: var(--bg);
+  border: 1px solid var(--accent); padding: 4px 12px; border-radius: 4px;
+  font-size: 0.75rem; cursor: pointer; }
+.btn-apply:hover { background: var(--accent); }
+
 .audio-meter { width: 64px; height: 6px; border-radius: 999px; background: var(--bg);
   border: 1px solid var(--line); overflow: hidden; flex: 0 0 64px; }
 .audio-meter-fill { height: 100%; width: 0%; border-radius: 999px;
@@ -520,6 +538,24 @@ input[readonly] { color: var(--accent); cursor: default; }
 .sb-swatch-clear { border: 1px dashed var(--line); background: transparent;
   color: var(--muted); font-size: 0.8rem; }
 .sb-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+.sb-trimmed { color: var(--type-combo); }
+.sb-trim { display: flex; flex-direction: column; gap: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line); }
+.sb-trim-bar { position: relative; height: 10px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.sb-trim-sel { position: absolute; top: 0; bottom: 0; left: 0; width: 100%;
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent)); opacity: .75; }
+.sb-trim-row { display: flex; align-items: center; gap: 8px; }
+.sb-trim-label { flex: 0 0 42px; font-size: 0.64rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); }
+.sb-trim-slider { flex: 1 1 auto; min-width: 60px; accent-color: var(--accent); }
+.sb-trim-value { flex: 0 0 54px; font-family: var(--mono); font-size: 0.66rem;
+  color: var(--muted); text-align: right; }
+.sb-trim-info { margin: 0; }
+.sb-trim-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sb-trim-actions button { padding: 4px 8px; font-size: 0.68rem; }
+.sb-trim-hint { flex: 1 1 150px; text-align: right; }
 
 .sb-empty { padding: 24px 12px; text-align: center; color: var(--muted);
   font-size: 0.78rem; border: 1px dashed var(--line); border-radius: 10px; }
