@@ -42,6 +42,8 @@ crossbeam-channel = "0.5"
 tauri-plugin-serialplugin = "2.17.1"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
+# Mic DSP: RNNoise-based noise suppression (Fase 3).
+nnnoiseless = "0.2.1"
 # Dukungan async WinRT (IAsyncOperation bisa di-await).
 # windows 0.61 memakai windows-future tanpa fitur std, jadi
 # fitur std (dan modul future) harus diaktifkan di sini.

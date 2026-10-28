@@ -8,6 +8,7 @@
 //! dialokasikan saat `MicChain::new()`; `process()` tidak melakukan alokasi.
 
 use crate::audio::settings::MicSettings;
+use nnnoiseless::DenoiseState;
 
 /// Sample rate internal engine. Sama dengan `mixer::SAMPLE_RATE`.
 pub const SAMPLE_RATE: f32 = 48_000.0;
@@ -162,6 +163,138 @@ impl Biquad {
     }
 }
 
+/// RNNoise-based noise suppression (Fase 3).
+///
+/// Frame 480 sample = 10 ms @ 48 kHz. Output frame selesai diproses
+/// pada blok berikutnya, jadi `wet` tertinggal 480 sample; `dry`
+/// ikut ditunda lewat delay line supaya penjumlahan dry/wet tidak
+/// comb-filter. State RNNoise dialokasikan sekali di `new()`.
+struct Denoise {
+    enabled: bool,
+    target_mix: f32,
+    mix: f32,
+    mix_coef: f32,
+    state: Option<Box<DenoiseState>>,
+    frame_in: [f32; 480],
+    frame_out: [f32; 480],
+    fill: usize,
+    out_pos: usize,
+    ready: bool,
+    dry_delay: [f32; 480],
+    delay_pos: usize,
+    /// VAD 0..1 dari frame terakhir, dipakai gate.
+    vad: f32,
+}
+
+impl Default for Denoise {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_mix: 0.8,
+            mix: 0.0,
+            mix_coef: one_pole(20.0),
+            state: None,
+            frame_in: [0.0; 480],
+            frame_out: [0.0; 480],
+            fill: 0,
+            out_pos: 0,
+            ready: false,
+            dry_delay: [0.0; 480],
+            delay_pos: 0,
+            vad: 0.0,
+        }
+    }
+}
+
+impl Denoise {
+    fn active(&self) -> bool {
+        self.enabled && self.target_mix > 0.001
+    }
+
+    fn configure(&mut self, settings: &MicSettings) {
+        let was_active = self.active();
+        self.enabled = settings.denoise_enabled;
+        self.target_mix = settings.denoise_mix;
+        if !self.active() {
+            self.mix = 0.0;
+            self.vad = 0.0;
+        } else if !was_active {
+            // Alokasi sekali: buat DenoiseState di sini (bukan di process()).
+            self.state = Some(DenoiseState::new());
+            self.prime();
+        }
+    }
+
+    fn prime(&mut self) {
+        self.fill = 0;
+        self.out_pos = 0;
+        self.ready = false;
+        self.mix = 0.0;
+        self.vad = 0.0;
+        self.frame_in.fill(0.0);
+        self.frame_out.fill(0.0);
+        self.dry_delay.fill(0.0);
+        self.delay_pos = 0;
+    }
+
+    fn reset(&mut self) {
+        self.prime();
+    }
+
+    /// Proses satu sample. Bila denoise off/mix 0, sample dikembalikan apa
+    /// adanya (tanpa delay) dan RNNoise tidak dipanggil sama sekali.
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        // Delay line selalu berjalan (murah) supaya saat denoise diaktifkan
+        // di tengah stream, `delayed` sudah berisi audio nyata.
+        let delayed = self.dry_delay[self.delay_pos];
+        self.dry_delay[self.delay_pos] = x;
+        self.delay_pos += 1;
+        if self.delay_pos == 480 {
+            self.delay_pos = 0;
+        }
+
+        if !self.active() {
+            return x;
+        }
+        // Output frame terakhir (aligned dengan `delayed`); sebelum frame
+        // pertama selesai pakai dry tertunda supaya output tetap kontinu.
+        let wet = if self.ready {
+            let value = self.frame_out[self.out_pos];
+            self.out_pos += 1;
+            if self.out_pos == 480 {
+                self.out_pos = 0;
+                self.ready = false;
+            }
+            value
+        } else {
+            delayed
+        };
+
+        // process_frame memakai skala i16, bukan -1..1.
+        self.frame_in[self.fill] =
+            (x * 3.981_071_7 * 32_768.0).clamp(-32_767.0, 32_767.0);
+        self.fill += 1;
+
+        if self.fill == 480 {
+            self.fill = 0;
+            if let Some(ref mut state) = self.state {
+                let vad = state.process_frame(&mut self.frame_out, &self.frame_in);
+                self.vad = if vad.is_finite() {
+                    vad.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+            }
+            self.ready = true;
+        }
+
+        let wet = wet / 32_768.0 / 3.981_071_7;
+        self.mix += self.mix_coef * (self.target_mix - self.mix);
+        delayed * (1.0 - self.mix) + wet * self.mix
+    }
+}
+
 /// Noise gate per sample dengan sidechain level, hysteresis, hold, dan range.
 ///
 /// Detektor memakai sinyal yang sudah difilter 100 Hz–4 kHz supaya rumble dan
@@ -301,6 +434,7 @@ pub struct MicChain {
     settings: MicSettings,
     hpf: Biquad,
     notch: Biquad,
+    denoise: Denoise,
     gate: Gate,
     /// Gain boost yang di-smooth 15 ms supaya slider dB tidak klik.
     boost_gain: f32,
@@ -311,15 +445,14 @@ impl MicChain {
     pub fn new(settings: MicSettings) -> Self {
         let mut chain = Self {
             settings: MicSettings::default(),
-            hpf: Biquad::bypass(),
+            hpf: { let mut b = Biquad::bypass(); b.highpass(80.0, std::f32::consts::FRAC_1_SQRT_2); b },
             notch: Biquad::bypass(),
+            denoise: Denoise::default(),
             gate: Gate::default(),
             boost_gain: db_to_linear(settings.mic_boost_db),
             boost_coef: one_pole(15.0),
         };
         chain.set_settings(settings);
-        // `set_settings` melakukan sanitize; ambil nilai final supaya boost
-        // pertama tidak memakai nilai mentah (mis. NaN dari file lama).
         chain.boost_gain = db_to_linear(chain.settings.mic_boost_db);
         // Beri hold penuh di awal supaya kata pertama tidak terpotong saat
         // gate baru diaktifkan di tengah stream.
@@ -343,14 +476,16 @@ impl MicChain {
             self.notch = Biquad::bypass();
         }
 
+        self.denoise.configure(&settings);
         self.gate.configure(&settings);
     }
 
     /// Reset state filter/gate tanpa mengubah setting. Dipakai saat stream mic
-    /// dibangun ulang supaya sample lama tidak bocor ke device baru.
+    /// dibangin ulang supaya sample lama tidak bocor ke device baru.
     pub fn reset(&mut self) {
         self.hpf.reset();
         self.notch.reset();
+        self.denoise.reset();
         self.gate.reset();
         self.boost_gain = db_to_linear(self.settings.mic_boost_db);
     }
@@ -389,8 +524,11 @@ impl MicChain {
             let mut value = self.hpf.process(raw);
             value = self.notch.process(value);
 
-            // Gate sebelum boost: threshold dan "learn noise floor" tidak
-            // bergeser saat user mengubah boost.
+            // Denoise: 480 sample = 1 RNNoise frame (10 ms @ 48 kHz).
+            // Harus sebelum gate supaya VAD bisa drive pembukaan gate.
+            value = self.denoise.process(value);
+
+            // Gate sebelum boost.
             value = self.gate.process(value);
             gate_env_peak = gate_env_peak.max(self.gate.env);
 
@@ -450,15 +588,12 @@ impl MicChain {
 
         MicMeters {
             input_db: to_db(input_peak),
-            // Envelope detektor, sama dengan yang dipakai gate. Dipakai UI
-            // untuk "learn noise floor" supaya ambang yang dihitung cocok
-            // dengan cara gate mengambil keputusan.
             gate_in_db: to_db_floor(gate_env_peak, -120.0),
             gate_open: self.gate.open,
             gate_gain_db: to_db(self.gate.gain),
             comp_gr_db,
             limiter_gr_db,
-            vad: self.gate.vad,
+            vad: self.denoise.vad,
         }
     }
 }

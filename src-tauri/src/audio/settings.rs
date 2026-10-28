@@ -45,6 +45,9 @@ pub struct MicSettings {
     pub mic_boost_db: f32,
     /// Hum notch: 0 = off, 50/100/150 Hz. Nilai lain di-snap saat sanitize.
     pub hum_notch_hz: f32,
+    /// Denoise RNNoise. Mix 0..1 = wet/dry.
+    pub denoise_enabled: bool,
+    pub denoise_mix: f32,
     /// Noise gate: filter out low-level noise when mic is idle.
     pub noise_gate_enabled: bool,
     /// Threshold dalam dBFS di bawah mana sinyal dianggap noise.
@@ -83,6 +86,8 @@ impl Default for MicSettings {
         Self {
             mic_boost_db: 6.0,
             hum_notch_hz: 0.0,
+            denoise_enabled: false,
+            denoise_mix: 0.8,
             noise_gate_enabled: false,
             noise_gate_threshold: -45.0,
             noise_gate_attack_ms: 8.0,
