@@ -18,6 +18,7 @@ pub use engine::AudioEngine;
 
 use crate::audio::types::{AudioDevices, AudioState, Bus, PlayMode, ToneTarget};
 use crate::audio::settings::MicSettings;
+use serde::Serialize;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -132,4 +133,158 @@ pub async fn audio_play(
 #[tauri::command]
 pub fn audio_stop(engine: State<'_, AudioEngine>, id: Option<String>) -> Result<(), String> {
     engine.stop(id)
+}
+
+// ==================== MIC DSP PRESETS (Fase 7) ====================
+
+/// Satu preset mic DSP. `id` dipakai UI untuk menampilkan dan memilih.
+#[derive(Clone, Debug, Serialize)]
+pub struct MicPreset {
+    id: String,
+    name: String,
+    settings: MicSettings,
+}
+
+/// Tiga preset built-in yang disetujui di docs/mic-dsp-plan.md (Fase 7).
+fn mic_presets() -> Vec<MicPreset> {
+    let base = MicSettings::default();
+
+    // Podcast/Voice: boost +6, denoise 80%, gate on, EQ +2/+1/+2, comp 3:1 -18
+    let podcast = MicPreset {
+        id: "podcast".into(),
+        name: "Podcast / Voice".into(),
+        settings: MicSettings {
+            mic_boost_db: 6.0,
+            denoise_enabled: true,
+            denoise_mix: 0.8,
+            noise_gate_enabled: true,
+            noise_gate_threshold: -42.0,
+            noise_gate_range_db: -50.0,
+            equalizer_enabled: true,
+            equalizer_low: 2.0,
+            equalizer_mid: 1.0,
+            equalizer_high: 2.0,
+            compressor_enabled: true,
+            compressor_threshold: -18.0,
+            compressor_ratio: 3.0,
+            compressor_makeup_gain: 3.0,
+            limiter_enabled: true,
+            limiter_ceiling: -0.5,
+            ..base
+        },
+    };
+
+    // Game chat: boost +12, denoise 100%, gate on, EQ -2/+2/0, comp 4:1 -20
+    let game = MicPreset {
+        id: "game".into(),
+        name: "Game chat".into(),
+        settings: MicSettings {
+            mic_boost_db: 12.0,
+            denoise_enabled: true,
+            denoise_mix: 1.0,
+            noise_gate_enabled: true,
+            noise_gate_threshold: -38.0,
+            noise_gate_range_db: -60.0,
+            equalizer_enabled: true,
+            equalizer_low: -2.0,
+            equalizer_mid: 2.0,
+            equalizer_high: 0.0,
+            compressor_enabled: true,
+            compressor_threshold: -20.0,
+            compressor_ratio: 4.0,
+            compressor_makeup_gain: 4.0,
+            limiter_enabled: true,
+            limiter_ceiling: -0.5,
+            ..base
+        },
+    };
+
+    // Noisy room: boost +9, denoise 100%, gate on, EQ -3/+2/+1, comp 3:1 -18
+    let noisy = MicPreset {
+        id: "noisy".into(),
+        name: "Noisy room".into(),
+        settings: MicSettings {
+            mic_boost_db: 9.0,
+            denoise_enabled: true,
+            denoise_mix: 1.0,
+            noise_gate_enabled: true,
+            noise_gate_threshold: -32.0,
+            noise_gate_range_db: -60.0,
+            equalizer_enabled: true,
+            equalizer_low: -3.0,
+            equalizer_mid: 2.0,
+            equalizer_high: 1.0,
+            compressor_enabled: true,
+            compressor_threshold: -18.0,
+            compressor_ratio: 3.0,
+            compressor_makeup_gain: 3.0,
+            limiter_enabled: true,
+            limiter_ceiling: -1.0,
+            limiter_release_ms: 50.0,
+            ..base
+        },
+    };
+
+    vec![podcast, game, noisy]
+}
+
+#[tauri::command]
+pub fn audio_mic_presets() -> Vec<MicPreset> {
+    mic_presets()
+}
+
+/// Terapkan preset ke engine. Frontend memanggil ini setelah user pilih preset.
+#[tauri::command]
+pub fn audio_apply_mic_preset(engine: State<'_, AudioEngine>, id: String) -> Result<MicSettings, String> {
+    let preset = mic_presets()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("preset mic tidak dikenal: {id}"))?;
+    engine.set_mic_pre(preset.settings.clone())?;
+    Ok(preset.settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mic_presets_sesuai_spec() {
+        let presets = mic_presets();
+        assert_eq!(presets.len(), 3, "harus ada 3 preset");
+
+        // Podcast / Voice
+        let podcast = presets.iter().find(|p| p.id == "podcast").unwrap();
+        assert_eq!(podcast.name, "Podcast / Voice");
+        let s = &podcast.settings;
+        assert_eq!(s.mic_boost_db, 6.0);
+        assert!(s.denoise_enabled);
+        assert!((s.denoise_mix - 0.8).abs() < 0.01);
+        assert!(s.noise_gate_enabled);
+        assert!((s.noise_gate_threshold - (-42.0)).abs() < 0.01);
+        assert_eq!(s.equalizer_low, 2.0);
+        assert_eq!(s.equalizer_mid, 1.0);
+        assert_eq!(s.equalizer_high, 2.0);
+        assert_eq!(s.compressor_threshold, -18.0);
+        assert_eq!(s.compressor_ratio, 3.0);
+
+        // Game chat
+        let game = presets.iter().find(|p| p.id == "game").unwrap();
+        assert_eq!(game.name, "Game chat");
+        let s = &game.settings;
+        assert_eq!(s.mic_boost_db, 12.0);
+        assert!((s.denoise_mix - 1.0).abs() < 0.01);
+        assert!((s.noise_gate_threshold - (-38.0)).abs() < 0.01);
+        assert_eq!(s.equalizer_low, -2.0);
+        assert_eq!(s.compressor_ratio, 4.0);
+
+        // Noisy room
+        let noisy = presets.iter().find(|p| p.id == "noisy").unwrap();
+        assert_eq!(noisy.name, "Noisy room");
+        let s = &noisy.settings;
+        assert_eq!(s.mic_boost_db, 9.0);
+        assert!((s.noise_gate_threshold - (-32.0)).abs() < 0.01);
+        assert_eq!(s.equalizer_low, -3.0);
+        assert_eq!(s.limiter_ceiling, -1.0);
+    }
 }

@@ -97,6 +97,14 @@ export function setAudioMicPre(settings) {
   return invoke('audio_set_mic_pre', { settings });
 }
 
+export function listMicPresets() {
+  return invoke('audio_mic_presets');
+}
+
+export function applyMicPreset(id) {
+  return invoke('audio_apply_mic_preset', { id });
+}
+
 export function setAudioGain(bus, value) {
   return invoke('audio_set_gain', { bus, value });
 }

@@ -42,6 +42,7 @@ pub use audio::AudioEngine;
 use audio::{
     audio_devices, audio_play, audio_set_buffer, audio_set_gain, audio_set_mic, audio_set_mic_pre, audio_set_mode,
     audio_set_monitor, audio_set_mute, audio_set_output, audio_state, audio_stop, audio_test_tone,
+    audio_mic_presets, audio_apply_mic_preset,
 };
 
 // Codec frame protokol v2. Fase 1: sudah ada dan sudah diuji, tapi BELUM
@@ -1886,6 +1887,8 @@ pub fn run() {
             audio_test_tone,
             audio_play,
             audio_stop,
+            audio_mic_presets,
+            audio_apply_mic_preset,
             show_main_window,
             hide_to_tray,
             quit_app,

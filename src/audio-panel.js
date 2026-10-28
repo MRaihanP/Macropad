@@ -19,6 +19,8 @@ import {
   onAudioState,
   onAudioLevels,
   refreshAudioState,
+  listMicPresets,
+  applyMicPreset,
 } from './audio-client.js';
 import { soundLog } from './soundboard.js';
 
@@ -245,6 +247,43 @@ function finishNoiseLearn() {
 function toast(message, type = 'error') {
   if (typeof window.toast === 'function') window.toast(message, type);
   else soundLog(message, type);
+}
+
+/// Populate the mic preset dropdown from Rust.
+let micPresetsCache = [];
+async function populatePresetSelect() {
+  const select = $('micPresetSelect');
+  if (!select) return;
+  try {
+    const presets = await listMicPresets();
+    micPresetsCache = presets;
+    select.innerHTML = '<option value=""> — Pilih preset — </option>';
+    for (const p of presets) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    select.innerHTML = '<option value="">Gagal muat preset</option>';
+  }
+}
+
+/// When user picks a preset from the dropdown.
+async function onPresetChange() {
+  const select = $('micPresetSelect');
+  if (!select) return;
+  const id = select.value;
+  if (!id) return;
+  try {
+    const settings = await applyMicPreset(id);
+    syncMicPre(settings);
+    refreshMicLabels();
+    updateGateLed();
+    soundLog('preset ' + id + ' diterapkan', 'info');
+  } catch (e) {
+    toast('Gagal menerapkan preset: ' + e, 'error');
+  }
 }
 
 function debounce(key, fn, delay = 90) {
@@ -636,6 +675,10 @@ function bindControls() {
   }
 
   $('noiseGateLearn')?.addEventListener('click', startNoiseLearn);
+
+  // ---- Mic DSP Preset Selector ----
+  populatePresetSelect();
+  $('micPresetSelect')?.addEventListener('change', onPresetChange);
 }
 
 // ---- Meter ----
