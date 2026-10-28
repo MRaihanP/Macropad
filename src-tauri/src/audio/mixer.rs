@@ -518,20 +518,16 @@ impl Mixer {
 
 #[inline]
 fn soft_clip(sample: f32) -> f32 {
-    // KNEE dinaikkan dari 0.85 ke 0.95 sehingga lebih sedikit sample masuk
-    // zona kompresi. Pada 0.85, hampir setengah waveform (jika gain > 1.0)
-    // masuk ke zona non-linear yang bisa menghasilkan harmoni pecah / clipping
-    // yang terdengar seperti "gelembung pecah". Knee 0.95 hampir linear sampai
-    // -0.8 dB, yang jauh lebih alami untuk sound effect.
-    const KNEE: f32 = 0.95;
-    let magnitude = sample.abs();
-    if magnitude <= KNEE {
-        return sample;
+    // Hanya hard-clip ketika sample melebihi 0 dBFS. Soft-clip dengan knee
+    // di 0.95/0.85 sebelumnya menyebabkan distorsi harmonik "gelembung pecah"
+    // pada sound effect yang hampir clip, terutama bila master_gain>1.
+    // Hard clip di 1.0 hanya berdampak pada sinyal yang benar-benar melampaui
+    // ceiling digital — untuk sfx yang sudah within range, tanpa distorsi.
+    if sample > 1.0 {
+        1.0
+    } else if sample < -1.0 {
+        -1.0
+    } else {
+        sample
     }
-    let over = (magnitude - KNEE) / (1.0 - KNEE);
-    // Gunakan kurva tanh yang lebih halus pada kneel area sehingga transisi
-    // dari linear ke kompresi tidak menyentuh (derivative discontinuity di 0.85
-    // sebelumnya bisa menghasilkan "klik").
-    let limited = KNEE + (1.0 - KNEE) * (over / (1.0 + over));
-    sample.signum() * limited
 }
