@@ -8,7 +8,8 @@ use tauri::Manager;
 ///
 /// - 0 (file lama tanpa `version`): `micPre.micBoost` masih linear.
 /// - 1: `micPre.micBoostDb` (dB) + `micPre.humNotchHz`.
-pub const SETTINGS_VERSION: u32 = 1;
+/// - 2: `micPre.limiterReleaseMs` (default 50 ms).
+pub const SETTINGS_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -74,6 +75,8 @@ pub struct MicSettings {
     pub limiter_enabled: bool,
     /// Ceiling maksimum output (dBFS, biasanya 0.0 atau -0.5).
     pub limiter_ceiling: f32,
+    /// Release limiter dalam ms. Semakin cepat = lebih agresif.
+    pub limiter_release_ms: f32,
     /// 3-band EQ (low/mid/high) dalam dB.
     pub equalizer_enabled: bool,
     pub equalizer_low: f32,
@@ -102,6 +105,7 @@ impl Default for MicSettings {
             compressor_makeup_gain: 3.0,
             limiter_enabled: true,
             limiter_ceiling: -0.5,
+            limiter_release_ms: 50.0,
             equalizer_enabled: false,
             equalizer_low: 0.0,
             equalizer_mid: 0.0,
@@ -155,6 +159,7 @@ impl MicSettings {
             clean(self.compressor_makeup_gain, d.compressor_makeup_gain).clamp(0.0, 24.0);
 
         self.limiter_ceiling = clean(self.limiter_ceiling, d.limiter_ceiling).clamp(-6.0, 0.0);
+        self.limiter_release_ms = clean(self.limiter_release_ms, d.limiter_release_ms).clamp(5.0, 500.0);
 
         self.equalizer_low = clean(self.equalizer_low, 0.0).clamp(-12.0, 12.0);
         self.equalizer_mid = clean(self.equalizer_mid, 0.0).clamp(-12.0, 12.0);
@@ -195,6 +200,8 @@ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// supaya field deprecated tidak perlu hidup di struct.
 ///
 /// Versi 0: `micPre.micBoost` linear → `micPre.micBoostDb` (dB).
+/// Versi 1: tidak ada perubahan skema — hanya versi ditulis.
+/// Versi 2: `micPre.limiterReleaseMs` (default 50 ms).
 fn migrate(value: &mut serde_json::Value) {
     let from = value
         .get("version")
@@ -215,6 +222,14 @@ fn migrate(value: &mut serde_json::Value) {
                 mic.insert("micBoostDb".into(), serde_json::json!(db));
             }
             mic.remove("micBoost");
+        }
+    }
+
+    if from < 2 {
+        if let Some(mic) = value.get_mut("micPre").and_then(|m| m.as_object_mut()) {
+            if !mic.contains_key("limiterReleaseMs") {
+                mic.insert("limiterReleaseMs".into(), serde_json::json!(50.0));
+            }
         }
     }
 
@@ -342,14 +357,14 @@ mod tests {
     #[test]
     fn migrasi_tidak_menimpa_mic_boost_db() {
         let mut value = serde_json::json!({
-            "version": 1,
+            "version": 2,
             "micPre": { "micBoostDb": 12.5 }
         });
 
         migrate(&mut value);
 
         assert_eq!(value["micPre"]["micBoostDb"].as_f64(), Some(12.5));
-        assert_eq!(value["version"].as_u64(), Some(1));
+        assert_eq!(value["version"].as_u64(), Some(2));
     }
 
     #[test]

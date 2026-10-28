@@ -69,6 +69,7 @@ const DEFAULT_MIC_PRE = {
   compressorMakeupGain: 3,
   limiterEnabled: true,
   limiterCeiling: -0.5,
+  limiterReleaseMs: 50,
   equalizerEnabled: false,
   equalizerLow: 0,
   equalizerMid: 0,
