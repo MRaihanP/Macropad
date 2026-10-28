@@ -451,6 +451,89 @@ impl Compressor {
     }
 }
 
+// ---- Limiter (Fase 6: brickwall lookahead) ----
+/// Lookahead brickwall limiter. Buffer lookahead (LOOKAHEAD_SAMPLES)
+/// supaya gain bisa dihitung dari *seluruh jendela* sebelum sample
+/// dikeluarkan — eliminasi clipping pada transient tajam tanpa
+/// memberi lag sistematik yang terlihat.
+const LIM_LOOKAHEAD: usize = 48; // ~1 ms @ 48 kHz
+
+struct Limiter {
+    lookahead: Vec<f32>, // ring buffer ukuran LOOKAHEAD
+    head: usize,         // titik bacа output (sample paling lama)
+    fill: usize,         // berapa banyak sample yang sudah terisi buffer
+    gain: f32,
+    x_l: f32,
+    max_reduction_db: f32,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        Self {
+            lookahead: vec![0.0; LIM_LOOKAHEAD],
+            head: 0,
+            fill: 0,
+            gain: 1.0,
+            x_l: one_pole(50.0),
+            max_reduction_db: 0.0,
+        }
+    }
+}
+
+impl Limiter {
+    fn configure(&mut self) {
+        self.x_l = one_pole(50.0);
+        self.max_reduction_db = 0.0;
+    }
+
+    fn reset(&mut self) {
+        for s in &mut self.lookahead { *s = 0.0; }
+        self.head = 0;
+        self.fill = 0;
+        self.gain = 1.0;
+        self.max_reduction_db = 0.0;
+    }
+
+    /// Brickwall limiter in-place. `ceiling_db` negatif (e.g. -0.1).
+    /// Kembalikan gain reduction terbesar dalam dB.
+    #[inline]
+    fn process(&mut self, samples: &mut [f32], ceiling_db: f32) {
+        let ceiling = db_to_linear(ceiling_db);
+        self.max_reduction_db = 0.0;
+        let n = self.lookahead.len();
+
+        for x in samples.iter_mut() {
+            let n = self.lookahead.len();
+            // Sample paling lama = isi head sebelum ditimpa.
+            let out = if self.fill < n { 0.0 } else { self.lookahead[self.head] };
+            // Timpa slot paling lama dengan sample baru.
+            self.lookahead[self.head] = *x;
+            if self.fill < n { self.fill += 1; }
+
+            // Maks |sample| di seluruh window (termasuk baru) untuk gain.
+            let mut magnitude = 0.0f32;
+            for &s in &self.lookahead {
+                magnitude = magnitude.max(s.abs());
+            }
+
+            let target_gain = if magnitude > ceiling && ceiling > 0.0 {
+                ceiling / magnitude
+            } else {
+                1.0
+            };
+            let coef = if target_gain < self.gain { 0.0 } else { self.x_l }; // attack instan
+            self.gain = target_gain + coef * (self.gain - target_gain);
+
+            let gr = (1.0 / self.gain).max(1.0);
+            self.max_reduction_db = self.max_reduction_db.max(20.0 * (gr).log10());
+
+            // Keluarkan sample paling lama dengan gain.
+            *x = out * self.gain;
+            self.head = (self.head + 1) % n;
+        }
+    }
+}
+
 impl Default for Gate {
     fn default() -> Self {
         Self {
@@ -571,6 +654,8 @@ pub struct MicChain {
     eq_high: Biquad,
     /// Compressor (Fase 5).
     compressor: Compressor,
+    /// Limiter (Fase 6: brickwall, lookahead).
+    limiter: Limiter,
     /// Gain boost yang di-smooth 15 ms supaya slider dB tidak klik.
     boost_gain: f32,
     boost_coef: f32,
@@ -588,6 +673,7 @@ impl MicChain {
             eq_mid: Biquad::bypass(),
             eq_high: Biquad::bypass(),
             compressor: Compressor::default(),
+            limiter: Limiter::default(),
             boost_gain: db_to_linear(settings.mic_boost_db),
             boost_coef: one_pole(15.0),
         };
@@ -628,6 +714,7 @@ impl MicChain {
         self.denoise.configure(&settings);
         self.gate.configure(&settings);
         self.compressor.configure();
+        self.limiter.configure();
     }
 
     pub fn reset(&mut self) {
@@ -638,6 +725,8 @@ impl MicChain {
         self.eq_high.reset();
         self.denoise.reset();
         self.gate.reset();
+        self.compressor.gain = 1.0;
+        self.limiter.reset();
         self.boost_gain = db_to_linear(self.settings.mic_boost_db);
     }
 
@@ -719,19 +808,13 @@ impl MicChain {
             0.0
         };
 
-        // ---- Limiter (sementara: clamp keras, diganti Fase 6) ----
-        let mut limiter_gr_db = 0.0f32;
-        if settings.limiter_enabled {
-            let ceiling = db_to_linear(settings.limiter_ceiling);
-            for sample in samples.iter_mut() {
-                let magnitude = sample.abs();
-                if magnitude > ceiling && ceiling > 0.0 {
-                    limiter_gr_db = limiter_gr_db.max(20.0 * (magnitude / ceiling).log10());
-                    *sample = sample.clamp(-ceiling, ceiling);
-                }
-            }
-        }
-
+        // ---- Limiter (Fase 6: brickwall lookahead) ----
+        let limiter_gr_db = if settings.limiter_enabled {
+            self.limiter.process(samples, settings.limiter_ceiling);
+            self.limiter.max_reduction_db
+        } else {
+            0.0
+        };
         MicMeters {
             input_db: to_db(input_peak),
             gate_in_db: to_db_floor(gate_env_peak, -120.0),
@@ -1071,6 +1154,36 @@ mod tests {
             opened.gate_gain_db > -3.0,
             "gain gate belum terbuka lewat VAD: {:.1} dB",
             opened.gate_gain_db
+        );
+    }
+
+    #[test]
+    fn limiter_mencegah_clipping_1dBFS() {
+        let mut chain = MicChain::new(base_settings());
+        chain.set_settings({
+            let mut s = base_settings();
+            s.limiter_enabled = true;
+            s.limiter_ceiling = -0.1; // -0.1 dBFS ceiling
+            s
+        });
+
+        // Transient spike panjang agar lookahead 2-sample bisa reagis.
+        let mut samples = vec![0.0f32; 4_800];
+        for s in samples[2400..2410].iter_mut() {
+            *s = 0.99999; // hampir clipping, jauh di atas ceiling -0.5 dB
+        }
+        let meters = chain.process(&mut samples);
+
+        let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        let ceiling_lin = db_to_linear(-0.1);
+        assert!(
+            peak <= ceiling_lin * 1.05,
+            "limiter tidak mencegah clipping: peak {peak:.3} > ceiling {ceiling_lin:.3}"
+        );
+        assert!(
+            meters.limiter_gr_db > 0.0,
+            "harus ada penurunan dari limiter: {:.4} dB",
+            meters.limiter_gr_db
         );
     }
 }
