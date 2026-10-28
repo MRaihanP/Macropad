@@ -1,8 +1,8 @@
 // ==================== HALAMAN SOUNDBOARD ====================
 //
 // Library suara: pencarian, filter tag/favorit, warna, volume per suara,
-// preview, rename, dan delete. Semua data berasal dari Rust (sounds.json);
-// halaman ini hanya memanggil command lewat soundboard.js.
+// trim non-destruktif, preview, rename, dan delete. Semua data berasal dari
+// Rust (sounds.json); halaman ini hanya memanggil command lewat soundboard.js.
 
 import { t, registerRerender } from './i18n.js';
 import { el, log } from './dom.js';
@@ -19,6 +19,7 @@ import {
   deleteSound,
   updateSoundMeta,
   importSoundData,
+  probeSound,
 } from './soundboard.js';
 
 const COLORS = [
@@ -37,8 +38,11 @@ const state = {
   tag: '',
   favOnly: false,
   expanded: null,
+  trim: null,
   busy: false,
 };
+
+const TRIM_MIN_MS = 50;
 
 const volumeTimers = new Map();
 let initialized = false;
@@ -48,6 +52,23 @@ function formatSize(bytes) {
   if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' MB';
   if (value >= 1024) return Math.round(value / 1024) + ' KB';
   return value + ' B';
+}
+
+function formatSeconds(ms) {
+  const value = Number(ms) || 0;
+  return (value / 1000).toFixed(2) + ' s';
+}
+
+function isTrimmed(entry) {
+  return (entry.trimStartMs || 0) > 0 || (entry.trimEndMs || 0) > 0;
+}
+
+/// Rentang trim untuk ditampilkan di kartu. `trimEndMs == 0` berarti sampai
+/// akhir file, jadi pakai durasi kalau sudah diketahui.
+function trimRangeLabel(entry) {
+  const start = entry.trimStartMs || 0;
+  const end = entry.trimEndMs > 0 ? entry.trimEndMs : entry.durationMs || 0;
+  return formatSeconds(start) + '–' + (end > 0 ? formatSeconds(end) : '…');
 }
 
 function findSound(id) {
@@ -237,6 +258,171 @@ function buildEditPanel(entry) {
   return panel;
 }
 
+/// Panel trim: pilih rentang dengan dua slider. Perubahan disimpan otomatis
+/// saat slider dilepas; preview memutar hasil trim yang tersimpan. Decode
+/// tetap dilakukan di backend, jadi slider hanya mengubah metadata.
+function buildTrimPanel(entry) {
+  const panel = document.createElement('div');
+  panel.className = 'sb-trim';
+
+  const duration = Math.max(0, Math.round(entry.durationMs || 0));
+  if (duration <= 0) {
+    const measuring = document.createElement('div');
+    measuring.className = 'hint';
+    measuring.textContent = t('sb.trimProbing');
+    panel.appendChild(measuring);
+    return panel;
+  }
+
+  const minGap = Math.min(TRIM_MIN_MS, Math.max(1, Math.floor(duration / 2)));
+  let start = Math.min(Math.max(0, Math.round(entry.trimStartMs || 0)), duration - minGap);
+  let end = entry.trimEndMs > 0 ? Math.min(Math.round(entry.trimEndMs), duration) : duration;
+  if (end - start < minGap) end = Math.min(duration, start + minGap);
+  if (end <= start) {
+    start = Math.max(0, duration - minGap);
+    end = duration;
+  }
+
+  let savedStart = Math.round(entry.trimStartMs || 0);
+  let savedEnd = entry.trimEndMs > 0 ? Math.min(Math.round(entry.trimEndMs), duration) : duration;
+  const dirty = () => start !== savedStart || end !== savedEnd;
+
+  const bar = document.createElement('div');
+  bar.className = 'sb-trim-bar';
+  bar.setAttribute('aria-hidden', 'true');
+  const selection = document.createElement('div');
+  selection.className = 'sb-trim-sel';
+  bar.appendChild(selection);
+
+  const info = document.createElement('div');
+  info.className = 'hint sb-trim-info';
+
+  const makeRow = (labelText, min, max, value) => {
+    const row = document.createElement('div');
+    row.className = 'sb-trim-row';
+
+    const label = document.createElement('span');
+    label.className = 'sb-trim-label';
+    label.textContent = labelText;
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'sb-trim-slider';
+    slider.min = String(min);
+    slider.max = String(max);
+    slider.step = '10';
+    slider.value = String(value);
+    slider.setAttribute('aria-label', labelText);
+
+    const readout = document.createElement('span');
+    readout.className = 'sb-trim-value';
+
+    row.append(label, slider, readout);
+    return { row, slider, readout };
+  };
+
+  const startRow = makeRow(t('sb.trimStart'), 0, Math.max(0, end - minGap), start);
+  const endRow = makeRow(t('sb.trimEnd'), Math.min(duration, start + minGap), duration, end);
+
+  const actions = document.createElement('div');
+  actions.className = 'sb-trim-actions';
+
+  const preview = document.createElement('button');
+  preview.type = 'button';
+  preview.className = 'small primary';
+  preview.textContent = '▶ ' + t('sb.preview');
+
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'small';
+  reset.textContent = t('sb.trimReset');
+
+  const hint = document.createElement('span');
+  hint.className = 'hint sb-trim-hint';
+  hint.textContent = t('sb.trimHint');
+
+  const paint = () => {
+    startRow.slider.max = String(Math.max(0, end - minGap));
+    endRow.slider.min = String(Math.min(duration, start + minGap));
+    startRow.slider.value = String(start);
+    endRow.slider.value = String(end);
+    startRow.readout.textContent = formatSeconds(start);
+    endRow.readout.textContent = formatSeconds(end);
+    startRow.slider.setAttribute('aria-valuetext', formatSeconds(start));
+    endRow.slider.setAttribute('aria-valuetext', formatSeconds(end));
+
+    const left = (start / duration) * 100;
+    const width = Math.max(0, ((end - start) / duration) * 100);
+    selection.style.left = left + '%';
+    selection.style.width = width + '%';
+
+    info.textContent = t('sb.trimInfo', {
+      total: formatSeconds(duration),
+      length: formatSeconds(end - start),
+    });
+    reset.disabled = !dirty();
+  };
+
+  const applyServer = (updated) => {
+    Object.assign(entry, updated);
+    savedStart = Math.round(updated.trimStartMs || 0);
+    savedEnd = updated.trimEndMs > 0 ? Math.round(updated.trimEndMs) : duration;
+    start = savedStart;
+    end = savedEnd;
+    paint();
+  };
+
+  let queue = Promise.resolve();
+  const commit = () => {
+    queue = queue.then(async () => {
+      if (!dirty()) return;
+      try {
+        const updated = await updateSoundMeta(entry.id, {
+          trimStartMs: start,
+          trimEndMs: end >= duration ? 0 : end,
+        });
+        applyServer(updated);
+      } catch (error) {
+        log(t('sb.saveFailed', { error }), 'err');
+        start = savedStart;
+        end = savedEnd;
+        paint();
+      }
+    });
+    return queue;
+  };
+
+  startRow.slider.addEventListener('input', () => {
+    const maxStart = Math.max(0, end - minGap);
+    start = Math.min(maxStart, Math.max(0, Number(startRow.slider.value) || 0));
+    paint();
+  });
+  endRow.slider.addEventListener('input', () => {
+    const minEnd = Math.min(duration, start + minGap);
+    end = Math.min(duration, Math.max(minEnd, Number(endRow.slider.value) || 0));
+    paint();
+  });
+  startRow.slider.addEventListener('change', commit);
+  endRow.slider.addEventListener('change', commit);
+
+  preview.onclick = async () => {
+    await commit();
+    await playSound(entry.id);
+  };
+
+  reset.onclick = () => {
+    start = 0;
+    end = duration;
+    paint();
+    commit();
+  };
+
+  actions.append(preview, reset, hint);
+  panel.append(bar, startRow.row, endRow.row, info, actions);
+  paint();
+  return panel;
+}
+
 function buildCard(entry) {
   const card = document.createElement('article');
   card.className = 'sb-card';
@@ -270,7 +456,16 @@ function buildCard(entry) {
   name.title = entry.name;
   const meta = document.createElement('div');
   meta.className = 'sb-sub';
-  meta.textContent = formatSize(entry.size);
+  const metaParts = [];
+  if (entry.durationMs > 0) metaParts.push(formatSeconds(entry.durationMs));
+  metaParts.push(formatSize(entry.size));
+  meta.textContent = metaParts.join(' · ');
+  if (isTrimmed(entry)) {
+    const badge = document.createElement('span');
+    badge.className = 'sb-trimmed';
+    badge.textContent = '✂ ' + trimRangeLabel(entry);
+    meta.append(document.createTextNode(' · '), badge);
+  }
   title.append(name, meta);
 
   const dot = document.createElement('span');
@@ -345,9 +540,29 @@ function buildCard(entry) {
 
   const edit = actionButton(t('sb.editMeta'), 'sb-edit-btn', () => {
     state.expanded = state.expanded === entry.id ? null : entry.id;
+    if (state.expanded) state.trim = null;
     render();
   });
   edit.setAttribute('aria-expanded', String(state.expanded === entry.id));
+
+  const trim = actionButton('✂ ' + t('sb.trim'), 'sb-trim-btn', async () => {
+    const open = state.trim !== entry.id;
+    state.trim = open ? entry.id : null;
+    if (open) state.expanded = null;
+    render();
+    if (!open || entry.durationMs > 0) return;
+    // Library lama belum punya durasi; ukur sekali lalu simpan.
+    try {
+      const updated = await probeSound(entry.id);
+      Object.assign(entry, updated);
+      render();
+    } catch (error) {
+      log(t('sb.trimProbeFailed', { error }), 'err');
+      state.trim = null;
+      render();
+    }
+  });
+  trim.setAttribute('aria-expanded', String(state.trim === entry.id));
 
   const rename = actionButton(t('sb.rename'), 'sb-rename-btn', async () => {
     const next = await showPromptModal(
@@ -367,10 +582,11 @@ function buildCard(entry) {
     if (removed) render();
   });
 
-  actions.append(edit, rename, remove);
+  actions.append(edit, trim, rename, remove);
 
   card.append(head, tags, controls, actions);
   if (state.expanded === entry.id) card.appendChild(buildEditPanel(entry));
+  if (state.trim === entry.id) card.appendChild(buildTrimPanel(entry));
   return card;
 }
 

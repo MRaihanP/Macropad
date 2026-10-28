@@ -108,6 +108,15 @@ export function getSoundList() {
   return soundList;
 }
 
+/// Ukur durasi file lalu simpan ke metadata. Dipakai panel trim untuk suara
+/// lama yang belum punya `durationMs`.
+export async function probeSound(id) {
+  const entry = await invoke('soundboard_probe', { id });
+  const index = soundList.findIndex((sound) => sound.id === id);
+  if (index >= 0) soundList[index] = entry;
+  return entry;
+}
+
 // ---- Metadata library ----
 
 /// Update sebagian metadata (volume/tags/favorite/color). Mengembalikan entry
