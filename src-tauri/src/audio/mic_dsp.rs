@@ -161,6 +161,56 @@ impl Biquad {
         let alpha = w0.sin() / (2.0 * q.max(0.1));
         self.set(1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha);
     }
+
+    /// RBJ low-shelf (boost/cut bass). `db` = gain dalam dB.
+    pub fn lowshelf(&mut self, freq: f32, db: f32, q: f32) {
+        let w0 = std::f32::consts::TAU * freq.clamp(10.0, 20_000.0) / SAMPLE_RATE;
+        let cos = w0.cos();
+        let sin = w0.sin();
+        let a = db_to_linear(db);
+        let alpha = sin / (2.0 * (q * (a + 1.0 / a + 2.0).sqrt()));
+        let sqrt_a = a.sqrt();
+        let b0 = a * ((a + 1.0) - (a - 1.0) * cos + 2.0 * sqrt_a * alpha);
+        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos);
+        let b2 = a * ((a + 1.0) - (a - 1.0) * cos - 2.0 * sqrt_a * alpha);
+        let a0 = (a + 1.0) + (a - 1.0) * cos + 2.0 * sqrt_a * alpha;
+        let a1_val = -2.0 * ((a - 1.0) + (a + 1.0) * cos);
+        let a2_val = (a + 1.0) + (a - 1.0) * cos - 2.0 * sqrt_a * alpha;
+        self.set(b0, b1, b2, a0, a1_val, a2_val);
+    }
+
+    /// RBJ high-shelf (boost/cut treble). `db` = gain dalam dB.
+    pub fn highshelf(&mut self, freq: f32, db: f32, q: f32) {
+        let w0 = std::f32::consts::TAU * freq.clamp(10.0, 20_000.0) / SAMPLE_RATE;
+        let cos = w0.cos();
+        let sin = w0.sin();
+        let a = db_to_linear(db);
+        let alpha = sin / (2.0 * (q * (a + 1.0 / a + 2.0).sqrt()));
+        let sqrt_a = a.sqrt();
+        let b0 = a * ((a + 1.0) + (a - 1.0) * cos + 2.0 * sqrt_a * alpha);
+        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos);
+        let b2 = a * ((a + 1.0) + (a - 1.0) * cos - 2.0 * sqrt_a * alpha);
+        let a0 = (a + 1.0) - (a - 1.0) * cos + 2.0 * sqrt_a * alpha;
+        let a1_val = 2.0 * ((a - 1.0) - (a + 1.0) * cos);
+        let a2_val = (a + 1.0) - (a - 1.0) * cos - 2.0 * sqrt_a * alpha;
+        self.set(b0, b1, b2, a0, a1_val, a2_val);
+    }
+
+    /// RBJ peaking EQ. `db` = gain, `q` = bandwidth, `freq` = center freq.
+    pub fn peak(&mut self, freq: f32, db: f32, q: f32) {
+        let w0 = std::f32::consts::TAU * freq.clamp(10.0, 20_000.0) / SAMPLE_RATE;
+        let cos = w0.cos();
+        let sin = w0.sin();
+        let a = db_to_linear(db);
+        let alpha = sin / (2.0 * q.max(0.1));
+        let b0 = 1.0 + alpha * a;
+        let b1 = -2.0 * cos;
+        let b2 = 1.0 - alpha * a;
+        let a0 = 1.0 + alpha / a;
+        let a1_val = -2.0 * cos;
+        let a2_val = 1.0 - alpha / a;
+        self.set(b0, b1, b2, a0, a1_val, a2_val);
+    }
 }
 
 /// RNNoise-based noise suppression (Fase 3).
@@ -436,6 +486,10 @@ pub struct MicChain {
     notch: Biquad,
     denoise: Denoise,
     gate: Gate,
+    /// EQ 3-band biquad.
+    eq_low: Biquad,
+    eq_mid: Biquad,
+    eq_high: Biquad,
     /// Gain boost yang di-smooth 15 ms supaya slider dB tidak klik.
     boost_gain: f32,
     boost_coef: f32,
@@ -449,13 +503,14 @@ impl MicChain {
             notch: Biquad::bypass(),
             denoise: Denoise::default(),
             gate: Gate::default(),
+            eq_low: Biquad::bypass(),
+            eq_mid: Biquad::bypass(),
+            eq_high: Biquad::bypass(),
             boost_gain: db_to_linear(settings.mic_boost_db),
             boost_coef: one_pole(15.0),
         };
         chain.set_settings(settings);
         chain.boost_gain = db_to_linear(chain.settings.mic_boost_db);
-        // Beri hold penuh di awal supaya kata pertama tidak terpotong saat
-        // gate baru diaktifkan di tengah stream.
         chain.gate.hold_left = chain.gate.hold_samples;
         chain
     }
@@ -466,25 +521,38 @@ impl MicChain {
         settings.sanitize();
         self.settings = settings;
 
-        // HPF selalu aktif, termasuk sebelum settings pertama diubah.
         self.hpf.highpass(80.0, std::f32::consts::FRAC_1_SQRT_2);
 
         if settings.hum_notch_hz > 0.0 {
-            // Q=10: notch sempit supaya hanya hum yang kena, bukan suara.
             self.notch.notch(settings.hum_notch_hz, 10.0);
         } else {
             self.notch = Biquad::bypass();
+        }
+
+        // EQ 3-band (Fase 4). Bypass otomatis bila semua band 0 dB.
+        let eq_active = settings.equalizer_low.abs() > 0.1
+            || settings.equalizer_mid.abs() > 0.1
+            || settings.equalizer_high.abs() > 0.1;
+        if settings.equalizer_enabled && eq_active {
+            self.eq_low.lowshelf(120.0, settings.equalizer_low, 0.7);
+            self.eq_mid.peak(1_000.0, settings.equalizer_mid, 0.8);
+            self.eq_high.highshelf(6_000.0, settings.equalizer_high, 0.7);
+        } else {
+            self.eq_low = Biquad::bypass();
+            self.eq_mid = Biquad::bypass();
+            self.eq_high = Biquad::bypass();
         }
 
         self.denoise.configure(&settings);
         self.gate.configure(&settings);
     }
 
-    /// Reset state filter/gate tanpa mengubah setting. Dipakai saat stream mic
-    /// dibangin ulang supaya sample lama tidak bocor ke device baru.
     pub fn reset(&mut self) {
         self.hpf.reset();
         self.notch.reset();
+        self.eq_low.reset();
+        self.eq_mid.reset();
+        self.eq_high.reset();
         self.denoise.reset();
         self.gate.reset();
         self.boost_gain = db_to_linear(self.settings.mic_boost_db);
@@ -537,21 +605,21 @@ impl MicChain {
             *sample = value * self.boost_gain;
         }
 
-        // ---- EQ (sementara: implementasi lama, diganti biquad di Fase 4) ----
+        // ---- EQ 3-band biquad (Fase 4) ----
         if settings.equalizer_enabled {
-            let low = db_to_linear(settings.equalizer_low);
-            let mid = db_to_linear(settings.equalizer_mid);
-            let high = db_to_linear(settings.equalizer_high);
-            let n = samples.len();
-            let low_end = (n as f32 * 0.2) as usize;
-            let high_start = (n as f32 * 0.8) as usize;
-            for (i, sample) in samples.iter_mut().enumerate() {
-                if i < low_end {
-                    *sample *= low;
-                } else if i >= high_start {
-                    *sample *= high;
-                } else {
-                    *sample *= mid;
+            // Auto-bypass: semua band 0 dB = tidak ada processing.
+            if settings.equalizer_low.abs() > 0.1
+                || settings.equalizer_mid.abs() > 0.1
+                || settings.equalizer_high.abs() > 0.1
+            {
+                for sample in samples.iter_mut() {
+                    *sample = self.eq_low.process(*sample);
+                }
+                for sample in samples.iter_mut() {
+                    *sample = self.eq_mid.process(*sample);
+                }
+                for sample in samples.iter_mut() {
+                    *sample = self.eq_high.process(*sample);
                 }
             }
         }
