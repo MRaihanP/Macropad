@@ -4,9 +4,17 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;
 
+/// Versi skema file settings. Naikkan setiap kali arti field berubah.
+///
+/// - 0 (file lama tanpa `version`): `micPre.micBoost` masih linear.
+/// - 1: `micPre.micBoostDb` (dB) + `micPre.humNotchHz`.
+pub const SETTINGS_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AudioSettings {
+    /// Versi skema. File lama tidak punya field ini dan dibaca sebagai 0.
+    pub version: u32,
     /// Nama device output Discord (CABLE Input). Kosong = auto-deteksi.
     pub cable_device: String,
     /// Nama device monitor (speaker). Kosong = default output Windows.
@@ -33,8 +41,10 @@ pub struct AudioSettings {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MicSettings {
-    /// Amplifikasi dasar (1.0 = no boost, 5.0 = 5× gain).
-    pub mic_boost: f32,
+    /// Boost dalam dB (0…+20). 0 = unity, +6 dB ≈ 2×.
+    pub mic_boost_db: f32,
+    /// Hum notch: 0 = off, 50/100/150 Hz. Nilai lain di-snap saat sanitize.
+    pub hum_notch_hz: f32,
     /// Noise gate: filter out low-level noise when mic is idle.
     pub noise_gate_enabled: bool,
     /// Threshold dalam dBFS di bawah mana sinyal dianggap noise.
@@ -71,7 +81,8 @@ pub struct MicSettings {
 impl Default for MicSettings {
     fn default() -> Self {
         Self {
-            mic_boost: 2.0,
+            mic_boost_db: 6.0,
+            hum_notch_hz: 0.0,
             noise_gate_enabled: false,
             noise_gate_threshold: -45.0,
             noise_gate_attack_ms: 8.0,
@@ -107,8 +118,15 @@ impl MicSettings {
             }
         };
 
-        // mic_boost masih linear sampai Fase 1 (migrasi ke dB).
-        self.mic_boost = clean(self.mic_boost, d.mic_boost).clamp(0.0, 10.0);
+        // Boost dalam dB: 0 = unity, +20 dB = 10×.
+        self.mic_boost_db = clean(self.mic_boost_db, d.mic_boost_db).clamp(0.0, 20.0);
+        // Notch hanya punya tiga frekuensi; nilai lain di-snap ke yang terdekat.
+        self.hum_notch_hz = match clean(self.hum_notch_hz, 0.0) {
+            hz if hz <= 0.0 => 0.0,
+            hz if hz < 75.0 => 50.0,
+            hz if hz < 125.0 => 100.0,
+            _ => 150.0,
+        };
 
         self.noise_gate_threshold = clean(self.noise_gate_threshold, d.noise_gate_threshold)
             .clamp(-80.0, -10.0);
@@ -142,6 +160,7 @@ impl MicSettings {
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             cable_device: String::new(),
             monitor_device: String::new(),
             monitor_enabled: true,
@@ -167,21 +186,64 @@ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join("audio-settings.json"))
 }
 
+/// Migrasi file lama ke skema terbaru, dilakukan pada `serde_json::Value`
+/// supaya field deprecated tidak perlu hidup di struct.
+///
+/// Versi 0: `micPre.micBoost` linear → `micPre.micBoostDb` (dB).
+fn migrate(value: &mut serde_json::Value) {
+    let from = value
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+
+    if from < 1 {
+        if let Some(mic) = value.get_mut("micPre").and_then(|m| m.as_object_mut()) {
+            if !mic.contains_key("micBoostDb") {
+                // 20*log10(linear); linear 0/negatif tidak punya arti → unity.
+                let db = mic
+                    .get("micBoost")
+                    .and_then(|v| v.as_f64())
+                    .filter(|linear| *linear > 0.0)
+                    .map(|linear| (20.0 * linear.log10()).clamp(0.0, 20.0))
+                    .unwrap_or(6.0);
+                mic.insert("micBoostDb".into(), serde_json::json!(db));
+            }
+            mic.remove("micBoost");
+        }
+    }
+
+    if let Some(object) = value.as_object_mut() {
+        object.insert("version".into(), serde_json::json!(SETTINGS_VERSION));
+    }
+}
+
 pub fn load(app: &tauri::AppHandle) -> AudioSettings {
     let Some(path) = settings_path(app) else {
         return AudioSettings::default();
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            let mut settings: AudioSettings = serde_json::from_str(&text).unwrap_or_else(|e| {
-                eprintln!("[audio] audio-settings.json tidak valid: {e}");
-                AudioSettings::default()
-            });
-            settings.mic_pre.sanitize();
-            settings
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return AudioSettings::default();
+    };
+
+    let mut value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[audio] audio-settings.json tidak valid: {error}");
+            return AudioSettings::default();
         }
-        Err(_) => AudioSettings::default(),
-    }
+    };
+    migrate(&mut value);
+
+    let mut settings: AudioSettings = match serde_json::from_value(value) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("[audio] audio-settings.json tidak bisa dipakai: {error}");
+            AudioSettings::default()
+        }
+    };
+    settings.mic_pre.sanitize();
+    settings
 }
 
 pub fn save(app: &tauri::AppHandle, settings: &AudioSettings) -> Result<(), String> {
@@ -189,7 +251,12 @@ pub fn save(app: &tauri::AppHandle, settings: &AudioSettings) -> Result<(), Stri
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    // Selalu tulis versi terbaru, apa pun nilai di struct.
+    let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("version".into(), serde_json::json!(SETTINGS_VERSION));
+    }
+    let text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
@@ -202,7 +269,8 @@ mod tests {
     #[test]
     fn sanitize_menolak_nan_dan_clamp_rentang() {
         let mut s = MicSettings::default();
-        s.mic_boost = f32::NAN;
+        s.mic_boost_db = f32::NAN;
+        s.hum_notch_hz = 77.0;
         s.noise_gate_threshold = -200.0;
         s.noise_gate_hold_ms = -5.0;
         s.noise_gate_range_db = 12.0; // positif = salah, harus negatif
@@ -212,7 +280,8 @@ mod tests {
 
         s.sanitize();
 
-        assert_eq!(s.mic_boost, MicSettings::default().mic_boost);
+        assert_eq!(s.mic_boost_db, MicSettings::default().mic_boost_db);
+        assert_eq!(s.hum_notch_hz, 100.0);
         assert_eq!(s.noise_gate_threshold, -80.0);
         assert_eq!(s.noise_gate_hold_ms, 0.0);
         assert_eq!(s.noise_gate_range_db, -30.0);
@@ -222,13 +291,97 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_memilih_notch_terdekat() {
+        let mut s = MicSettings::default();
+
+        s.hum_notch_hz = -10.0;
+        s.sanitize();
+        assert_eq!(s.hum_notch_hz, 0.0);
+
+        s.hum_notch_hz = 60.0;
+        s.sanitize();
+        assert_eq!(s.hum_notch_hz, 50.0);
+
+        s.hum_notch_hz = 200.0;
+        s.sanitize();
+        assert_eq!(s.hum_notch_hz, 150.0);
+    }
+
+    #[test]
     fn sanitize_idempoten() {
         let mut s = MicSettings::default();
         s.sanitize();
         let once = s;
         s.sanitize();
-        assert_eq!(once.mic_boost, s.mic_boost);
+        assert_eq!(once.mic_boost_db, s.mic_boost_db);
+        assert_eq!(once.hum_notch_hz, s.hum_notch_hz);
         assert_eq!(once.noise_gate_range_db, s.noise_gate_range_db);
         assert_eq!(once.noise_gate_hold_ms, s.noise_gate_hold_ms);
+    }
+
+    #[test]
+    fn migrasi_boost_linear_ke_db() {
+        // File Fase 0: micBoost linear 2.0, tanpa `version`.
+        let mut value = serde_json::json!({
+            "micPre": { "micBoost": 2.0, "noiseGateThreshold": -45.0 }
+        });
+
+        migrate(&mut value);
+
+        let db = value["micPre"]["micBoostDb"].as_f64().unwrap();
+        assert!((db - 6.0206).abs() < 0.01, "micBoostDb = {db}");
+        assert_eq!(value["version"].as_u64(), Some(SETTINGS_VERSION as u64));
+        assert!(value["micPre"].get("micBoost").is_none());
+    }
+
+    #[test]
+    fn migrasi_tidak_menimpa_mic_boost_db() {
+        let mut value = serde_json::json!({
+            "version": 1,
+            "micPre": { "micBoostDb": 12.5 }
+        });
+
+        migrate(&mut value);
+
+        assert_eq!(value["micPre"]["micBoostDb"].as_f64(), Some(12.5));
+        assert_eq!(value["version"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn migrasi_file_baru_tanpa_mic_pre_memakai_default() {
+        let mut value = serde_json::json!({ "masterGain": 0.5 });
+
+        migrate(&mut value);
+
+        assert_eq!(value["version"].as_u64(), Some(SETTINGS_VERSION as u64));
+        let settings: AudioSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.mic_pre.mic_boost_db, 6.0);
+        assert_eq!(settings.mic_pre.hum_notch_hz, 0.0);
+    }
+
+    #[test]
+    fn file_fase_0_lengkap_terbaca_setelah_migrasi() {
+        let mut value = serde_json::json!({
+            "monitorEnabled": false,
+            "micPre": {
+                "micBoost": 3.0,
+                "noiseGateEnabled": true,
+                "noiseGateThreshold": -50.0,
+                "noiseGateAttackMs": 5.0,
+                "noiseGateReleaseMs": 30.0,
+                "noiseGateHoldMs": 100.0,
+                "noiseGateRatio": 10.0
+            }
+        });
+
+        migrate(&mut value);
+        let metrics: AudioSettings = serde_json::from_value(value).unwrap();
+
+        assert!(!metrics.monitor_enabled);
+        assert!((metrics.mic_pre.mic_boost_db - 9.5424).abs() < 0.001);
+        assert!(metrics.mic_pre.noise_gate_enabled);
+        // Field baru yang tidak ada di file lama memakai default.
+        assert_eq!(metrics.mic_pre.noise_gate_hysteresis_db, 6.0);
+        assert_eq!(metrics.mic_pre.noise_gate_range_db, -50.0);
     }
 }

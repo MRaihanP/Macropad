@@ -432,13 +432,29 @@
           <div class="audio-row">
             <div class="audio-row-main">
               <div class="setting-name">Mic Boost</div>
-              <div class="hint">Amplifikasi dasar (1×–5×)</div>
+              <div class="hint">0 dB = unity, +6 dB ≈ 2×, +20 dB = 10×</div>
             </div>
             <div class="audio-row-controls audio-gain-controls">
               <div class="audio-gain-line">
-                <input type="range" id="micBoost" class="audio-slider" min="100" max="500" value="200">
-                <span class="audio-value" id="micBoostVal">2.0×</span>
+                <input type="range" id="micBoostDb" class="audio-slider" min="0" max="20" step="0.5" value="6">
+                <span class="audio-value audio-value-wide" id="micBoostDbVal">+6.0 dB (2.0×)</span>
               </div>
+            </div>
+          </div>
+
+          <!-- Hum Notch -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Hum Notch</div>
+              <div class="hint">Redam dengung listrik 50/100/150 Hz</div>
+            </div>
+            <div class="audio-row-controls">
+              <select id="humNotch" class="audio-select audio-select-sm">
+                <option value="0">Off</option>
+                <option value="50">50 Hz</option>
+                <option value="100">100 Hz</option>
+                <option value="150">150 Hz</option>
+              </select>
             </div>
           </div>
 
@@ -446,6 +462,7 @@
           <div class="audio-row">
             <div class="audio-row-main">
               <div class="setting-name">Noise Gate</div>
+              <div class="hint">Tutup mic saat tidak ada suara</div>
             </div>
             <div class="audio-row-controls">
               <label class="toggle-switch" title="Aktifkan noise gate">
@@ -454,7 +471,43 @@
               </label>
               <input type="range" id="noiseGateThreshold" class="audio-slider-small" min="-80" max="-10" value="-45">
               <span class="audio-value" id="noiseGateThresholdVal">-45 dB</span>
+              <button type="button" id="noiseGateLearn" class="btn-apply" title="Ukur noise ruangan selama 3 detik">Learn</button>
+              <span class="audio-learn-status" id="noiseGateLearnStatus"></span>
             </div>
+          </div>
+
+          <!-- Advanced gate settings -->
+          <div class="audio-row audio-row-compact audio-adv-host">
+            <details class="audio-details audio-gate-advanced">
+              <summary>Advanced gate (hold, attack, release, range)</summary>
+              <div class="audio-details-body">
+                <div class="audio-adv-row">
+                  <span class="audio-adv-label">Hold</span>
+                  <input type="range" id="noiseGateHold" class="audio-slider-small" min="0" max="500" step="10" value="150">
+                  <span class="audio-value audio-value-wide" id="noiseGateHoldVal">150 ms</span>
+                </div>
+                <div class="audio-adv-row">
+                  <span class="audio-adv-label">Attack</span>
+                  <input type="range" id="noiseGateAttack" class="audio-slider-small" min="1" max="50" step="1" value="8">
+                  <span class="audio-value audio-value-wide" id="noiseGateAttackVal">8 ms</span>
+                </div>
+                <div class="audio-adv-row">
+                  <span class="audio-adv-label">Release</span>
+                  <input type="range" id="noiseGateRelease" class="audio-slider-small" min="10" max="1000" step="10" value="220">
+                  <span class="audio-value audio-value-wide" id="noiseGateReleaseVal">220 ms</span>
+                </div>
+                <div class="audio-adv-row">
+                  <span class="audio-adv-label">Range</span>
+                  <input type="range" id="noiseGateRange" class="audio-slider-small" min="-80" max="-30" step="1" value="-50">
+                  <span class="audio-value audio-value-wide" id="noiseGateRangeVal">-50 dB</span>
+                </div>
+                <div class="audio-adv-row">
+                  <span class="audio-adv-label">Hysteresis</span>
+                  <input type="range" id="noiseGateHysteresis" class="audio-slider-small" min="0" max="12" step="1" value="6">
+                  <span class="audio-value audio-value-wide" id="noiseGateHysteresisVal">6 dB</span>
+                </div>
+              </div>
+            </details>
           </div>
 
           <!-- Compressor -->

@@ -81,7 +81,8 @@ pub struct LevelFrame {
     pub monitor_underruns: u64,
     /// Peak input mic sebelum chain (dBFS, -100 = silence).
     pub mic_in_db: f32,
-    /// Level di titik detektor gate (post-denoise, pre-gate).
+    /// Envelope detektor gate (post-notch, sidechain 100 Hz–4 kHz, pre-gate).
+    /// Dipakai UI untuk "learn noise floor".
     pub gate_in_db: f32,
     pub gate_open: bool,
     /// Gain gate saat ini (dB, 0 = terbuka penuh).

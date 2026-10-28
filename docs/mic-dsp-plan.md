@@ -2,6 +2,19 @@
 
 Status: disetujui 2026-10-28. Eksekusi per fase dengan checkpoint commit.
 
+## Status eksekusi
+
+| Fase | Status | Commit |
+|---|---|---|
+| 0 - Fondasi & bug fix | selesai, tes manual OK | `f75c49a` |
+| 1 - Boost dB, notch | selesai | commit `mic phase 1-2` |
+| 2 - Gate sidechain + learn | selesai | commit `mic phase 1-2` |
+| 3 - Denoise | belum | - |
+| 4 - EQ biquad | belum | - |
+| 5 - Compressor | belum | - |
+| 6 - Limiter | belum | - |
+| 7 - Preset & QA | belum | - |
+
 ## Keputusan final
 
 | Topik | Keputusan |
@@ -166,7 +179,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example mic_offline -- \
   tests/audio/speech_noise.wav out.wav --gate -40 --hold 150 --release 220
 ```
 
-Opsi: `--gate <db>`, `--hold <ms>`, `--release <ms>`, `--range <db>`, `--boost <linear>`, `--comp`, `--no-limiter`, `--json`.
+Opsi: `--gate <db>`, `--hold <ms>`, `--release <ms>`, `--range <db>`, `--boost <db>`, `--notch <hz>`, `--comp`, `--no-limiter`, `--json`. Harness memakai boost 0 dB secara default supaya perbandingan input/output langsung terlihat.
 
 Fixture yang perlu direkam: `noise_only.wav`, `speech_only.wav`, `speech_noise.wav` (48 kHz mono lebih baik; 44.1 kHz juga didukung).
 

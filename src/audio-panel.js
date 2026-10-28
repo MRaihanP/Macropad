@@ -28,13 +28,19 @@ let lastDeviceKey = '';
 let activeSlider = null;
 const debounceTimers = new Map();
 
-// Kontrol mic pre yang punya nilai di UI. Field lain (attack/hold/release,
-// threshold compressor, ceiling limiter) tetap disimpan di `micPre` supaya
-// tidak hilang saat salah satu kontrol diubah.
+// Kontrol mic pre yang punya nilai di UI. Field lain (ratio gate, threshold
+// compressor, ceiling limiter) tetap disimpan di `micPre` supaya tidak hilang
+// saat salah satu kontrol diubah.
 const MIC_PRE_CONTROLS = [
-  'micBoost',
+  'micBoostDb',
+  'humNotch',
   'noiseGateEnabled',
   'noiseGateThreshold',
+  'noiseGateHold',
+  'noiseGateAttack',
+  'noiseGateRelease',
+  'noiseGateRange',
+  'noiseGateHysteresis',
   'compressorEnabled',
   'compressorRatio',
   'limiterEnabled',
@@ -47,7 +53,8 @@ const MIC_PRE_CONTROLS = [
 // Fallback sebelum snapshot pertama. Nilainya harus sama dengan
 // MicSettings::default() di Rust.
 const DEFAULT_MIC_PRE = {
-  micBoost: 2,
+  micBoostDb: 6,
+  humNotchHz: 0,
   noiseGateEnabled: false,
   noiseGateThreshold: -45,
   noiseGateAttackMs: 8,
@@ -69,6 +76,7 @@ const DEFAULT_MIC_PRE = {
 };
 
 let micPre = { ...DEFAULT_MIC_PRE };
+let noiseLearn = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -79,13 +87,29 @@ function formatDb(value) {
   return (number > 0 ? '+' : '') + number.toFixed(1) + ' dB';
 }
 
+/// Label boost: dB dan faktor linear, mis. `+6.0 dB (2.0×)`.
+function formatBoostLabel(value) {
+  const db = Number(value) || 0;
+  const linear = Math.pow(10, db / 20);
+  return (db > 0 ? '+' : '') + db.toFixed(1) + ' dB (' + linear.toFixed(1) + '×)';
+}
+
+function formatMs(value) {
+  return Math.round(Number(value) || 0) + ' ms';
+}
+
 /// Tulis nilai `micPre` ke kontrol. Dipakai saat snapshot pertama/periodik
 /// datang; tidak memicu command.
 function refreshMicLabels() {
-  if ($('micBoostVal')) $('micBoostVal').textContent = Number(micPre.micBoost ?? 1).toFixed(1) + '×';
+  if ($('micBoostDbVal')) $('micBoostDbVal').textContent = formatBoostLabel(micPre.micBoostDb);
   if ($('noiseGateThresholdVal')) {
     $('noiseGateThresholdVal').textContent = Math.round(Number(micPre.noiseGateThreshold)) + ' dB';
   }
+  if ($('noiseGateHoldVal')) $('noiseGateHoldVal').textContent = formatMs(micPre.noiseGateHoldMs);
+  if ($('noiseGateAttackVal')) $('noiseGateAttackVal').textContent = formatMs(micPre.noiseGateAttackMs);
+  if ($('noiseGateReleaseVal')) $('noiseGateReleaseVal').textContent = formatMs(micPre.noiseGateReleaseMs);
+  if ($('noiseGateRangeVal')) $('noiseGateRangeVal').textContent = Math.round(Number(micPre.noiseGateRangeDb)) + ' dB';
+  if ($('noiseGateHysteresisVal')) $('noiseGateHysteresisVal').textContent = Math.round(Number(micPre.noiseGateHysteresisDb)) + ' dB';
   if ($('compressorRatioVal')) {
     $('compressorRatioVal').textContent = Number(micPre.compressorRatio).toFixed(1) + ':1';
   }
@@ -107,8 +131,14 @@ function syncMicPre(pre) {
     if (node) node.checked = !!value;
   };
 
-  setSlider('micBoost', Math.round(Number(micPre.micBoost ?? 2) * 100));
+  setSlider('micBoostDb', Number(micPre.micBoostDb ?? 6));
+  setSlider('humNotch', Number(micPre.humNotchHz ?? 0));
   setSlider('noiseGateThreshold', Math.round(Number(micPre.noiseGateThreshold ?? -45)));
+  setSlider('noiseGateHold', Number(micPre.noiseGateHoldMs ?? 150));
+  setSlider('noiseGateAttack', Number(micPre.noiseGateAttackMs ?? 8));
+  setSlider('noiseGateRelease', Number(micPre.noiseGateReleaseMs ?? 220));
+  setSlider('noiseGateRange', Number(micPre.noiseGateRangeDb ?? -50));
+  setSlider('noiseGateHysteresis', Number(micPre.noiseGateHysteresisDb ?? 6));
   setSlider('compressorRatio', Number(micPre.compressorRatio ?? 4));
   setSlider('eqLow', Number(micPre.equalizerLow ?? 0));
   setSlider('eqMid', Number(micPre.equalizerMid ?? 0));
@@ -131,9 +161,15 @@ function readMicPre() {
   };
   micPre = {
     ...micPre,
-    micBoost: value('micBoost', 200) / 100,
+    micBoostDb: value('micBoostDb', 6),
+    humNotchHz: value('humNotch', 0),
     noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
     noiseGateThreshold: value('noiseGateThreshold', -45),
+    noiseGateHoldMs: value('noiseGateHold', 150),
+    noiseGateAttackMs: value('noiseGateAttack', 8),
+    noiseGateReleaseMs: value('noiseGateRelease', 220),
+    noiseGateRangeDb: value('noiseGateRange', -50),
+    noiseGateHysteresisDb: value('noiseGateHysteresis', 6),
     compressorEnabled: !!$('compressorEnabled')?.checked,
     compressorRatio: value('compressorRatio', 4),
     limiterEnabled: !!$('limiterEnabled')?.checked,
@@ -143,6 +179,66 @@ function readMicPre() {
     equalizerHigh: value('eqHigh', 0),
   };
   return micPre;
+}
+
+/// Kirim `micPre` ke engine. Dipakai oleh auto-apply dan tombol Learn.
+function applyMicPreNow() {
+  withError(setAudioMicPre(readMicPre()));
+}
+
+// ---- Learn noise floor ----
+// Gate memakai envelope sidechain sebagai `gateInDb`. Selama 3 detik UI
+// mengumpulkan ~90 frame (30 Hz), mengambil median, lalu menambah 9 dB
+// headroom supaya noise tidak menyentuh ambang.
+const LEARN_MS = 3000;
+const LEARN_HEADROOM_DB = 9;
+
+function startNoiseLearn() {
+  if (noiseLearn) return;
+  const button = $('noiseGateLearn');
+  const status = $('noiseGateLearnStatus');
+  noiseLearn = { samples: [], startedAt: performance.now() };
+  if (button) button.disabled = true;
+  if (status) {
+    status.textContent = 'Mendengar 3 detik — diam…';
+    status.classList.add('busy');
+  }
+}
+
+function finishNoiseLearn() {
+  const learn = noiseLearn;
+  noiseLearn = null;
+  const button = $('noiseGateLearn');
+  const status = $('noiseGateLearnStatus');
+  if (button) button.disabled = false;
+  if (!learn) return;
+
+  // Buang frame yang kena floor -120 (benar-benar sunyi).
+  const samples = learn.samples.filter((db) => Number.isFinite(db) && db > -119.5);
+  if (samples.length < 10) {
+    if (status) {
+      status.textContent = 'Gagal: tidak ada data';
+      status.classList.remove('busy');
+    }
+    return;
+  }
+
+  samples.sort((a, b) => a - b);
+  const median = samples[Math.floor(samples.length / 2)];
+  const threshold = Math.max(-80, Math.min(-10, Math.round(median + LEARN_HEADROOM_DB)));
+
+  if ($('noiseGateThreshold')) $('noiseGateThreshold').value = String(threshold);
+  if ($('noiseGateEnabled')) $('noiseGateEnabled').checked = true;
+  micPre.noiseGateThreshold = threshold;
+  micPre.noiseGateEnabled = true;
+  refreshMicLabels();
+  updateGateLed();
+  applyMicPreNow();
+
+  if (status) {
+    status.textContent = 'Threshold ' + threshold + ' dB';
+    status.classList.remove('busy');
+  }
 }
 
 function toast(message, type = 'error') {
@@ -512,26 +608,33 @@ function bindControls() {
   bindSlider('monitorVolume', 'monitorVolumeVal', 'monitor');
 
   // ---- Mic Preprocessing Filter Controls (auto-apply on change) ----
-  function applyMicPre() {
-    withError(setAudioMicPre(readMicPre()));
-    soundLog('mic filter applied', 'info');
-  }
-
   // Slider: update label + auto-apply
-  bindRangeLabel('micBoost', 'micBoostVal', (v) => (v / 100).toFixed(1) + '×');
+  bindRangeLabel('micBoostDb', 'micBoostDbVal', formatBoostLabel);
   bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => Math.round(v) + ' dB');
+  bindRangeLabel('noiseGateHold', 'noiseGateHoldVal', formatMs);
+  bindRangeLabel('noiseGateAttack', 'noiseGateAttackVal', formatMs);
+  bindRangeLabel('noiseGateRelease', 'noiseGateReleaseVal', formatMs);
+  bindRangeLabel('noiseGateRange', 'noiseGateRangeVal', (v) => Math.round(v) + ' dB');
+  bindRangeLabel('noiseGateHysteresis', 'noiseGateHysteresisVal', (v) => Math.round(v) + ' dB');
   bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => Number(v).toFixed(1) + ':1');
   bindRangeLabel('eqLow', 'eqLowVal', formatDb);
   bindRangeLabel('eqMid', 'eqMidVal', formatDb);
   bindRangeLabel('eqHigh', 'eqHighVal', formatDb);
 
-  // Auto-apply on every slider/toggle change (debounced)
+  // Auto-apply on every slider/toggle/select change (debounced)
   for (const id of MIC_PRE_CONTROLS) {
     const el = $(id);
     if (!el) continue;
-    const event = el.type === 'checkbox' ? 'change' : 'input';
-    el.addEventListener(event, () => debounce('micpre:' + id, applyMicPre, 150));
+    const event = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(event, () =>
+      debounce('micpre:' + id, () => {
+        applyMicPreNow();
+        soundLog('mic filter applied', 'info');
+      }, 150)
+    );
   }
+
+  $('noiseGateLearn')?.addEventListener('click', startNoiseLearn);
 }
 
 // ---- Meter ----
@@ -575,6 +678,12 @@ function startMeterLoop() {
     meterState.compGr = Math.max(levels.compGrDb || 0, meterState.compGr);
     meterState.limiterGr = Math.max(levels.limiterGrDb || 0, meterState.limiterGr);
     updateGateLed();
+
+    if (noiseLearn) {
+      const gateDb = Number(levels.gateInDb);
+      if (Number.isFinite(gateDb)) noiseLearn.samples.push(gateDb);
+      if (performance.now() - noiseLearn.startedAt >= LEARN_MS) finishNoiseLearn();
+    }
   });
 
   const tick = () => {

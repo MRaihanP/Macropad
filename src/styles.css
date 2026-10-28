@@ -386,7 +386,8 @@ input[readonly] { color: var(--accent); cursor: default; }
 .audio-gain-top:has(input:checked) .audio-toggle-label { color: var(--err); font-weight: 700; }
 .toggle-switch.audio-mute input:checked + .toggle-slider { background: var(--err); }
 .audio-gain-line { display: flex; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
-.audio-gain-line .audio-slider { flex: 1 1 auto; width: auto; min-width: 150px; max-width: 190px; }
+.audio-gain-line .audio-slider { flex: 1 1 auto; width: auto; min-width: 128px; max-width: 190px; }
+.audio-gain-line .audio-value-wide { flex: 0 0 96px; width: 96px; font-size: 0.64rem; }
 .audio-gain-controls .audio-meter { width: 100%; flex: 0 0 6px; }
 
 .audio-select { flex: 0 1 auto !important; min-width: 0 !important; width: 232px; max-width: 100%;
@@ -422,6 +423,8 @@ input[readonly] { color: var(--accent); cursor: default; }
   border: 1px solid var(--accent); padding: 4px 12px; border-radius: 4px;
   font-size: 0.75rem; cursor: pointer; }
 .btn-apply:hover { background: var(--accent); }
+.btn-apply:disabled { opacity: .45; cursor: default; }
+.btn-apply:disabled:hover { background: var(--accent-dim); }
 
 .audio-meter { width: 64px; height: 6px; border-radius: 999px; background: var(--bg);
   border: 1px solid var(--line); overflow: hidden; flex: 0 0 64px; }
@@ -450,6 +453,16 @@ input[readonly] { color: var(--accent); cursor: default; }
 .audio-details summary:hover { color: var(--text); }
 .audio-details[open] summary { border-bottom: 1px solid var(--line); color: var(--text); }
 .audio-details-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Advanced gate: full-width <details> di dalam baris audio. */
+.audio-adv-host { display: block; }
+.audio-gate-advanced { width: 100%; }
+.audio-adv-row { display: grid; grid-template-columns: 86px 90px auto; gap: 10px; align-items: center; }
+.audio-adv-label { font-size: 0.7rem; color: var(--muted); }
+.audio-value-wide { width: 72px; flex: 0 0 72px; }
+.audio-learn-status { font-family: var(--mono); font-size: 0.64rem; color: var(--accent);
+  min-width: 0; white-space: nowrap; }
+.audio-learn-status.busy { color: var(--muted); }
 
 .audio-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .audio-actions .small { flex: 0 0 auto; }

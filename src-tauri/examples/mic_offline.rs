@@ -29,7 +29,8 @@ fn usage() {
            --hold <ms>       hold gate (default dari MicSettings)\n\
            --release <ms>    release gate\n\
            --range <db>      redaman gate saat tertutup (mis. -50)\n\
-           --boost <x>       mic boost linear (1.0 = unity)\n\
+           --boost <db>      mic boost dalam dB (0 = unity, 20 = 10x)\n\
+           --notch <hz>      hum notch: 0/50/100/150\n\
            --comp            aktifkan compressor\n\
            --no-limiter      matikan limiter\n\
            --json            cetak metrik sebagai satu baris JSON"
@@ -104,6 +105,9 @@ fn main() {
     let input_path = Path::new(&args[0]);
     let output_path = Path::new(&args[1]);
     let mut settings = MicSettings::default();
+    // Harness mengukur chain, bukan preset app: boost default 0 dB supaya
+    // perbandingan input/output langsung terlihat.
+    settings.mic_boost_db = 0.0;
     let mut json = false;
 
     let mut index = 2;
@@ -125,7 +129,8 @@ fn main() {
                 "--hold" => settings.noise_gate_hold_ms = next_value("--hold")?,
                 "--release" => settings.noise_gate_release_ms = next_value("--release")?,
                 "--range" => settings.noise_gate_range_db = next_value("--range")?,
-                "--boost" => settings.mic_boost = next_value("--boost")?,
+                "--boost" => settings.mic_boost_db = next_value("--boost")?,
+                "--notch" => settings.hum_notch_hz = next_value("--notch")?,
                 "--comp" => settings.compressor_enabled = true,
                 "--no-limiter" => settings.limiter_enabled = false,
                 "--json" => json = true,

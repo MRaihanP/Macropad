@@ -43,14 +43,22 @@ pub fn db_to_linear(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
+/// Amplitude linear ke dBFS dengan floor tertentu. Floor -100 dipakai meter;
+/// floor -120 dipakai `gateInDb` supaya "learn noise floor" masih bisa
+/// mengukur noise ruangan yang sangat pelan.
+#[inline]
+pub fn to_db_floor(amplitude: f32, floor: f32) -> f32 {
+    if amplitude > 0.0 {
+        (20.0 * amplitude.log10()).max(floor)
+    } else {
+        floor
+    }
+}
+
 /// Amplitude linear ke dBFS, dengan floor -100 dB supaya log10 tidak -inf.
 #[inline]
 pub fn to_db(amplitude: f32) -> f32 {
-    if amplitude > 1.0e-5 {
-        (20.0 * amplitude.log10()).max(-100.0)
-    } else {
-        -100.0
-    }
+    to_db_floor(amplitude, -100.0)
 }
 
 #[inline]
@@ -130,6 +138,21 @@ impl Biquad {
         );
     }
 
+    /// RBJ low-pass. Dipakai filter sidechain gate (batas atas 4 kHz).
+    pub fn lowpass(&mut self, freq: f32, q: f32) {
+        let w0 = std::f32::consts::TAU * freq.clamp(10.0, 20_000.0) / SAMPLE_RATE;
+        let cos = w0.cos();
+        let alpha = w0.sin() / (2.0 * q.max(0.1));
+        self.set(
+            (1.0 - cos) / 2.0,
+            1.0 - cos,
+            (1.0 - cos) / 2.0,
+            1.0 + alpha,
+            -2.0 * cos,
+            1.0 - alpha,
+        );
+    }
+
     /// RBJ notch. Q tinggi = notch sempit.
     pub fn notch(&mut self, freq: f32, q: f32) {
         let w0 = std::f32::consts::TAU * freq.clamp(10.0, 20_000.0) / SAMPLE_RATE;
@@ -140,6 +163,10 @@ impl Biquad {
 }
 
 /// Noise gate per sample dengan sidechain level, hysteresis, hold, dan range.
+///
+/// Detektor memakai sinyal yang sudah difilter 100 Hz–4 kHz supaya rumble dan
+/// desis tinggi tidak membuka gate. VAD dari denoise (Fase 3) bisa ikut
+/// membuka gate lewat `vad`.
 #[derive(Clone, Copy, Debug)]
 struct Gate {
     enabled: bool,
@@ -155,6 +182,11 @@ struct Gate {
     det_release: f32,
     gain_attack: f32,
     gain_release: f32,
+    /// Sidechain band-pass: HPF 100 Hz lalu LPF 4 kHz.
+    sc_hp: Biquad,
+    sc_lp: Biquad,
+    /// Probabilitas voice 0..1 dari denoise. 0 = belum aktif.
+    vad: f32,
 }
 
 impl Default for Gate {
@@ -173,6 +205,9 @@ impl Default for Gate {
             det_release: 0.0,
             gain_attack: 0.0,
             gain_release: 0.0,
+            sc_hp: Biquad::bypass(),
+            sc_lp: Biquad::bypass(),
+            vad: 0.0,
         }
     }
 }
@@ -185,6 +220,13 @@ impl Gate {
         self.range_gain = db_to_linear(settings.noise_gate_range_db);
         self.hold_samples =
             (settings.noise_gate_hold_ms / 1000.0 * SAMPLE_RATE).max(0.0) as u32;
+
+        // Sidechain: buang rumble < 100 Hz dan desis > 4 kHz supaya keputusan
+        // buka/tutup mengikuti pita suara.
+        self.sc_hp
+            .highpass(100.0, std::f32::consts::FRAC_1_SQRT_2);
+        self.sc_lp
+            .lowpass(4_000.0, std::f32::consts::FRAC_1_SQRT_2);
 
         // Detektor sidechain: attack cepat, release lambat supaya gate tidak
         // berkedip mengikuti zero-crossing.
@@ -209,16 +251,16 @@ impl Gate {
         self.gain = 1.0;
         self.open = true;
         self.hold_left = self.hold_samples;
+        self.sc_hp.reset();
+        self.sc_lp.reset();
     }
 
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
-        if !self.enabled {
-            self.gain = 1.0;
-            return x;
-        }
-
-        let amplitude = x.abs();
+        // Sidechain tetap dihitung saat gate off supaya `gateInDb` punya arti
+        // yang sama (dipakai "learn noise floor" sebelum gate diaktifkan).
+        let sidechain = self.sc_lp.process(self.sc_hp.process(x));
+        let amplitude = sidechain.abs();
         let coef = if amplitude > self.env {
             self.det_attack
         } else {
@@ -226,7 +268,14 @@ impl Gate {
         };
         self.env = amplitude + coef * (self.env - amplitude);
 
-        if self.env > self.open_thr {
+        if !self.enabled {
+            self.gain = 1.0;
+            self.open = true;
+            return x;
+        }
+
+        let voiced = self.vad > 0.6;
+        if self.env > self.open_thr || voiced {
             self.open = true;
             self.hold_left = self.hold_samples;
         } else if self.env < self.close_thr {
@@ -251,10 +300,11 @@ impl Gate {
 pub struct MicChain {
     settings: MicSettings,
     hpf: Biquad,
-    /// Notch belum punya kontrol UI sampai Fase 1; tetap di chain supaya
-    /// urutan stage tidak berubah saat fitur ditambahkan.
     notch: Biquad,
     gate: Gate,
+    /// Gain boost yang di-smooth 15 ms supaya slider dB tidak klik.
+    boost_gain: f32,
+    boost_coef: f32,
 }
 
 impl MicChain {
@@ -264,8 +314,13 @@ impl MicChain {
             hpf: Biquad::bypass(),
             notch: Biquad::bypass(),
             gate: Gate::default(),
+            boost_gain: db_to_linear(settings.mic_boost_db),
+            boost_coef: one_pole(15.0),
         };
         chain.set_settings(settings);
+        // `set_settings` melakukan sanitize; ambil nilai final supaya boost
+        // pertama tidak memakai nilai mentah (mis. NaN dari file lama).
+        chain.boost_gain = db_to_linear(chain.settings.mic_boost_db);
         // Beri hold penuh di awal supaya kata pertama tidak terpotong saat
         // gate baru diaktifkan di tengah stream.
         chain.gate.hold_left = chain.gate.hold_samples;
@@ -280,6 +335,14 @@ impl MicChain {
 
         // HPF selalu aktif, termasuk sebelum settings pertama diubah.
         self.hpf.highpass(80.0, std::f32::consts::FRAC_1_SQRT_2);
+
+        if settings.hum_notch_hz > 0.0 {
+            // Q=10: notch sempit supaya hanya hum yang kena, bukan suara.
+            self.notch.notch(settings.hum_notch_hz, 10.0);
+        } else {
+            self.notch = Biquad::bypass();
+        }
+
         self.gate.configure(&settings);
     }
 
@@ -289,6 +352,17 @@ impl MicChain {
         self.hpf.reset();
         self.notch.reset();
         self.gate.reset();
+        self.boost_gain = db_to_linear(self.settings.mic_boost_db);
+    }
+
+    /// VAD dari denoise (dipakai mulai Fase 3). 0 = tidak ada voice.
+    /// Saat denoise belum aktif, mixer tidak memanggil ini dan nilainya 0.
+    pub fn set_vad(&mut self, vad: f32) {
+        self.gate.vad = if vad.is_finite() {
+            vad.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
 
     pub fn settings(&self) -> MicSettings {
@@ -303,10 +377,10 @@ impl MicChain {
         }
 
         let settings = self.settings;
-        let boost = settings.mic_boost;
+        let target_boost = db_to_linear(settings.mic_boost_db);
 
         let mut input_peak = 0.0f32;
-        let mut gate_sum_sq = 0.0f32;
+        let mut gate_env_peak = 0.0f32;
 
         for sample in samples.iter_mut() {
             let raw = *sample;
@@ -314,12 +388,15 @@ impl MicChain {
 
             let mut value = self.hpf.process(raw);
             value = self.notch.process(value);
-            gate_sum_sq += value * value;
 
             // Gate sebelum boost: threshold dan "learn noise floor" tidak
             // bergeser saat user mengubah boost.
             value = self.gate.process(value);
-            *sample = value * boost;
+            gate_env_peak = gate_env_peak.max(self.gate.env);
+
+            // Boost di-smooth per sample supaya perubahan slider tidak klik.
+            self.boost_gain = target_boost + self.boost_coef * (self.boost_gain - target_boost);
+            *sample = value * self.boost_gain;
         }
 
         // ---- EQ (sementara: implementasi lama, diganti biquad di Fase 4) ----
@@ -373,12 +450,15 @@ impl MicChain {
 
         MicMeters {
             input_db: to_db(input_peak),
-            gate_in_db: to_db((gate_sum_sq / samples.len() as f32).sqrt()),
+            // Envelope detektor, sama dengan yang dipakai gate. Dipakai UI
+            // untuk "learn noise floor" supaya ambang yang dihitung cocok
+            // dengan cara gate mengambil keputusan.
+            gate_in_db: to_db_floor(gate_env_peak, -120.0),
             gate_open: self.gate.open,
             gate_gain_db: to_db(self.gate.gain),
             comp_gr_db,
             limiter_gr_db,
-            vad: 0.0,
+            vad: self.gate.vad,
         }
     }
 }
@@ -402,7 +482,8 @@ mod tests {
 
     fn base_settings() -> MicSettings {
         let mut settings = MicSettings::default();
-        settings.mic_boost = 1.0;
+        settings.mic_boost_db = 0.0;
+        settings.hum_notch_hz = 0.0;
         settings.noise_gate_enabled = false;
         settings.compressor_enabled = false;
         settings.equalizer_enabled = false;
@@ -501,6 +582,153 @@ mod tests {
             last.gate_gain_db <= -55.0,
             "range gate hanya {:.1} dB, seharusnya mendekati -60",
             last.gate_gain_db
+        );
+    }
+
+    #[test]
+    fn boost_db_mengikuti_skala_db() {
+        let mut unity = sine(1_000.0, 0.05, 24_000);
+        MicChain::new(base_settings()).process(&mut unity);
+
+        let mut settings = base_settings();
+        settings.mic_boost_db = 20.0;
+        let mut boosted = sine(1_000.0, 0.05, 24_000);
+        MicChain::new(settings).process(&mut boosted);
+
+        let ratio = rms(&boosted[12_000..]) / rms(&unity[12_000..]);
+        assert!(
+            (ratio - 10.0).abs() < 0.1,
+            "+20 dB seharusnya 10x, hasil {ratio:.3}x"
+        );
+
+        // +6 dB ≈ 2x
+        let mut settings = base_settings();
+        settings.mic_boost_db = 6.0;
+        let mut plus_six = sine(1_000.0, 0.05, 24_000);
+        MicChain::new(settings).process(&mut plus_six);
+        let ratio = rms(&plus_six[12_000..]) / rms(&unity[12_000..]);
+        assert!(
+            (ratio - 1.9953).abs() < 0.05,
+            "+6 dB seharusnya ~2x, hasil {ratio:.3}x"
+        );
+    }
+
+    #[test]
+    fn boost_tidak_klik_saat_setting_berubah() {
+        let mut chain = MicChain::new(base_settings());
+        let mut block = sine(1_000.0, 0.05, 480);
+        chain.process(&mut block);
+
+        // Lompat +20 dB: 5 ms pertama belum boleh mencapai gain penuh
+        // (smooth 15 ms).
+        let mut settings = base_settings();
+        settings.mic_boost_db = 20.0;
+        chain.set_settings(settings);
+        let mut after = sine(1_000.0, 0.05, 480);
+        chain.process(&mut after);
+        let early_peak = after[..240].iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        assert!(
+            early_peak < 0.25,
+            "boost melompat terlalu cepat: peak 5 ms pertama {early_peak:.3}"
+        );
+    }
+
+    #[test]
+    fn notch_50hz_teredam_tajam_dan_1khz_aman() {
+        let mut settings = base_settings();
+        settings.hum_notch_hz = 50.0;
+        let mut chain = MicChain::new(settings);
+
+        let mut hum = sine(50.0, 0.5, 48_000);
+        let input_rms = rms(&hum[24_000..]);
+        chain.process(&mut hum);
+        let attenuation = 20.0 * (rms(&hum[24_000..]) / input_rms).log10();
+        assert!(
+            attenuation <= -15.0,
+            "notch 50 Hz hanya {attenuation:.1} dB"
+        );
+
+        // Notch tidak boleh ikut memotong pita suara.
+        let mut speech_band = sine(1_000.0, 0.25, 24_000);
+        let input_rms = rms(&speech_band[12_000..]);
+        chain.process(&mut speech_band);
+        let diff = (rms(&speech_band[12_000..]) / input_rms - 1.0).abs();
+        assert!(diff < 0.05, "1 kHz berubah {:.2}% saat notch aktif", diff * 100.0);
+    }
+
+    #[test]
+    fn notch_off_tidak_memotong_50hz_lebih_dari_hpf() {
+        let mut chain = MicChain::new(base_settings());
+        let mut hum = sine(50.0, 0.5, 48_000);
+        let input_rms = rms(&hum[24_000..]);
+        chain.process(&mut hum);
+        let attenuation = 20.0 * (rms(&hum[24_000..]) / input_rms).log10();
+        // Hanya HPF 80 Hz orde 2 (sekitar -9 dB di 50 Hz).
+        assert!(
+            (-15.0..=-4.0).contains(&attenuation),
+            "HPF saja seharusnya sekitar -9 dB, hasil {attenuation:.1} dB"
+        );
+    }
+
+    fn gate_settings(threshold: f32) -> MicSettings {
+        let mut settings = base_settings();
+        settings.noise_gate_enabled = true;
+        settings.noise_gate_threshold = threshold;
+        settings.noise_gate_hysteresis_db = 6.0;
+        settings.noise_gate_hold_ms = 0.0;
+        settings.noise_gate_attack_ms = 5.0;
+        settings.noise_gate_release_ms = 20.0;
+        settings.noise_gate_range_db = -60.0;
+        settings
+    }
+
+    #[test]
+    fn gate_sidechain_menolak_rumble_40hz() {
+        // Threshold -20 (hysteresis 6 → tutup di -26). Rumble 40 Hz setelah
+        // HPF chain + HPF sidechain sekitar -34 dB, jadi harus di bawah -26.
+        let mut chain = MicChain::new(gate_settings(-20.0));
+        let mut rumble = sine(40.0, 0.5, 96_000);
+        let meters = chain.process(&mut rumble);
+
+        assert!(!meters.gate_open, "gate terbuka karena rumble 40 Hz");
+        assert!(
+            meters.gate_gain_db <= -40.0,
+            "gate tidak menutup penuh: {:.1} dB",
+            meters.gate_gain_db
+        );
+    }
+
+    #[test]
+    fn gate_sidechain_membuka_untuk_pita_suara() {
+        let mut chain = MicChain::new(gate_settings(-30.0));
+        // 1 kHz -24 dBFS: di atas threshold, sidechain melewatkannya utuh.
+        let mut voice = sine(1_000.0, 0.06, 48_000);
+        let meters = chain.process(&mut voice);
+
+        assert!(meters.gate_open, "gate tidak terbuka untuk 1 kHz");
+        assert!(
+            meters.gate_gain_db > -3.0,
+            "gain gate belum terbuka penuh: {:.1} dB",
+            meters.gate_gain_db
+        );
+    }
+
+    #[test]
+    fn vad_membuka_gate_tanpa_sinyal() {
+        let mut chain = MicChain::new(gate_settings(-10.0));
+
+        let mut silence = vec![0.0f32; 4_800];
+        let closed = chain.process(&mut silence);
+        assert!(!closed.gate_open, "gate seharusnya tertutup tanpa sinyal");
+
+        chain.set_vad(1.0);
+        let mut silence = vec![0.0f32; 4_800];
+        let opened = chain.process(&mut silence);
+        assert!(opened.gate_open, "VAD tidak membuka gate");
+        assert!(
+            opened.gate_gain_db > -3.0,
+            "gain gate belum terbuka lewat VAD: {:.1} dB",
+            opened.gate_gain_db
         );
     }
 }
