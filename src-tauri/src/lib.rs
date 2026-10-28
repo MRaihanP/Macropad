@@ -35,7 +35,7 @@ mod ble;
 use ble::{BleStats, BleTransport};
 
 // =================== AUDIO ENGINE ===================
-mod audio;
+pub mod audio;
 pub use audio::AudioEngine;
 // Import command functions ke crate root agar #[tauri::command] macro-generated
 // internals dapat di-resolve oleh generate_handler!.

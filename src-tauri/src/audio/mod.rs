@@ -6,6 +6,7 @@
 pub mod decode;
 pub mod devices;
 pub mod engine;
+pub mod mic_dsp;
 pub mod mixer;
 pub mod output;
 pub mod resample;

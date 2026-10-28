@@ -428,6 +428,16 @@ input[readonly] { color: var(--accent); cursor: default; }
 .audio-meter-fill { height: 100%; width: 0%; border-radius: 999px;
   background: linear-gradient(90deg, var(--accent-dim), var(--accent) 65%, #f2a154 88%, var(--err));
   transition: width .08s linear; }
+.audio-meter-sm { flex: 0 0 46px; width: 46px; height: 5px; }
+.audio-mic-meters { gap: 6px; flex-wrap: nowrap; }
+.audio-meter-tag { font-family: var(--mono); font-size: 0.64rem; color: var(--muted);
+  min-width: 58px; text-align: right; }
+.gate-led { font-family: var(--mono); font-size: 0.6rem; letter-spacing: .06em;
+  padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--muted); background: var(--bg); transition: all .12s ease; }
+.gate-led.on { color: var(--bg); background: var(--accent); border-color: var(--accent);
+  box-shadow: 0 0 6px var(--accent-dim); }
+.gate-led.disabled { opacity: .4; }
 
 .audio-note { margin: 10px 0 12px; padding: 9px 11px; border-radius: 8px; font-size: 0.7rem;
   line-height: 1.5; color: var(--muted); background: rgba(78, 205, 196, 0.06);

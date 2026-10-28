@@ -452,7 +452,7 @@
                 <input type="checkbox" id="noiseGateEnabled">
                 <span class="toggle-slider"></span>
               </label>
-              <input type="range" id="noiseGateThreshold" class="audio-slider-small" min="-60" max="-20" value="-45">
+              <input type="range" id="noiseGateThreshold" class="audio-slider-small" min="-80" max="-10" value="-45">
               <span class="audio-value" id="noiseGateThresholdVal">-45 dB</span>
             </div>
           </div>
@@ -503,6 +503,24 @@
               <input type="range" id="eqHigh" class="audio-slider-small" min="-12" max="12" value="0">
               <span class="audio-value" id="eqHighVal">0 dB</span>
               <div class="hint" style="font-size:0.62rem;color:var(--muted);">Bass / Mid / Treble</div>
+            </div>
+          </div>
+
+          <!-- Meter mic: input, gate, gain reduction -->
+          <div class="audio-row audio-row-compact">
+            <div class="audio-row-main">
+              <div class="setting-name">Meter</div>
+              <div class="hint">Input level, gate, compressor/limiter gain reduction</div>
+            </div>
+            <div class="audio-row-controls audio-mic-meters">
+              <span class="audio-meter-tag" id="micInDb">-∞ dB</span>
+              <span class="gate-led" id="gateLed" title="Noise gate">GATE</span>
+              <div class="audio-meter audio-meter-sm" title="Compressor gain reduction">
+                <div class="audio-meter-fill" id="compGrMeter"></div>
+              </div>
+              <div class="audio-meter audio-meter-sm" title="Limiter gain reduction">
+                <div class="audio-meter-fill" id="limiterGrMeter"></div>
+              </div>
             </div>
           </div>
 

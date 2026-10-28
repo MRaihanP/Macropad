@@ -4,6 +4,7 @@
 //! Callback cpal hanya membaca ring buffer, sehingga tidak ada lock/alokasi
 //! di jalur real-time.
 
+use crate::audio::mic_dsp::MicChain;
 use crate::audio::ring::SpscRing;
 use crate::audio::settings::MicSettings;
 use crate::audio::types::{Bus, LevelFrame, PlayMode, ToneTarget};
@@ -86,199 +87,6 @@ pub struct MixerSettings {
     pub mic_pre: MicSettings,
 }
 
-/// Mic pre-processing: boost, HPF, noise gate, compressor, limiter, EQ.
-/// Diletakkan setelah mic_ring.pop di render() dan sebelum gain diterapkan.
-#[derive(Clone)]
-pub struct MicProcessor {
-    settings: MicSettings,
-    /// RMS envelope untuk noise gate (attack/release smoothing).
-    rms_envelope: f32,
-    /// State gain gate terakhir (untuk UI visualisasi).
-    gate_gain: f32,
-    /// Hold timer frames untuk gate (mencegah menutup terlalu cepat).
-    hold_left: u32,
-    /// Apakah gate terbuka.
-    gate_open: bool,
-    /// Koefisien biquad high-pass (80 Hz).
-    hpf_z1: f32,
-    hpf_z2: f32,
-    hpf_b0: f32,
-    hpf_b1: f32,
-    hpf_b2: f32,
-    hpf_a1: f32,
-    hpf_a2: f32,
-}
-
-impl MicProcessor {
-    pub fn new(settings: MicSettings) -> Self {
-        Self {
-            settings,
-            // Init ke threshold_lin supaya gate terbuka sejak frame pertama.
-            // Jika init ke 0.0, gate akan menutup total selama envelope
-            // follower belum naik ke threshold — ini bisa terasa seperti
-            // "mic tidak masuk" di awal.
-            rms_envelope: 0.1,
-            gate_gain: 1.0, // default pass-through (gate terbuka)
-            hold_left: 0,
-            gate_open: true,
-            hpf_z1: 0.0,
-            hpf_z2: 0.0,
-            hpf_b0: 0.0,
-            hpf_b1: 0.0,
-            hpf_b2: 0.0,
-            hpf_a1: 0.0,
-            hpf_a2: 0.0,
-        }
-    }
-
-    pub fn update(&mut self, settings: MicSettings) {
-        self.settings = settings.clone();
-        // Hitung ulang koefisien HPF 80Hz (RBJ biquad cookbook).
-        let f = 80.0; // Hz
-        let w0 = 2.0 * std::f32::consts::PI * f / SAMPLE_RATE as f32;
-        let cos_w0 = w0.cos();
-        let sin_w0 = w0.sin();
-        let alpha = sin_w0 / (2.0 * std::f32::consts::SQRT_2); // Q=0.707
-        let b0 = (1.0 + cos_w0) / 2.0;
-        let b1 = -(1.0 + cos_w0);
-        let b2 = (1.0 + cos_w0) / 2.0;
-        let a0 = 1.0 + alpha;
-        let a1_val = -2.0 * cos_w0;
-        let a2_val = 1.0 - alpha;
-        self.hpf_b0 = b0 / a0;
-        self.hpf_b1 = b1 / a0;
-        self.hpf_b2 = b2 / a0;
-        self.hpf_a1 = a1_val / a0;
-        self.hpf_a2 = a2_val / a0;
-    }
-
-    /// dB ke linear amplitude.
-    #[inline]
-    fn db_to_linear(db: f32) -> f32 {
-        10.0_f32.powf(db / 20.0)
-    }
-
-    /// RMS power dari frame (untuk noise gate & compressor sidechain).
-    #[inline]
-    fn rms(samples: &[f32]) -> f32 {
-        let sum: f32 = samples.iter().map(|s| s * s).sum();
-        (sum / samples.len() as f32).sqrt()
-    }
-
-    /// Proses satu frame mono mic. `samples` berisi BLOCK_FRAMES sampel.
-    pub fn process(&mut self, samples: &mut [f32]) {
-        let pre = &self.settings;
-
-        // 0. High-pass filter 80Hz (always active) — removes cable hum & rumble.
-        for s in samples.iter_mut() {
-            let input = *s;
-            let output = self.hpf_b0 * input
-                + self.hpf_b1 * self.hpf_z1
-                + self.hpf_b2 * self.hpf_z2
-                - self.hpf_a1 * self.hpf_z1
-                - self.hpf_a2 * self.hpf_z2;
-            self.hpf_z2 = self.hpf_z1;
-            self.hpf_z1 = output;
-            *s = output;
-        }
-
-        // 1. Mic boost
-        if pre.mic_boost != 1.0 {
-            for s in samples.iter_mut() {
-                *s *= pre.mic_boost;
-            }
-        }
-
-        // 2. Noise gate (envelope follower + hysteresis + hold)
-        if pre.noise_gate_enabled {
-            let threshold_lin = Self::db_to_linear(pre.noise_gate_threshold);
-            let rms_now = Self::rms(samples);
-            // Envelope follower: track RMS kecepatan attack cepat, release lambat.
-            // Ini mencegah gate bereaksi pada transient kecil (gemerisik).
-            let attack_coef = (-1.0 / ((pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp();
-            let release_coef = (-1.0 / ((pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp();
-            if rms_now > self.rms_envelope {
-                self.rms_envelope = attack_coef * self.rms_envelope + (1.0 - attack_coef) * rms_now;
-            } else {
-                self.rms_envelope = release_coef * self.rms_envelope + (1.0 - release_coef) * rms_now;
-            }
-            // Hysteresis gate: open/close dengan threshold yang berbeda.
-            let close_threshold = threshold_lin * Self::db_to_linear(-6.0);
-            if self.rms_envelope > threshold_lin {
-                self.gate_open = true;
-                let hold_frames = (pre.noise_gate_hold_ms / 1000.0 * SAMPLE_RATE as f32) as u32;
-                self.hold_left = hold_frames;
-            } else if self.rms_envelope < close_threshold {
-                if self.hold_left > 0 {
-                    self.hold_left -= 1;
-                } else {
-                    self.gate_open = false;
-                }
-            }
-
-            // Smooth gain: -40dB floor saat tertutup (bukan mute total).
-            let target_gain = if self.gate_open { 1.0 } else { 0.01 };
-            let gain_coef = if target_gain > self.gate_gain {
-                (-1.0 / ((pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp()
-            } else {
-                (-1.0 / ((pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp()
-            };
-            self.gate_gain = target_gain + gain_coef * (self.gate_gain - target_gain);
-
-            for s in samples.iter_mut() {
-                *s *= self.gate_gain;
-            }
-        }
-
-        // 3. Compressor (soft-knee)
-        if pre.compressor_enabled {
-            let threshold_lin = Self::db_to_linear(pre.compressor_threshold);
-            let rms_now = Self::rms(samples);
-            if rms_now > threshold_lin {
-                let over_db = 20.0 * (rms_now / threshold_lin).log10();
-                let reduction_db = over_db * (1.0 - 1.0 / pre.compressor_ratio.max(1.0));
-                let comp_gain = Self::db_to_linear(-reduction_db + pre.compressor_makeup_gain);
-                for s in samples.iter_mut() {
-                    *s *= comp_gain;
-                }
-            }
-        }
-
-        // 4. Limiter (hard ceiling)
-        if pre.limiter_enabled {
-            let ceiling = Self::db_to_linear(pre.limiter_ceiling); // nilai positif (mis. 0.99)
-            let neg_ceiling = -ceiling;
-            for s in samples.iter_mut() {
-                *s = s.clamp(neg_ceiling, ceiling);
-            }
-        }
-
-        // 5. 3-band EQ (simple shelving: low boost/cut, mid, high)
-        if pre.equalizer_enabled {
-            // Simple implementation: apply fixed-frequency shelf multipliers
-            // berdasarkan posisi sample (low = bass, high = treble).
-            // Untuk mono voice, gunakan static filter coefficients.
-            // Implementasi sederhana: apply overall gain per band berdasarkan dB.
-            let low_lin = Self::db_to_linear(pre.equalizer_low);
-            let mid_lin = Self::db_to_linear(pre.equalizer_mid);
-            let high_lin = Self::db_to_linear(pre.equalizer_high);
-            // Simple 3-band: 0-20% low, 20-80% mid, 80-100% high (per sample position)
-            let n = samples.len();
-            let low_end = (n as f32 * 0.2) as usize;
-            let high_start = (n as f32 * 0.8) as usize;
-            for (i, s) in samples.iter_mut().enumerate() {
-                if i < low_end {
-                    *s *= low_lin;
-                } else if i >= high_start {
-                    *s *= high_lin;
-                } else {
-                    *s *= mid_lin;
-                }
-            }
-        }
-    }
-}
-
 struct Voice {
     id: String,
     samples: Arc<Vec<f32>>,
@@ -315,7 +123,7 @@ pub struct Mixer {
     monitor_enabled: bool,
     mode: PlayMode,
 
-    mic_processor: MicProcessor,
+    mic_chain: MicChain,
 
     voices: [Option<Voice>; MAX_VOICES],
     next_slot: usize,
@@ -355,7 +163,7 @@ impl Mixer {
             monitor_muted: false,
             monitor_enabled: settings.monitor_enabled,
             mode: settings.mode,
-            mic_processor: MicProcessor::new(settings.mic_pre.clone()),
+            mic_chain: MicChain::new(settings.mic_pre),
             voices: std::array::from_fn(|_| None),
             next_slot: 0,
             tone: None,
@@ -468,7 +276,7 @@ impl Mixer {
                 self.monitor_enabled = enabled;
             }
             MixerCommand::SetMicPre(settings) => {
-                self.mic_processor.update(settings);
+                self.mic_chain.set_settings(settings);
             }
             MixerCommand::PrefillMonitor => {
                 if self.monitor_ring.len() < PREFILL_SAMPLES {
@@ -478,6 +286,7 @@ impl Mixer {
             }
             MixerCommand::ResetMic => {
                 self.mic_ring.clear();
+                self.mic_chain.reset();
             }
             MixerCommand::SetMode(mode) => self.mode = mode,
             MixerCommand::Play { id, samples, gain } => self.play(id, samples, gain),
@@ -574,9 +383,9 @@ impl Mixer {
 
         // Mic: pop sebanyak yang tersedia; sisanya silence.
         let _ = self.mic_ring.pop(mic);
-        // Terapkan mic pre-processing (boost/noise gate/compressor/limiter/EQ)
-        // sebelum gain diterapkan di loop mixing di bawah.
-        self.mic_processor.process(mic);
+        // Terapkan mic DSP (HPF/denoise/gate/boost/EQ/comp/limiter) sebelum
+        // gain diterapkan di loop mixing di bawah.
+        let mic_meters = self.mic_chain.process(mic);
 
         // Voice soundboard.
         let mut active_voices = 0u32;
@@ -694,6 +503,13 @@ impl Mixer {
                 voices: active_voices,
                 cable_underruns: self.counters.cable_underruns.load(Ordering::Relaxed),
                 monitor_underruns: self.counters.monitor_underruns.load(Ordering::Relaxed),
+                mic_in_db: mic_meters.input_db,
+                gate_in_db: mic_meters.gate_in_db,
+                gate_open: mic_meters.gate_open,
+                gate_gain_db: mic_meters.gate_gain_db,
+                comp_gr_db: mic_meters.comp_gr_db,
+                limiter_gr_db: mic_meters.limiter_gr_db,
+                vad: mic_meters.vad,
             };
             let _ = self.app.emit("audio:levels", frame);
         }

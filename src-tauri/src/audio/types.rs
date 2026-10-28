@@ -1,5 +1,6 @@
 //! DTO yang dipakai lintas thread dan dikirim ke UI (serde).
 
+use crate::audio::settings::MicSettings;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize)]
@@ -63,10 +64,14 @@ pub struct AudioState {
     pub sfx_muted: bool,
     pub mode: String,
     pub buffer_ms: u32,
+    /// Setting mic pre yang benar-benar dipakai engine. UI memakai ini untuk
+    /// hidrasi awal supaya nilai tersimpan tidak tertimpa nilai hardcoded.
+    pub mic_pre: MicSettings,
     pub streams: Vec<StreamStatus>,
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LevelFrame {
     pub mic: f32,
     pub sfx: f32,
@@ -74,6 +79,19 @@ pub struct LevelFrame {
     pub voices: u32,
     pub cable_underruns: u64,
     pub monitor_underruns: u64,
+    /// Peak input mic sebelum chain (dBFS, -100 = silence).
+    pub mic_in_db: f32,
+    /// Level di titik detektor gate (post-denoise, pre-gate).
+    pub gate_in_db: f32,
+    pub gate_open: bool,
+    /// Gain gate saat ini (dB, 0 = terbuka penuh).
+    pub gate_gain_db: f32,
+    /// Gain reduction compressor (dB, >= 0).
+    pub comp_gr_db: f32,
+    /// Gain reduction limiter (dB, >= 0).
+    pub limiter_gr_db: f32,
+    /// Probabilitas voice dari RNNoise (0 = belum aktif).
+    pub vad: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,5 +157,35 @@ impl ToneTarget {
     }
     pub fn monitor(self) -> bool {
         matches!(self, ToneTarget::Monitor | ToneTarget::Both)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_frame_serializes_camel_case_untuk_ui() {
+        let frame = LevelFrame {
+            mic: 0.5,
+            sfx: 0.25,
+            master: 0.75,
+            voices: 1,
+            cable_underruns: 2,
+            monitor_underruns: 3,
+            mic_in_db: -20.0,
+            gate_in_db: -35.0,
+            gate_open: true,
+            gate_gain_db: 0.0,
+            comp_gr_db: 3.5,
+            limiter_gr_db: 1.5,
+            vad: 0.9,
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(json.contains("\"micInDb\":-20.0"), "{json}");
+        assert!(json.contains("\"gateOpen\":true"), "{json}");
+        assert!(json.contains("\"compGrDb\":3.5"), "{json}");
+        assert!(json.contains("\"limiterGrDb\":1.5"), "{json}");
+        assert!(json.contains("\"cableUnderruns\":2"), "{json}");
     }
 }

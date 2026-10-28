@@ -28,8 +28,121 @@ let lastDeviceKey = '';
 let activeSlider = null;
 const debounceTimers = new Map();
 
+// Kontrol mic pre yang punya nilai di UI. Field lain (attack/hold/release,
+// threshold compressor, ceiling limiter) tetap disimpan di `micPre` supaya
+// tidak hilang saat salah satu kontrol diubah.
+const MIC_PRE_CONTROLS = [
+  'micBoost',
+  'noiseGateEnabled',
+  'noiseGateThreshold',
+  'compressorEnabled',
+  'compressorRatio',
+  'limiterEnabled',
+  'equalizerEnabled',
+  'eqLow',
+  'eqMid',
+  'eqHigh',
+];
+
+// Fallback sebelum snapshot pertama. Nilainya harus sama dengan
+// MicSettings::default() di Rust.
+const DEFAULT_MIC_PRE = {
+  micBoost: 2,
+  noiseGateEnabled: false,
+  noiseGateThreshold: -45,
+  noiseGateAttackMs: 8,
+  noiseGateReleaseMs: 220,
+  noiseGateHoldMs: 150,
+  noiseGateHysteresisDb: 6,
+  noiseGateRangeDb: -50,
+  noiseGateRatio: 10,
+  compressorEnabled: false,
+  compressorThreshold: -25,
+  compressorRatio: 4,
+  compressorMakeupGain: 3,
+  limiterEnabled: true,
+  limiterCeiling: -0.5,
+  equalizerEnabled: false,
+  equalizerLow: 0,
+  equalizerMid: 0,
+  equalizerHigh: 0,
+};
+
+let micPre = { ...DEFAULT_MIC_PRE };
+
 function $(id) {
   return document.getElementById(id);
+}
+
+function formatDb(value) {
+  const number = Number(value) || 0;
+  return (number > 0 ? '+' : '') + number.toFixed(1) + ' dB';
+}
+
+/// Tulis nilai `micPre` ke kontrol. Dipakai saat snapshot pertama/periodik
+/// datang; tidak memicu command.
+function refreshMicLabels() {
+  if ($('micBoostVal')) $('micBoostVal').textContent = Number(micPre.micBoost ?? 1).toFixed(1) + '×';
+  if ($('noiseGateThresholdVal')) {
+    $('noiseGateThresholdVal').textContent = Math.round(Number(micPre.noiseGateThreshold)) + ' dB';
+  }
+  if ($('compressorRatioVal')) {
+    $('compressorRatioVal').textContent = Number(micPre.compressorRatio).toFixed(1) + ':1';
+  }
+  if ($('eqLowVal')) $('eqLowVal').textContent = formatDb(micPre.equalizerLow);
+  if ($('eqMidVal')) $('eqMidVal').textContent = formatDb(micPre.equalizerMid);
+  if ($('eqHighVal')) $('eqHighVal').textContent = formatDb(micPre.equalizerHigh);
+}
+
+function syncMicPre(pre) {
+  if (!pre) return;
+  micPre = { ...micPre, ...pre };
+
+  const setSlider = (id, value) => {
+    const node = $(id);
+    if (node) node.value = String(value);
+  };
+  const setCheck = (id, value) => {
+    const node = $(id);
+    if (node) node.checked = !!value;
+  };
+
+  setSlider('micBoost', Math.round(Number(micPre.micBoost ?? 2) * 100));
+  setSlider('noiseGateThreshold', Math.round(Number(micPre.noiseGateThreshold ?? -45)));
+  setSlider('compressorRatio', Number(micPre.compressorRatio ?? 4));
+  setSlider('eqLow', Number(micPre.equalizerLow ?? 0));
+  setSlider('eqMid', Number(micPre.equalizerMid ?? 0));
+  setSlider('eqHigh', Number(micPre.equalizerHigh ?? 0));
+  setCheck('noiseGateEnabled', micPre.noiseGateEnabled);
+  setCheck('compressorEnabled', micPre.compressorEnabled);
+  setCheck('limiterEnabled', micPre.limiterEnabled);
+  setCheck('equalizerEnabled', micPre.equalizerEnabled);
+
+  refreshMicLabels();
+  updateGateLed();
+}
+
+/// Baca kontrol UI lalu gabungkan ke `micPre`. Field yang tidak ada di UI
+/// dipertahankan dari snapshot/preset terakhir.
+function readMicPre() {
+  const value = (id, fallback) => {
+    const node = $(id);
+    return node ? Number(node.value) : fallback;
+  };
+  micPre = {
+    ...micPre,
+    micBoost: value('micBoost', 200) / 100,
+    noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
+    noiseGateThreshold: value('noiseGateThreshold', -45),
+    compressorEnabled: !!$('compressorEnabled')?.checked,
+    compressorRatio: value('compressorRatio', 4),
+    limiterEnabled: !!$('limiterEnabled')?.checked,
+    equalizerEnabled: !!$('equalizerEnabled')?.checked,
+    equalizerLow: value('eqLow', 0),
+    equalizerMid: value('eqMid', 0),
+    equalizerHigh: value('eqHigh', 0),
+  };
+  return micPre;
 }
 
 function toast(message, type = 'error') {
@@ -226,6 +339,11 @@ function applyState(state) {
     select.value = value;
   }
 
+  // Jangan timpa kontrol mic yang sedang difokus/drag: snapshot periodik
+  // datang tiap 2 detik dan bisa membalik nilai yang baru diubah.
+  const micFocused = MIC_PRE_CONTROLS.some((id) => document.activeElement === $(id));
+  if (!micFocused) syncMicPre(state.micPre);
+
   const cable = findStream(state, 'cable');
   if (!state.cablePresent) {
     chip($('cableChip'), t('audio.cableMissing'), 'err');
@@ -395,43 +513,20 @@ function bindControls() {
 
   // ---- Mic Preprocessing Filter Controls (auto-apply on change) ----
   function applyMicPre() {
-    const settings = {
-      micBoost: Number($('micBoost')?.value || 200) / 100,
-      noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
-      noiseGateThreshold: Number($('noiseGateThreshold')?.value || -45),
-      noiseGateAttackMs: 5.0,
-      noiseGateReleaseMs: 30.0,
-      noiseGateRatio: 10.0,
-      compressorEnabled: !!$('compressorEnabled')?.checked,
-      compressorThreshold: -25.0,
-      compressorRatio: Number($('compressorRatio')?.value || 4),
-      compressorMakeupGain: 3.0,
-      limiterEnabled: !!$('limiterEnabled')?.checked,
-      limiterCeiling: -0.5,
-      equalizerEnabled: !!$('equalizerEnabled')?.checked,
-      equalizerLow: Number($('eqLow')?.value || 0),
-      equalizerMid: Number($('eqMid')?.value || 0),
-      equalizerHigh: Number($('eqHigh')?.value || 0),
-    };
-    withError(setAudioMicPre(settings));
+    withError(setAudioMicPre(readMicPre()));
     soundLog('mic filter applied', 'info');
   }
 
   // Slider: update label + auto-apply
   bindRangeLabel('micBoost', 'micBoostVal', (v) => (v / 100).toFixed(1) + '×');
-  bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => v + ' dB');
-  bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => v + ':1');
-  bindRangeLabel('eqLow', 'eqLowVal', (v) => v + ' dB');
-  bindRangeLabel('eqMid', 'eqMidVal', (v) => v + ' dB');
-  bindRangeLabel('eqHigh', 'eqHighVal', (v) => v + ' dB');
+  bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => Math.round(v) + ' dB');
+  bindRangeLabel('compressorRatio', 'compressorRatioVal', (v) => Number(v).toFixed(1) + ':1');
+  bindRangeLabel('eqLow', 'eqLowVal', formatDb);
+  bindRangeLabel('eqMid', 'eqMidVal', formatDb);
+  bindRangeLabel('eqHigh', 'eqHighVal', formatDb);
 
   // Auto-apply on every slider/toggle change (debounced)
-  const micPreControls = [
-    'micBoost', 'noiseGateEnabled', 'noiseGateThreshold',
-    'compressorEnabled', 'compressorRatio',
-    'limiterEnabled', 'equalizerEnabled', 'eqLow', 'eqMid', 'eqHigh',
-  ];
-  for (const id of micPreControls) {
+  for (const id of MIC_PRE_CONTROLS) {
     const el = $(id);
     if (!el) continue;
     const event = el.type === 'checkbox' ? 'change' : 'input';
@@ -440,7 +535,7 @@ function bindControls() {
 }
 
 // ---- Meter ----
-const meterState = { mic: 0, sfx: 0, master: 0 };
+const meterState = { mic: 0, sfx: 0, master: 0, micInDb: -100, gateOpen: false, compGr: 0, limiterGr: 0 };
 let meterLoopStarted = false;
 
 function paintMeter(id, value) {
@@ -448,6 +543,23 @@ function paintMeter(id, value) {
   if (!node) return;
   const shaped = Math.min(1, Math.sqrt(Math.max(0, value)));
   node.style.width = (shaped * 100).toFixed(1) + '%';
+}
+
+/// Bar gain reduction (0..maxDb). Beda dengan level meter: tidak perlu
+/// kurva sqrt karena rentangnya sudah kecil.
+function paintGainReduction(id, value, maxDb) {
+  const node = $(id);
+  if (!node) return;
+  const ratio = Math.min(1, Math.max(0, value / maxDb));
+  node.style.width = (ratio * 100).toFixed(1) + '%';
+}
+
+function updateGateLed() {
+  const led = $('gateLed');
+  if (!led) return;
+  const enabled = !!micPre?.noiseGateEnabled;
+  led.classList.toggle('disabled', !enabled);
+  led.classList.toggle('on', enabled && meterState.gateOpen);
 }
 
 function startMeterLoop() {
@@ -458,6 +570,11 @@ function startMeterLoop() {
     meterState.mic = Math.max(levels.mic || 0, meterState.mic * 0.55);
     meterState.sfx = Math.max(levels.sfx || 0, meterState.sfx * 0.55);
     meterState.master = Math.max(levels.master || 0, meterState.master * 0.55);
+    if (typeof levels.micInDb === 'number') meterState.micInDb = levels.micInDb;
+    meterState.gateOpen = !!levels.gateOpen;
+    meterState.compGr = Math.max(levels.compGrDb || 0, meterState.compGr);
+    meterState.limiterGr = Math.max(levels.limiterGrDb || 0, meterState.limiterGr);
+    updateGateLed();
   });
 
   const tick = () => {
@@ -468,9 +585,20 @@ function startMeterLoop() {
       paintMeter('sfxMeter', meterState.sfx);
       paintMeter('masterMeter', meterState.master);
       paintMeter('monitorMeter', meterState.master);
+      paintGainReduction('compGrMeter', meterState.compGr, 24);
+      paintGainReduction('limiterGrMeter', meterState.limiterGr, 12);
+
+      const inputDb = $('micInDb');
+      if (inputDb) {
+        inputDb.textContent =
+          meterState.micInDb <= -99 ? '-∞ dB' : meterState.micInDb.toFixed(1) + ' dB';
+      }
+
       meterState.mic *= 0.9;
       meterState.sfx *= 0.9;
       meterState.master *= 0.9;
+      meterState.compGr *= 0.85;
+      meterState.limiterGr *= 0.85;
     }
     requestAnimationFrame(tick);
   };

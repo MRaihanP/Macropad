@@ -227,6 +227,7 @@ fn state_from_settings(settings: &AudioSettings) -> AudioState {
         sfx_muted: settings.sfx_muted,
         mode: settings.mode.clone(),
         buffer_ms: settings.buffer_ms,
+        mic_pre: settings.mic_pre,
         streams: vec![
             StreamStatus::stopped("cable", None),
             StreamStatus::stopped("monitor", None),
@@ -599,10 +600,14 @@ impl Engine {
             EngineCommand::Stop { id } => {
                 let _ = self.mixer_tx.send(MixerCommand::Stop { id });
             }
-            EngineCommand::SetMicPre(settings) => {
-                self.settings.mic_pre = settings.clone();
+            EngineCommand::SetMicPre(mut settings) => {
+                settings.sanitize();
+                self.settings.mic_pre = settings;
                 let _ = self.mixer_tx.send(MixerCommand::SetMicPre(settings));
                 self.dirty = true;
+                // UI memakai snapshot ini untuk hidrasi; tanpa publish nilainya
+                // hanya berubah di engine dan panel bisa menampilkan state lama.
+                self.publish(true);
             }
             EngineCommand::Shutdown => return false,
         }
@@ -825,6 +830,7 @@ impl Engine {
             sfx_muted: self.settings.sfx_muted,
             mode: self.settings.mode.clone(),
             buffer_ms: self.settings.buffer_ms,
+            mic_pre: self.settings.mic_pre,
             streams: vec![
                 self.live_status(&self.cable_status, Some(&self.counters.cable_underruns)),
                 self.live_status(&self.monitor_status, Some(&self.counters.monitor_underruns)),
