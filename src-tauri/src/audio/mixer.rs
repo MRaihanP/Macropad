@@ -17,10 +17,10 @@ use tauri::Emitter;
 pub const SAMPLE_RATE: usize = 48_000;
 const BLOCK_FRAMES: usize = 480; // 10 ms
 const MAX_VOICES: usize = 8;
-// Diperluas ke 240 ms stereo supaya cpal callback tidak kehabisan antar refill.
-// 120 ms sebelumnya terlalu tipis: satu iterasi mixer yang tersendat (command drain)
-// langsung bikin underrun. Lihat bug "gelembung pecah / terputus-putus".
-const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 240 / 1000; // 240 ms stereo
+// 60 ms stereo cukup untuk menampung 3 iterasi mixer (masing-masing 20 ms)
+// sehingga cpal callback tidak kehabisan saat thread mixer terlepas sekilas.
+// 240 ms sebelumnya berlebihan dan menambah delay 180 ms pada mic monitoring.
+const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 60 / 1000; // 60 ms stereo
 // Mixer mengisi dua blok sekaligus (20 ms stereo) tiap iterasi agar refill
 // lebih "flat" dan tidak bursty akibat sleep 1 ms yang terlalu pendek relatif.
 const RENDER_QUANTUM: usize = 2;
