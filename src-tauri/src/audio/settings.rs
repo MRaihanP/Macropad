@@ -89,8 +89,8 @@ impl Default for MicSettings {
         Self {
             mic_boost_db: 6.0,
             hum_notch_hz: 50.0,
-            denoise_enabled: false,
-            denoise_mix: 0.8,
+            denoise_enabled: true,
+            denoise_mix: 1.0,
             noise_gate_enabled: false,
             noise_gate_threshold: -45.0,
             noise_gate_attack_ms: 8.0,

@@ -871,6 +871,7 @@ mod tests {
         settings.mic_boost_db = 0.0;
         settings.hum_notch_hz = 0.0;
         settings.noise_gate_enabled = false;
+        settings.denoise_enabled = false;
         settings.compressor_enabled = false;
         settings.equalizer_enabled = false;
         settings.limiter_enabled = false;
