@@ -88,7 +88,7 @@ impl Default for MicSettings {
     fn default() -> Self {
         Self {
             mic_boost_db: 6.0,
-            hum_notch_hz: 0.0,
+            hum_notch_hz: 50.0,
             denoise_enabled: false,
             denoise_mix: 0.8,
             noise_gate_enabled: false,
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(value["version"].as_u64(), Some(SETTINGS_VERSION as u64));
         let settings: AudioSettings = serde_json::from_value(value).unwrap();
         assert_eq!(settings.mic_pre.mic_boost_db, 6.0);
-        assert_eq!(settings.mic_pre.hum_notch_hz, 0.0);
+        assert_eq!(settings.mic_pre.hum_notch_hz, 50.0);
     }
 
     #[test]
@@ -403,5 +403,12 @@ mod tests {
         // Field baru yang tidak ada di file lama memakai default.
         assert_eq!(metrics.mic_pre.noise_gate_hysteresis_db, 6.0);
         assert_eq!(metrics.mic_pre.noise_gate_range_db, -50.0);
+    }
+
+    #[test]
+    fn default_hum_notch_50hz_menekan_buzz_listrik() {
+        // 50 Hz notch default: file lama tanpa humNotchHz memetekan 50 Hz.
+        let s = MicSettings::default();
+        assert_eq!(s.hum_notch_hz, 50.0, "notch 50 Hz harus default untuk filter buzz listrik");
     }
 }
