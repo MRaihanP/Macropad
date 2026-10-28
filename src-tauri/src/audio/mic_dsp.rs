@@ -372,6 +372,85 @@ struct Gate {
     vad: f32,
 }
 
+// ---- Compressor (Fase 5: soft-knee, per-sample gain computer) ----
+struct Compressor {
+    x_g: f32,       // gain attack/release per-sample koefisien
+    x_l: f32,       // gain release per-sample koefisien
+    gain: f32,      // gain output yang di-smooth (linear)
+}
+
+impl Default for Compressor {
+    fn default() -> Self {
+        Self {
+            x_g: 0.0,
+            x_l: 0.0,
+            gain: 1.0,
+        }
+    }
+}
+
+impl Compressor {
+    fn configure(&mut self) {
+        // Attack 5 ms, release 50 ms. Smoothing supaya perubahan gain tidak
+        // menimbulkan klik pada level sistematik.
+        self.x_g = one_pole(5.0);
+        self.x_l = one_pole(50.0);
+    }
+
+    /// Hitung gain kompresi per-sample. Kembalikan *gain reduction* dalam dB
+    /// (untuk metering) dan timpa `samples` in-place dengan gain yang
+    /// di-smooth (makeup gain sudah termasuk).
+    #[inline]
+    fn compute_gain(
+        &mut self,
+        samples: &mut [f32],
+        threshold_db: f32,
+        ratio: f32,
+        makeup_db: f32,
+    ) -> f32 {
+        let threshold = db_to_linear(threshold_db);
+        let ratio = ratio.max(1.0);
+        let makeup = db_to_linear(makeup_db);
+        let knee_wide_db = 6.0; // soft-knee lebar
+        let knee = threshold / db_to_linear(knee_wide_db);
+
+        let mut max_reduction_db = 0.0f32;
+
+        for x in samples.iter_mut() {
+            let level = x.abs();
+            let over_db = if level > threshold {
+                // di atas threshold: kompresi penuh (hard)
+                20.0 * (level / threshold).log10()
+            } else if level > knee {
+                // zona soft-knee
+                let _f = (level - knee) / (threshold - knee);
+                let knee_width = threshold - knee;
+                let g = (2.0 * level * level - 3.0 * level * level * level + level * level * level * level) / 2.0;
+                20.0 * (g / (threshold * threshold)).max(1e-6).log10()
+            } else {
+                0.0
+            };
+
+            if over_db > 0.0 {
+                // Transfer curve kompresi (knee terpisah)
+                let reduction_db = over_db * (1.0 - 1.0 / ratio);
+                max_reduction_db = max_reduction_db.max(reduction_db);
+                let target_gain = db_to_linear(-reduction_db + makeup_db);
+                let coef = if target_gain > self.gain { self.x_g } else { self.x_l };
+                self.gain = target_gain + coef * (self.gain - target_gain);
+                *x *= self.gain;
+            } else {
+                let target_gain = makeup;
+                let coef = if target_gain > self.gain { self.x_g } else { self.x_l };
+                self.gain = target_gain + coef * (self.gain - target_gain);
+                *x *= self.gain;
+            }
+        }
+
+        max_reduction_db
+    }
+}
+
 impl Default for Gate {
     fn default() -> Self {
         Self {
@@ -490,6 +569,8 @@ pub struct MicChain {
     eq_low: Biquad,
     eq_mid: Biquad,
     eq_high: Biquad,
+    /// Compressor (Fase 5).
+    compressor: Compressor,
     /// Gain boost yang di-smooth 15 ms supaya slider dB tidak klik.
     boost_gain: f32,
     boost_coef: f32,
@@ -506,6 +587,7 @@ impl MicChain {
             eq_low: Biquad::bypass(),
             eq_mid: Biquad::bypass(),
             eq_high: Biquad::bypass(),
+            compressor: Compressor::default(),
             boost_gain: db_to_linear(settings.mic_boost_db),
             boost_coef: one_pole(15.0),
         };
@@ -545,6 +627,7 @@ impl MicChain {
 
         self.denoise.configure(&settings);
         self.gate.configure(&settings);
+        self.compressor.configure();
     }
 
     pub fn reset(&mut self) {
@@ -624,22 +707,17 @@ impl MicChain {
             }
         }
 
-        // ---- Compressor (sementara, diganti Fase 5) ----
-        let mut comp_gr_db = 0.0f32;
-        if settings.compressor_enabled {
-            let threshold = db_to_linear(settings.compressor_threshold);
-            let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-            let rms = (sum_sq / samples.len() as f32).sqrt();
-            if rms > threshold && threshold > 0.0 {
-                let over_db = 20.0 * (rms / threshold).log10();
-                let reduction_db = over_db * (1.0 - 1.0 / settings.compressor_ratio.max(1.0));
-                comp_gr_db = reduction_db.max(0.0);
-                let gain = db_to_linear(-reduction_db + settings.compressor_makeup_gain);
-                for sample in samples.iter_mut() {
-                    *sample *= gain;
-                }
-            }
-        }
+        // ---- Compressor (Fase 5: soft-knee, per-sample) ----
+        let comp_gr_db = if settings.compressor_enabled {
+            self.compressor.compute_gain(
+                samples,
+                settings.compressor_threshold,
+                settings.compressor_ratio,
+                settings.compressor_makeup_gain,
+            )
+        } else {
+            0.0
+        };
 
         // ---- Limiter (sementara: clamp keras, diganti Fase 6) ----
         let mut limiter_gr_db = 0.0f32;
@@ -913,6 +991,67 @@ mod tests {
             meters.gate_gain_db > -3.0,
             "gain gate belum terbuka penuh: {:.1} dB",
             meters.gate_gain_db
+        );
+    }
+
+    #[test]
+    fn compressor_mengurangi_level_di_atas_threshold() {
+        let mut chain = MicChain::new(base_settings());
+        chain.set_settings({
+            let mut s = base_settings();
+            s.compressor_enabled = true;
+            s.compressor_threshold = -20.0;
+            s.compressor_ratio = 4.0;
+            s.compressor_makeup_gain = 0.0;
+            s
+        });
+
+        // Sinyal 0 dBFS (peak) — nyampek jauh di atas threshold -20 dB.
+        let peak = 0.50f32;
+        let mut samples = vec![peak; 4_800];
+        let input_rms = rms(&samples);
+        let meters = chain.process(&mut samples);
+        let output_rms = rms(&samples);
+
+        assert!(
+            meters.comp_gr_db > 10.0,
+            "harus ada reduction > 10 dB, dapat {:.1} dB",
+            meters.comp_gr_db
+        );
+        assert!(
+            output_rms < input_rms * 0.5,
+            "output harus lebih kecil dari input (reduction), rms ratio {:.2}",
+            output_rms / input_rms
+        );
+    }
+
+    #[test]
+    fn compressor_tidak_mengubah_sinyal_kecil() {
+        let mut chain = MicChain::new(base_settings());
+        chain.set_settings({
+            let mut s = base_settings();
+            s.compressor_enabled = true;
+            s.compressor_threshold = -20.0;
+            s.compressor_ratio = 4.0;
+            s.compressor_makeup_gain = 0.0;
+            s
+        });
+
+        // Sinyal kecil 1 kHz (RMS -40 dB) — jauh di bawah threshold -20 dB.
+        let mut quiet = sine(1_000.0, 0.01, 192_000);
+        let input_rms = rms(&quiet[48_000..]);
+        let meters = chain.process(&mut quiet);
+        let output_rms = rms(&quiet[48_000..]);
+
+        assert!(
+            meters.comp_gr_db < 1.0,
+            "tidak boleh ada reduction untuk sinyal kecil: {:.1} dB",
+            meters.comp_gr_db
+        );
+        assert!(
+            (output_rms / input_rms - 1.0).abs() < 0.1,
+            "level harus hampir tidak berubah: in={input_rms:.6} out={output_rms:.6}, comp_gr_db={:.2}",
+            meters.comp_gr_db
         );
     }
 
