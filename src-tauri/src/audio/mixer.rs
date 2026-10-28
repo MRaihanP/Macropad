@@ -86,7 +86,7 @@ pub struct MixerSettings {
     pub mic_pre: MicSettings,
 }
 
-/// Mic pre-processing: boost, noise gate, compressor, limiter, EQ.
+/// Mic pre-processing: boost, HPF, noise gate, compressor, limiter, EQ.
 /// Diletakkan setelah mic_ring.pop di render() dan sebelum gain diterapkan.
 #[derive(Clone)]
 pub struct MicProcessor {
@@ -95,6 +95,18 @@ pub struct MicProcessor {
     rms_envelope: f32,
     /// State gain gate terakhir (untuk UI visualisasi).
     gate_gain: f32,
+    /// Hold timer frames untuk gate (mencegah menutup terlalu cepat).
+    hold_left: u32,
+    /// Apakah gate terbuka.
+    gate_open: bool,
+    /// Koefisien biquad high-pass (80 Hz).
+    hpf_z1: f32,
+    hpf_z2: f32,
+    hpf_b0: f32,
+    hpf_b1: f32,
+    hpf_b2: f32,
+    hpf_a1: f32,
+    hpf_a2: f32,
 }
 
 impl MicProcessor {
@@ -107,11 +119,37 @@ impl MicProcessor {
             // "mic tidak masuk" di awal.
             rms_envelope: 0.1,
             gate_gain: 1.0, // default pass-through (gate terbuka)
+            hold_left: 0,
+            gate_open: true,
+            hpf_z1: 0.0,
+            hpf_z2: 0.0,
+            hpf_b0: 0.0,
+            hpf_b1: 0.0,
+            hpf_b2: 0.0,
+            hpf_a1: 0.0,
+            hpf_a2: 0.0,
         }
     }
 
     pub fn update(&mut self, settings: MicSettings) {
-        self.settings = settings;
+        self.settings = settings.clone();
+        // Hitung ulang koefisien HPF 80Hz (RBJ biquad cookbook).
+        let f = 80.0; // Hz
+        let w0 = 2.0 * std::f32::consts::PI * f / SAMPLE_RATE as f32;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * std::f32::consts::SQRT_2); // Q=0.707
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1_val = -2.0 * cos_w0;
+        let a2_val = 1.0 - alpha;
+        self.hpf_b0 = b0 / a0;
+        self.hpf_b1 = b1 / a0;
+        self.hpf_b2 = b2 / a0;
+        self.hpf_a1 = a1_val / a0;
+        self.hpf_a2 = a2_val / a0;
     }
 
     /// dB ke linear amplitude.
@@ -130,16 +168,28 @@ impl MicProcessor {
     /// Proses satu frame mono mic. `samples` berisi BLOCK_FRAMES sampel.
     pub fn process(&mut self, samples: &mut [f32]) {
         let pre = &self.settings;
-        let n = samples.len();
 
-        // 1. Mic boost (amplifikasi dasar)
+        // 0. High-pass filter 80Hz (always active) — removes cable hum & rumble.
+        for s in samples.iter_mut() {
+            let input = *s;
+            let output = self.hpf_b0 * input
+                + self.hpf_b1 * self.hpf_z1
+                + self.hpf_b2 * self.hpf_z2
+                - self.hpf_a1 * self.hpf_z1
+                - self.hpf_a2 * self.hpf_z2;
+            self.hpf_z2 = self.hpf_z1;
+            self.hpf_z1 = output;
+            *s = output;
+        }
+
+        // 1. Mic boost
         if pre.mic_boost != 1.0 {
             for s in samples.iter_mut() {
                 *s *= pre.mic_boost;
             }
         }
 
-        // 2. Noise gate (envelope follower + hard gate)
+        // 2. Noise gate (envelope follower + hysteresis + hold)
         if pre.noise_gate_enabled {
             let threshold_lin = Self::db_to_linear(pre.noise_gate_threshold);
             let rms_now = Self::rms(samples);
@@ -152,21 +202,32 @@ impl MicProcessor {
             } else {
                 self.rms_envelope = release_coef * self.rms_envelope + (1.0 - release_coef) * rms_now;
             }
-            // Hard gate: jika envelope di bawah threshold → zerokan total.
-            // Jika di atas → pass-through penuh (gain = 1.0, tidak ada attenuation).
-            let gate_gain = if self.rms_envelope < threshold_lin {
-                0.0 // gate tertutup total — hilangkan noise & gemerisik
-            } else {
-                1.0 // gate terbuka penuh — tidak ada attenuasi pada sinyal jelas
-            };
-            if gate_gain == 0.0 {
-                samples.fill(0.0);
-            } else {
-                for s in samples.iter_mut() {
-                    *s *= gate_gain;
+            // Hysteresis gate: open/close dengan threshold yang berbeda.
+            let close_threshold = threshold_lin * Self::db_to_linear(-6.0);
+            if self.rms_envelope > threshold_lin {
+                self.gate_open = true;
+                let hold_frames = (pre.noise_gate_hold_ms / 1000.0 * SAMPLE_RATE as f32) as u32;
+                self.hold_left = hold_frames;
+            } else if self.rms_envelope < close_threshold {
+                if self.hold_left > 0 {
+                    self.hold_left -= 1;
+                } else {
+                    self.gate_open = false;
                 }
             }
-            self.gate_gain = gate_gain; // simpan untuk visualisasi di UI
+
+            // Smooth gain: -40dB floor saat tertutup (bukan mute total).
+            let target_gain = if self.gate_open { 1.0 } else { 0.01 };
+            let gain_coef = if target_gain > self.gate_gain {
+                (-1.0 / ((pre.noise_gate_attack_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp()
+            } else {
+                (-1.0 / ((pre.noise_gate_release_ms / 1000.0 * SAMPLE_RATE as f32).max(1.0))).exp()
+            };
+            self.gate_gain = target_gain + gain_coef * (self.gate_gain - target_gain);
+
+            for s in samples.iter_mut() {
+                *s *= self.gate_gain;
+            }
         }
 
         // 3. Compressor (soft-knee)
@@ -202,6 +263,7 @@ impl MicProcessor {
             let mid_lin = Self::db_to_linear(pre.equalizer_mid);
             let high_lin = Self::db_to_linear(pre.equalizer_high);
             // Simple 3-band: 0-20% low, 20-80% mid, 80-100% high (per sample position)
+            let n = samples.len();
             let low_end = (n as f32 * 0.2) as usize;
             let high_start = (n as f32 * 0.8) as usize;
             for (i, s) in samples.iter_mut().enumerate() {
