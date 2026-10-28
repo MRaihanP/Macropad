@@ -21,6 +21,7 @@ import {
   refreshAudioState,
   listMicPresets,
   applyMicPreset,
+  setMonitorSfxOnly,
 } from './audio-client.js';
 import { soundLog } from './soundboard.js';
 
@@ -598,6 +599,20 @@ function bindControls() {
   const micMute = $('audioMicMute');
   micMute?.addEventListener('change', () => {
     withError(setAudioMute('mic', !!micMute.checked));
+  });
+
+  // ---- Monitor Soundboard Only ----
+  // Route: mic + sfx ke cable (Discord), tapi hanya sfx ke speaker/monitor.
+  // Berguna untuk testing: dengar soundboard tanpa mic monitoring, sementara
+  // Discord/Zoom tetap dapat mic + soundboard.
+  const sfxOnlyToggle = $('audioMonitorSfxOnly');
+  sfxOnlyToggle?.addEventListener('change', () => {
+    const only = !!sfxOnlyToggle.checked;
+    withError(setMonitorSfxOnly(only));
+    soundLog(
+      only ? 'monitor sfx only: HANYA soundboard ke speaker' : 'monitor normal: mic + sfx ke speaker',
+      'info'
+    );
   });
 
   const mode = $('audioPlayMode');

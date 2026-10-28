@@ -47,6 +47,14 @@ pub fn audio_set_monitor(
 }
 
 #[tauri::command]
+pub fn audio_set_monitor_sfx_only(
+    engine: State<'_, AudioEngine>,
+    only: bool,
+) -> Result<(), String> {
+    engine.set_monitor_sfx_only(only)
+}
+
+#[tauri::command]
 pub fn audio_set_mic(
     engine: State<'_, AudioEngine>,
     device: String,

@@ -41,7 +41,7 @@ pub use audio::AudioEngine;
 // internals dapat di-resolve oleh generate_handler!.
 use audio::{
     audio_devices, audio_play, audio_set_buffer, audio_set_gain, audio_set_mic, audio_set_mic_pre, audio_set_mode,
-    audio_set_monitor, audio_set_mute, audio_set_output, audio_state, audio_stop, audio_test_tone,
+    audio_set_monitor, audio_set_monitor_sfx_only, audio_set_mute, audio_set_output, audio_state, audio_stop, audio_test_tone,
     audio_mic_presets, audio_apply_mic_preset,
 };
 
@@ -1878,6 +1878,7 @@ pub fn run() {
             audio_state,
             audio_set_output,
             audio_set_monitor,
+            audio_set_monitor_sfx_only,
             audio_set_mic,
             audio_set_mic_pre,
             audio_set_gain,

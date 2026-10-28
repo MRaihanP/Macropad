@@ -89,6 +89,10 @@ export function setAudioMonitor(device, enabled, volume) {
   return invoke('audio_set_monitor', { device, enabled, volume });
 }
 
+export function setMonitorSfxOnly(only) {
+  return invoke('audio_set_monitor_sfx_only', { only });
+}
+
 export function setAudioMic(device, enabled, gain) {
   return invoke('audio_set_mic', { device, enabled, gain });
 }

@@ -50,6 +50,7 @@ pub enum MixerCommand {
         muted: bool,
     },
     SetMonitorEnabled(bool),
+    SetMonitorSfxOnly(bool),
     /// Update mic preprocessing filter settings (gain, noise gate, dll).
     SetMicPre(MicSettings),
     /// Isi ring monitor dengan silence sampai level prefill (dipakai setelah
@@ -82,6 +83,7 @@ pub struct MixerSettings {
     pub monitor_volume: f32,
     pub mic_muted: bool,
     pub sfx_muted: bool,
+    pub monitor_sfx_only: bool,
     pub monitor_enabled: bool,
     pub mode: PlayMode,
     pub mic_pre: MicSettings,
@@ -120,6 +122,7 @@ pub struct Mixer {
     sfx_muted: bool,
     master_muted: bool,
     monitor_muted: bool,
+    monitor_sfx_only: bool,
     monitor_enabled: bool,
     mode: PlayMode,
 
@@ -161,6 +164,7 @@ impl Mixer {
             sfx_muted: settings.sfx_muted,
             master_muted: false,
             monitor_muted: false,
+            monitor_sfx_only: settings.monitor_sfx_only,
             monitor_enabled: settings.monitor_enabled,
             mode: settings.mode,
             mic_chain: MicChain::new(settings.mic_pre),
@@ -274,6 +278,9 @@ impl Mixer {
             },
             MixerCommand::SetMonitorEnabled(enabled) => {
                 self.monitor_enabled = enabled;
+            }
+            MixerCommand::SetMonitorSfxOnly(only) => {
+                self.monitor_sfx_only = only;
             }
             MixerCommand::SetMicPre(settings) => {
                 self.mic_chain.set_settings(settings);
@@ -487,10 +494,17 @@ impl Mixer {
                 } else {
                     0.0
                 };
+                // Jika monitor_sfx_only: kirim hanya sfx ke speaker (tanpa mic),
+                // tapi cable tetap dapat mic + sfx untuk Discord.
+                let (mon_l, mon_r) = if self.monitor_sfx_only {
+                    (sfx_l, sfx_r)
+                } else {
+                    (program_l, program_r)
+                };
                 monitor_out[i * 2] =
-                    soft_clip((program_l + tone_monitor) * master_gain) * monitor_volume;
+                    soft_clip((mon_l + tone_monitor) * master_gain) * monitor_volume;
                 monitor_out[i * 2 + 1] =
-                    soft_clip((program_r + tone_monitor) * master_gain) * monitor_volume;
+                    soft_clip((mon_r + tone_monitor) * master_gain) * monitor_volume;
             }
         }
 

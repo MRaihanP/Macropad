@@ -29,6 +29,9 @@ pub enum EngineCommand {
         volume: f32,
         reply: Sender<Result<(), String>>,
     },
+    SetMonitorSfxOnly {
+        only: bool,
+    },
     SetMic {
         device: String,
         enabled: bool,
@@ -140,6 +143,13 @@ impl AudioEngine {
             volume,
             reply,
         })
+    }
+
+    pub fn set_monitor_sfx_only(&self, only: bool) -> Result<(), String> {
+        self.tx
+            .send(EngineCommand::SetMonitorSfxOnly { only })
+            .map_err(|_| "audio engine tidak berjalan".to_string())?;
+        Ok(())
     }
 
     pub fn set_mic(&self, device: String, enabled: bool, gain: f32) -> Result<(), String> {
@@ -357,6 +367,7 @@ impl Engine {
                 monitor_volume: settings.monitor_volume,
                 mic_muted: settings.mic_muted,
                 sfx_muted: settings.sfx_muted,
+                monitor_sfx_only: false,
                 monitor_enabled: settings.monitor_enabled,
                 mode: PlayMode::parse(&settings.mode),
                 mic_pre: settings.mic_pre,
@@ -508,6 +519,9 @@ impl Engine {
                 self.dirty = true;
                 self.publish(true);
                 let _ = reply.send(result);
+            }
+            EngineCommand::SetMonitorSfxOnly { only } => {
+                let _ = self.mixer_tx.send(MixerCommand::SetMonitorSfxOnly(only));
             }
             EngineCommand::SetMic {
                 device,
