@@ -31,6 +31,9 @@ fn usage() {
            --range <db>      redaman gate saat tertutup (mis. -50)\n\
            --boost <db>      mic boost dalam dB (0 = unity, 20 = 10x)\n\
            --notch <hz>      hum notch: 0/50/100/150\n\
+           --no-denoise      matikan RNNoise\n\
+           --denoise-mix <0..1>  wet/dry denoise (default 1.0)\n\
+           --no-noise-filter matikan de-click + anti-hiss\n\
            --comp            aktifkan compressor\n\
            --no-limiter      matikan limiter\n\
            --json            cetak metrik sebagai satu baris JSON"
@@ -131,6 +134,9 @@ fn main() {
                 "--range" => settings.noise_gate_range_db = next_value("--range")?,
                 "--boost" => settings.mic_boost_db = next_value("--boost")?,
                 "--notch" => settings.hum_notch_hz = next_value("--notch")?,
+                "--no-denoise" => settings.denoise_enabled = false,
+                "--denoise-mix" => settings.denoise_mix = next_value("--denoise-mix")?,
+                "--no-noise-filter" => settings.noise_filter_enabled = false,
                 "--comp" => settings.compressor_enabled = true,
                 "--no-limiter" => settings.limiter_enabled = false,
                 "--json" => json = true,

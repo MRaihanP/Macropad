@@ -9,7 +9,8 @@ use tauri::Manager;
 /// - 0 (file lama tanpa `version`): `micPre.micBoost` masih linear.
 /// - 1: `micPre.micBoostDb` (dB) + `micPre.humNotchHz`.
 /// - 2: `micPre.limiterReleaseMs` (default 50 ms).
-pub const SETTINGS_VERSION: u32 = 2;
+/// - 3: `micPre.noiseFilterEnabled` (de-click + low-pass hiss, default aktif).
+pub const SETTINGS_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -49,6 +50,9 @@ pub struct MicSettings {
     /// Denoise RNNoise. Mix 0..1 = wet/dry.
     pub denoise_enabled: bool,
     pub denoise_mix: f32,
+    /// Filter kabel/konektor sebelum denoise: de-click impulsif + low-pass
+    /// untuk meredam desis (hiss) broadband.
+    pub noise_filter_enabled: bool,
     /// Noise gate: filter out low-level noise when mic is idle.
     pub noise_gate_enabled: bool,
     /// Threshold dalam dBFS di bawah mana sinyal dianggap noise.
@@ -91,6 +95,7 @@ impl Default for MicSettings {
             hum_notch_hz: 50.0,
             denoise_enabled: true,
             denoise_mix: 1.0,
+            noise_filter_enabled: true,
             noise_gate_enabled: false,
             noise_gate_threshold: -45.0,
             noise_gate_attack_ms: 8.0,
@@ -136,6 +141,9 @@ impl MicSettings {
             hz if hz < 125.0 => 100.0,
             _ => 150.0,
         };
+        // Mix denoise datang dari JSON/UI; NaN atau nilai di luar 0..1 bisa
+        // membuat sinyal wet/dry tidak seimbang.
+        self.denoise_mix = clean(self.denoise_mix, d.denoise_mix).clamp(0.0, 1.0);
 
         self.noise_gate_threshold = clean(self.noise_gate_threshold, d.noise_gate_threshold)
             .clamp(-80.0, -10.0);
@@ -364,7 +372,24 @@ mod tests {
         migrate(&mut value);
 
         assert_eq!(value["micPre"]["micBoostDb"].as_f64(), Some(12.5));
-        assert_eq!(value["version"].as_u64(), Some(2));
+        assert_eq!(value["version"].as_u64(), Some(SETTINGS_VERSION as u64));
+    }
+
+    #[test]
+    fn sanitize_denoise_mix_di_clamp_0_sampai_1() {
+        let mut s = MicSettings::default();
+
+        s.denoise_mix = f32::NAN;
+        s.sanitize();
+        assert_eq!(s.denoise_mix, MicSettings::default().denoise_mix);
+
+        s.denoise_mix = 4.0;
+        s.sanitize();
+        assert_eq!(s.denoise_mix, 1.0);
+
+        s.denoise_mix = -2.0;
+        s.sanitize();
+        assert_eq!(s.denoise_mix, 0.0);
     }
 
     #[test]

@@ -37,6 +37,9 @@ const debounceTimers = new Map();
 const MIC_PRE_CONTROLS = [
   'micBoostDb',
   'humNotch',
+  'denoiseEnabled',
+  'denoiseMix',
+  'noiseFilterEnabled',
   'noiseGateEnabled',
   'noiseGateThreshold',
   'noiseGateHold',
@@ -57,7 +60,10 @@ const MIC_PRE_CONTROLS = [
 // MicSettings::default() di Rust.
 const DEFAULT_MIC_PRE = {
   micBoostDb: 6,
-  humNotchHz: 0,
+  humNotchHz: 50,
+  denoiseEnabled: true,
+  denoiseMix: 1,
+  noiseFilterEnabled: true,
   noiseGateEnabled: false,
   noiseGateThreshold: -45,
   noiseGateAttackMs: 8,
@@ -106,6 +112,9 @@ function formatMs(value) {
 /// datang; tidak memicu command.
 function refreshMicLabels() {
   if ($('micBoostDbVal')) $('micBoostDbVal').textContent = formatBoostLabel(micPre.micBoostDb);
+  if ($('denoiseMixVal')) {
+    $('denoiseMixVal').textContent = Math.round(Number(micPre.denoiseMix ?? 1) * 100) + '%';
+  }
   if ($('noiseGateThresholdVal')) {
     $('noiseGateThresholdVal').textContent = Math.round(Number(micPre.noiseGateThreshold)) + ' dB';
   }
@@ -137,6 +146,7 @@ function syncMicPre(pre) {
 
   setSlider('micBoostDb', Number(micPre.micBoostDb ?? 6));
   setSlider('humNotch', Number(micPre.humNotchHz ?? 0));
+  setSlider('denoiseMix', Math.round(Number(micPre.denoiseMix ?? 1) * 100));
   setSlider('noiseGateThreshold', Math.round(Number(micPre.noiseGateThreshold ?? -45)));
   setSlider('noiseGateHold', Number(micPre.noiseGateHoldMs ?? 150));
   setSlider('noiseGateAttack', Number(micPre.noiseGateAttackMs ?? 8));
@@ -148,6 +158,8 @@ function syncMicPre(pre) {
   setSlider('eqMid', Number(micPre.equalizerMid ?? 0));
   setSlider('eqHigh', Number(micPre.equalizerHigh ?? 0));
   setCheck('noiseGateEnabled', micPre.noiseGateEnabled);
+  setCheck('denoiseEnabled', micPre.denoiseEnabled);
+  setCheck('noiseFilterEnabled', micPre.noiseFilterEnabled);
   setCheck('compressorEnabled', micPre.compressorEnabled);
   setCheck('limiterEnabled', micPre.limiterEnabled);
   setCheck('equalizerEnabled', micPre.equalizerEnabled);
@@ -167,6 +179,9 @@ function readMicPre() {
     ...micPre,
     micBoostDb: value('micBoostDb', 6),
     humNotchHz: value('humNotch', 0),
+    denoiseEnabled: !!$('denoiseEnabled')?.checked,
+    denoiseMix: value('denoiseMix', 100) / 100,
+    noiseFilterEnabled: !!$('noiseFilterEnabled')?.checked,
     noiseGateEnabled: !!$('noiseGateEnabled')?.checked,
     noiseGateThreshold: value('noiseGateThreshold', -45),
     noiseGateHoldMs: value('noiseGateHold', 150),
@@ -665,6 +680,7 @@ function bindControls() {
   // ---- Mic Preprocessing Filter Controls (auto-apply on change) ----
   // Slider: update label + auto-apply
   bindRangeLabel('micBoostDb', 'micBoostDbVal', formatBoostLabel);
+  bindRangeLabel('denoiseMix', 'denoiseMixVal', (v) => Math.round(Number(v)) + '%');
   bindRangeLabel('noiseGateThreshold', 'noiseGateThresholdVal', (v) => Math.round(v) + ' dB');
   bindRangeLabel('noiseGateHold', 'noiseGateHoldVal', formatMs);
   bindRangeLabel('noiseGateAttack', 'noiseGateAttackVal', formatMs);

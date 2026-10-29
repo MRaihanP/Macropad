@@ -68,6 +68,13 @@ fn one_pole(ms: f32) -> f32 {
     (-1.0 / samples).exp()
 }
 
+/// Median dari tiga sample. Dipakai de-click: impuls satu-sample (kresek dari
+/// jack/konektor) akan diganti nilai tengah tanpa mengubah sinyal normal.
+#[inline]
+fn median3(a: f32, b: f32, c: f32) -> f32 {
+    a.max(b).min(a.min(b).max(c))
+}
+
 /// Biquad RBJ transposed direct form II.
 #[derive(Clone, Copy, Debug)]
 pub struct Biquad {
@@ -213,25 +220,53 @@ impl Biquad {
     }
 }
 
+/// Panjang satu frame RNNoise (10 ms @ 48 kHz).
+const DENOISE_FRAME: usize = 480;
+/// Total delay jalur wet: 1 frame buffering + 1 frame lag internal RNNoise.
+/// Dry ikut ditunda sebesar ini supaya penjumlahan dry/wet tidak comb-filter.
+const DENOISE_LATENCY: usize = DENOISE_FRAME * 2;
+/// Level peak target untuk input RNNoise (≈ -10 dBFS, dengan headroom).
+const DENOISE_TARGET_PEAK: f32 = 0.30;
+/// Batas atas pregain adaptif supaya noise floor tidak ikut dikuatkan.
+const DENOISE_MAX_PREGAIN: f32 = 4.0;
+
 /// RNNoise-based noise suppression (Fase 3).
 ///
-/// Frame 480 sample = 10 ms @ 48 kHz. Output frame selesai diproses
-/// pada blok berikutnya, jadi `wet` tertinggal 480 sample; `dry`
-/// ikut ditunda lewat delay line supaya penjumlahan dry/wet tidak
-/// comb-filter. State RNNoise dialokasikan sekali di `new()`.
+/// Frame 480 sample = 10 ms @ 48 kHz. Output frame baru keluar satu frame
+/// setelah input (lag internal RNNoise), jadi total delay jalur wet = 2 frame
+/// (20 ms); `dry` ditunda sebesar itu juga supaya penjumlahan dry/wet tidak
+/// comb-filter.
+///
+/// Pregain dibuat adaptif: RNNoise memakai skala i16, sehingga input
+/// dinormalisasi ke sekitar -10 dBFS peak. Gain tetap +12 dB sebelumnya
+/// membuat sinyal di atas -12 dBFS clip dan terdengar sebagai "kresek".
 struct Denoise {
     enabled: bool,
     target_mix: f32,
     mix: f32,
     mix_coef: f32,
     state: Option<Box<DenoiseState>>,
-    frame_in: [f32; 480],
-    frame_out: [f32; 480],
+    frame_in: [f32; DENOISE_FRAME],
+    frame_out: [f32; DENOISE_FRAME],
     fill: usize,
     out_pos: usize,
     ready: bool,
-    dry_delay: [f32; 480],
+    /// Frame pertama output RNNoise masih berisi state lama → dibuang.
+    skip_first: bool,
+    /// Dry delay sepanjang latency wet.
+    dry_delay: [f32; DENOISE_LATENCY],
     delay_pos: usize,
+    /// Envelope peak lambat untuk pregain adaptif.
+    env: f32,
+    env_release: f32,
+    pregain: f32,
+    pregain_coef: f32,
+    /// Gain pregain per sample untuk frame yang sedang di-encode.
+    frame_gain: [f32; DENOISE_FRAME],
+    /// Gain per sample untuk frame yang output-nya sedang dibaca.
+    decode_gain: [f32; DENOISE_FRAME],
+    /// Gain frame sebelumnya (output RNNoise tertinggal satu frame).
+    prev_gain: [f32; DENOISE_FRAME],
     /// VAD 0..1 dari frame terakhir, dipakai gate.
     vad: f32,
 }
@@ -244,13 +279,21 @@ impl Default for Denoise {
             mix: 0.0,
             mix_coef: one_pole(20.0),
             state: None,
-            frame_in: [0.0; 480],
-            frame_out: [0.0; 480],
+            frame_in: [0.0; DENOISE_FRAME],
+            frame_out: [0.0; DENOISE_FRAME],
             fill: 0,
             out_pos: 0,
             ready: false,
-            dry_delay: [0.0; 480],
+            skip_first: true,
+            dry_delay: [0.0; DENOISE_LATENCY],
             delay_pos: 0,
+            env: 0.0,
+            env_release: one_pole(300.0),
+            pregain: 1.0,
+            pregain_coef: one_pole(300.0),
+            frame_gain: [1.0; DENOISE_FRAME],
+            decode_gain: [1.0; DENOISE_FRAME],
+            prev_gain: [1.0; DENOISE_FRAME],
             vad: 0.0,
         }
     }
@@ -269,26 +312,55 @@ impl Denoise {
             self.mix = 0.0;
             self.vad = 0.0;
         } else if !was_active {
-            // Alokasi sekali: buat DenoiseState di sini (bukan di process()).
-            self.state = Some(DenoiseState::new());
+            // State sudah dialokasikan saat chain dibuat. Jangan alokasi di
+            // jalur mixer; cukup flush memori internal agar tidak ada sisa
+            // audio lama saat denoise baru diaktifkan.
             self.prime();
+            self.flush_state();
         }
+    }
+
+    /// Pastikan `DenoiseState` sudah ada. Dipanggil sekali dari
+    /// `MicChain::new()` supaya toggle denoise tidak pernah alokasi.
+    fn ensure_state(&mut self) {
+        if self.state.is_none() {
+            self.state = Some(DenoiseState::new());
+        }
+    }
+
+    /// Buang memori internal RNNoise dengan memberi dua frame senyap.
+    fn flush_state(&mut self) {
+        let Some(ref mut state) = self.state else {
+            return;
+        };
+        let silence = [0.0f32; DENOISE_FRAME];
+        let mut out = [0.0f32; DENOISE_FRAME];
+        let _ = state.process_frame(&mut out, &silence);
+        let _ = state.process_frame(&mut out, &silence);
     }
 
     fn prime(&mut self) {
         self.fill = 0;
         self.out_pos = 0;
         self.ready = false;
+        self.skip_first = true;
         self.mix = 0.0;
         self.vad = 0.0;
+        self.env = 0.0;
+        self.pregain = 1.0;
+        self.frame_gain.fill(1.0);
+        self.decode_gain.fill(1.0);
+        self.prev_gain.fill(1.0);
         self.frame_in.fill(0.0);
         self.frame_out.fill(0.0);
-        self.dry_delay.fill(0.0);
-        self.delay_pos = 0;
     }
 
     fn reset(&mut self) {
         self.prime();
+        // Reset perangkat: buang histori delay supaya tidak memutar audio lama.
+        self.dry_delay.fill(0.0);
+        self.delay_pos = 0;
+        self.flush_state();
     }
 
     /// Proses satu sample. Bila denoise off/mix 0, sample dikembalikan apa
@@ -300,33 +372,58 @@ impl Denoise {
         let delayed = self.dry_delay[self.delay_pos];
         self.dry_delay[self.delay_pos] = x;
         self.delay_pos += 1;
-        if self.delay_pos == 480 {
+        if self.delay_pos == DENOISE_LATENCY {
             self.delay_pos = 0;
         }
 
         if !self.active() {
             return x;
         }
-        // Output frame terakhir (aligned dengan `delayed`); sebelum frame
-        // pertama selesai pakai dry tertunda supaya output tetap kontinu.
-        let wet = if self.ready {
+
+        // ---- Pregain adaptif ----
+        // Normalisasi ke sekitar -10 dBFS peak. Envelope bereaksi instan saat
+        // level naik dan hanya melepas perlahan, jadi mic keras tidak pernah
+        // dikuatkan lalu clip. Gain minimal 1.0 supaya sinyal keras tidak
+        // diubah; batas atas 4.0 supaya noise floor tidak diblow-up.
+        let level = x.abs();
+        if level > self.env {
+            self.env = level;
+        } else {
+            self.env += self.env_release * (level - self.env);
+        }
+        let desired = (DENOISE_TARGET_PEAK / self.env.max(1.0e-4))
+            .clamp(1.0, DENOISE_MAX_PREGAIN);
+        if desired < self.pregain {
+            // Turunkan gain segera supaya tidak ada sample yang clip.
+            self.pregain = desired;
+        } else {
+            self.pregain += self.pregain_coef * (desired - self.pregain);
+        }
+
+        // ---- Wet: output frame yang selesai pada blok sebelumnya ----
+        let wet_ready = self.ready;
+        let wet = if wet_ready {
             let value = self.frame_out[self.out_pos];
+            let gain = self.decode_gain[self.out_pos].max(1.0e-3);
             self.out_pos += 1;
-            if self.out_pos == 480 {
+            if self.out_pos == DENOISE_FRAME {
                 self.out_pos = 0;
                 self.ready = false;
             }
-            value
+            value / 32_768.0 / gain
         } else {
-            delayed
+            0.0
         };
 
-        // process_frame memakai skala i16, bukan -1..1.
-        self.frame_in[self.fill] =
-            (x * 3.981_071_7 * 32_768.0).clamp(-32_767.0, 32_767.0);
+        // ---- Encode frame saat ini (skala i16 untuk RNNoise) ----
+        // Gain dicatat per sample supaya transient keras di tengah frame tidak
+        // ter-clip dan decode memakai gain yang sama persis.
+        let gain = self.pregain;
+        self.frame_gain[self.fill] = gain;
+        self.frame_in[self.fill] = (x * gain * 32_768.0).clamp(-32_768.0, 32_767.0);
         self.fill += 1;
 
-        if self.fill == 480 {
+        if self.fill == DENOISE_FRAME {
             self.fill = 0;
             if let Some(ref mut state) = self.state {
                 let vad = state.process_frame(&mut self.frame_out, &self.frame_in);
@@ -336,12 +433,26 @@ impl Denoise {
                     0.0
                 };
             }
-            self.ready = true;
+            if self.skip_first {
+                // Output frame pertama adalah state lama/kosong; buang.
+                self.skip_first = false;
+            } else {
+                // Output frame ini berisi input frame sebelumnya, jadi gain
+                // yang dipakai adalah gain frame sebelumnya.
+                self.decode_gain.copy_from_slice(&self.prev_gain);
+                self.ready = true;
+            }
+            self.prev_gain.copy_from_slice(&self.frame_gain);
         }
 
-        let wet = wet / 32_768.0 / 3.981_071_7;
         self.mix += self.mix_coef * (self.target_mix - self.mix);
-        delayed * (1.0 - self.mix) + wet * self.mix
+        if wet_ready {
+            delayed * (1.0 - self.mix) + wet * self.mix
+        } else {
+            // Belum ada frame wet yang valid (awal stream / baru diaktifkan):
+            // pakai dry tertunda supaya output tetap kontinu.
+            delayed
+        }
     }
 }
 
@@ -666,7 +777,17 @@ impl Gate {
 pub struct MicChain {
     settings: MicSettings,
     hpf: Biquad,
-    notch: Biquad,
+    /// Hum notch: frekuensi dasar + harmonic 2/3/4 (dengung listrik).
+    notches: [Biquad; 4],
+    notch_count: usize,
+    /// Low-pass anti-hiss untuk desis broadband kabel (sebelum denoise).
+    /// Dua stage (4th order) supaya desis > 10 kHz benar-benar turun.
+    hiss_lp: Biquad,
+    hiss_lp2: Biquad,
+    /// Histori median-of-3 untuk de-click impuls jack/konektor.
+    declick_prev1: f32,
+    declick_prev2: f32,
+    noise_filter_enabled: bool,
     denoise: Denoise,
     gate: Gate,
     /// EQ 3-band biquad.
@@ -687,7 +808,13 @@ impl MicChain {
         let mut chain = Self {
             settings: MicSettings::default(),
             hpf: { let mut b = Biquad::bypass(); b.highpass(80.0, std::f32::consts::FRAC_1_SQRT_2); b },
-            notch: Biquad::bypass(),
+            notches: [Biquad::bypass(); 4],
+            notch_count: 0,
+            hiss_lp: Biquad::bypass(),
+            hiss_lp2: Biquad::bypass(),
+            declick_prev1: 0.0,
+            declick_prev2: 0.0,
+            noise_filter_enabled: settings.noise_filter_enabled,
             denoise: Denoise::default(),
             gate: Gate::default(),
             eq_low: Biquad::bypass(),
@@ -699,6 +826,9 @@ impl MicChain {
             boost_coef: one_pole(15.0),
         };
         chain.set_settings(settings);
+        // Alokasi DenoiseState sekali di sini, bukan saat user menyalakan
+        // denoise dari mixer thread.
+        chain.denoise.ensure_state();
         chain.boost_gain = db_to_linear(chain.settings.mic_boost_db);
         chain.gate.hold_left = chain.gate.hold_samples;
         chain
@@ -712,10 +842,35 @@ impl MicChain {
 
         self.hpf.highpass(80.0, std::f32::consts::FRAC_1_SQRT_2);
 
-        if settings.hum_notch_hz > 0.0 {
-            self.notch.notch(settings.hum_notch_hz, 10.0);
+        // Hum notch: redam frekuensi dasar + harmonic 2/3/4 sekaligus.
+        // Sebelumnya hanya satu frekuensi, sehingga dengung 50 Hz masih
+        // menyisakan harmonic 100/150/200 Hz.
+        let mut notch_count = 0;
+        for harmonic in 1..=4usize {
+            let freq = settings.hum_notch_hz * harmonic as f32;
+            if settings.hum_notch_hz > 0.0 && freq < SAMPLE_RATE * 0.45 {
+                self.notches[notch_count].notch(freq, 12.0);
+                notch_count += 1;
+            }
+        }
+        for slot in self.notches.iter_mut().skip(notch_count) {
+            *slot = Biquad::bypass();
+        }
+        self.notch_count = notch_count;
+
+        // Filter kabel: low-pass meredam desis broadband, de-click membuang
+        // impuls dari jack/konektor yang kurang baik.
+        self.noise_filter_enabled = settings.noise_filter_enabled;
+        if settings.noise_filter_enabled {
+            self.hiss_lp
+                .lowpass(9_500.0, std::f32::consts::FRAC_1_SQRT_2);
+            self.hiss_lp2
+                .lowpass(9_500.0, std::f32::consts::FRAC_1_SQRT_2);
         } else {
-            self.notch = Biquad::bypass();
+            self.hiss_lp = Biquad::bypass();
+            self.hiss_lp2 = Biquad::bypass();
+            self.declick_prev1 = 0.0;
+            self.declick_prev2 = 0.0;
         }
 
         // EQ 3-band (Fase 4). Bypass otomatis bila semua band 0 dB.
@@ -741,7 +896,13 @@ impl MicChain {
 
     pub fn reset(&mut self) {
         self.hpf.reset();
-        self.notch.reset();
+        for notch in &mut self.notches {
+            notch.reset();
+        }
+        self.hiss_lp.reset();
+        self.hiss_lp2.reset();
+        self.declick_prev1 = 0.0;
+        self.declick_prev2 = 0.0;
         self.eq_low.reset();
         self.eq_mid.reset();
         self.eq_high.reset();
@@ -782,12 +943,35 @@ impl MicChain {
             let raw = *sample;
             input_peak = input_peak.max(raw.abs());
 
-            let mut value = self.hpf.process(raw);
-            value = self.notch.process(value);
+            // De-click impuls (median-of-3) sebelum HPF/denoise supaya kresek
+            // dari jack tidak dianggap voice oleh RNNoise.
+            let mut value = if self.noise_filter_enabled {
+                let med = median3(self.declick_prev2, self.declick_prev1, raw);
+                self.declick_prev2 = self.declick_prev1;
+                self.declick_prev1 = raw;
+                med
+            } else {
+                raw
+            };
+
+            value = self.hpf.process(value);
+            for index in 0..self.notch_count {
+                value = self.notches[index].process(value);
+            }
+            // Low-pass anti-hiss: buang desis kabel di atas ~10 kHz.
+            if self.noise_filter_enabled {
+                let filtered = self.hiss_lp.process(value);
+                value = self.hiss_lp2.process(filtered);
+            }
 
             // Denoise: 480 sample = 1 RNNoise frame (10 ms @ 48 kHz).
             // Harus sebelum gate supaya VAD bisa drive pembukaan gate.
             value = self.denoise.process(value);
+            // Sambungkan VAD denoise ke gate. Saat denoise off, VAD eksternal
+            // (set_vad) yang dipakai.
+            if self.denoise.active() {
+                self.gate.vad = self.denoise.vad;
+            }
 
             // Gate sebelum boost.
             value = self.gate.process(value);
@@ -872,6 +1056,7 @@ mod tests {
         settings.hum_notch_hz = 0.0;
         settings.noise_gate_enabled = false;
         settings.denoise_enabled = false;
+        settings.noise_filter_enabled = false;
         settings.compressor_enabled = false;
         settings.equalizer_enabled = false;
         settings.limiter_enabled = false;
@@ -1235,5 +1420,111 @@ mod tests {
         );
         let diff = (output_rms / input_rms - 1.0).abs();
         assert!(diff < 0.02, "level berubah {:.1}% saat limiter off", diff * 100.0);
+    }
+
+    /// Regresi: pregain denoise dulu tetap +12 dB sehingga sinyal > -12 dBFS
+    /// clip dan terdengar "kresek" setiap kali bicara.
+    #[test]
+    fn denoise_pregain_tidak_clip_sinyal_keras() {
+        let mut settings = base_settings();
+        settings.denoise_enabled = true;
+        settings.denoise_mix = 1.0;
+        let mut chain = MicChain::new(settings);
+
+        let mut buffer = sine(1_000.0, 0.9, 48_000); // ~ -1 dBFS
+        chain.process(&mut buffer);
+
+        assert!(
+            chain.denoise.pregain >= 1.0 && chain.denoise.pregain <= DENOISE_MAX_PREGAIN + 0.01,
+            "pregain di luar batas: {:.2}",
+            chain.denoise.pregain
+        );
+        let peak = chain
+            .denoise
+            .frame_in
+            .iter()
+            .fold(0.0f32, |acc, v| acc.max(v.abs()));
+        assert!(peak < 32_767.0, "frame input masih clip: peak {peak}");
+        assert!(buffer.iter().all(|s| s.is_finite()));
+    }
+
+    /// Dry dan wet harus tertunda sama besar (2 frame = 960 sample). Kalau
+    /// dry hanya 1 frame, mix < 1.0 menghasilkan comb filter/echo.
+    #[test]
+    fn denoise_dry_wet_sejajar_dua_frame() {
+        assert_eq!(DENOISE_LATENCY, 960);
+        let chain = MicChain::new(base_settings());
+        assert_eq!(chain.denoise.dry_delay.len(), DENOISE_LATENCY);
+    }
+
+    /// Hum notch sekarang merangkum harmonic, bukan hanya frekuensi dasar.
+    #[test]
+    fn hum_notch_meredam_harmonisa() {
+        let mut settings = base_settings();
+        settings.hum_notch_hz = 50.0;
+        let mut chain = MicChain::new(settings);
+
+        // Harmonic ke-3 (150 Hz): hanya teredam kalau notch 150 Hz ikut aktif.
+        let mut samples = sine(150.0, 0.2, 48_000);
+        chain.process(&mut samples);
+        let output_rms = rms(&samples[24_000..]);
+        assert!(
+            output_rms < 0.02,
+            "harmonic 150 Hz tidak teredam: rms {output_rms:.4}"
+        );
+    }
+
+    /// Filter kabel: low-pass meredam desis dan median-of-3 membuang klik.
+    #[test]
+    fn noise_filter_meredam_desis_dan_klik() {
+        let mut settings = base_settings();
+        settings.noise_filter_enabled = true;
+
+        let hiss = sine(15_000.0, 0.2, 48_000);
+        let input_rms = rms(&hiss[24_000..]);
+        let mut chain = MicChain::new(settings);
+        assert!(chain.noise_filter_enabled);
+
+        // Uji filter hiss langsung (tanpa de-click) supaya tidak terpengaruh
+        // produk aliasing median-of-3 di dekat Nyquist.
+        let filtered: Vec<f32> = hiss
+            .iter()
+            .map(|x| chain.hiss_lp2.process(chain.hiss_lp.process(*x)))
+            .collect();
+        let output_rms = rms(&filtered[24_000..]);
+        assert!(
+            output_rms < input_rms * 0.1,
+            "desis 15 kHz tidak teredam: in {input_rms:.4} out {output_rms:.4}"
+        );
+
+        let mut clicks = vec![0.0f32; 4_800];
+        clicks[2_400] = 0.9;
+        let mut chain = MicChain::new(settings);
+        chain.process(&mut clicks);
+        let peak = clicks.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+        assert!(peak < 0.1, "klik satu-sample masih lolos: peak {peak:.4}");
+    }
+
+    /// VAD dari denoise harus benar-benar tersambung ke gate.
+    #[test]
+    fn vad_denoise_tersambung_ke_gate() {
+        let mut settings = base_settings();
+        settings.denoise_enabled = true;
+        settings.denoise_mix = 1.0;
+        settings.noise_gate_enabled = true;
+        settings.noise_gate_threshold = -10.0;
+        let mut chain = MicChain::new(settings);
+
+        let mut speech = sine(300.0, 0.2, 24_000);
+        chain.process(&mut speech);
+
+        assert_eq!(
+            chain.gate.vad, chain.denoise.vad,
+            "VAD denoise tidak sampai ke gate"
+        );
+        assert!(
+            chain.denoise.vad > 0.0,
+            "VAD RNNoise tidak aktif untuk sinyal voice"
+        );
     }
 }

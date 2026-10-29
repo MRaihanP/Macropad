@@ -473,7 +473,7 @@
           <div class="audio-row">
             <div class="audio-row-main">
               <div class="setting-name">Hum Notch</div>
-              <div class="hint">Redam dengung listrik 50/100/150 Hz</div>
+              <div class="hint">Redam dengung listrik + harmonic (50/100/150/200 Hz)</div>
             </div>
             <div class="audio-row-controls">
               <select id="humNotch" class="audio-select audio-select-sm">
@@ -482,6 +482,36 @@
                 <option value="100">100 Hz</option>
                 <option value="150">150 Hz</option>
               </select>
+            </div>
+          </div>
+
+          <!-- Noise Suppression (RNNoise) -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Noise Suppression (RNNoise)</div>
+              <div class="hint">Hilangkan noise broadband saat bicara. 100% = paling bersih.</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="Aktifkan noise suppression">
+                <input type="checkbox" id="denoiseEnabled" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <input type="range" id="denoiseMix" class="audio-slider-small" min="0" max="100" step="1" value="100">
+              <span class="audio-value" id="denoiseMixVal">100%</span>
+            </div>
+          </div>
+
+          <!-- Cable Noise Filter -->
+          <div class="audio-row">
+            <div class="audio-row-main">
+              <div class="setting-name">Cable Noise Filter</div>
+              <div class="hint">Buang kresek impulsif (jack/konektor) + redam desis kabel &gt; 10 kHz.</div>
+            </div>
+            <div class="audio-row-controls">
+              <label class="toggle-switch" title="De-click + anti-hiss untuk kabel/konektor kurang baik">
+                <input type="checkbox" id="noiseFilterEnabled" checked>
+                <span class="toggle-slider"></span>
+              </label>
             </div>
           </div>
 
