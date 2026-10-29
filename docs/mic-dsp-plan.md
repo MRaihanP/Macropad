@@ -9,10 +9,10 @@ Status: disetujui 2026-10-28. Eksekusi per fase dengan checkpoint commit.
 | 0 - Fondasi & bug fix | selesai, tes manual OK | `f75c49a` |
 | 1 - Boost dB, notch | selesai | commit `mic phase 1-2` |
 | 2 - Gate sidechain + learn | selesai | commit `mic phase 1-2` |
-| 3 - Denoise | belum | - |
-| 4 - EQ biquad | belum | - |
-| 5 - Compressor | belum | - |
-| 6 - Limiter | belum | - |
+| 3 - Denoise | selesai (batch 1) | `45521dc` |
+| 4 - EQ biquad | selesai (batch 1) | `45521dc` |
+| 5 - Compressor | selesai (batch 2) | - |
+| 6 - Limiter | selesai (batch 2) | - |
 | 7 - Preset & QA | belum | - |
 
 ## Keputusan final
@@ -66,13 +66,14 @@ Aturan real-time:
 |---|---|---|---|
 | HPF | RBJ high-pass 80 Hz Q=0.707 | selalu aktif | on |
 | Notch | RBJ notch Q=10 | off/50/100/150 Hz | off |
-| Denoise | `nnnoiseless`, frame 480, pregain +12 dB, wet/dry | enable, mix 0–100% | off, 80% |
+| Denoise | `nnnoiseless`, frame 480, pregain adaptif (target peak −10 dBFS), wet/dry, delay dry/wet 2 frame | enable, mix 0–100% | off, 80% |
+| Noise filter | De-click median-of-3 + LPF 4th order 9.5 kHz, sebelum denoise | enable | on |
 | Gate | Sidechain HPF 100 Hz + LPF 4 kHz; envelope 2/50 ms; hysteresis 6 dB; hold; attack; release; range | enable, threshold −80…−10, learn, advanced | off, −45, hold 150, attack 8, release 220, range −50 |
 | Boost | dB → linear, smooth 15 ms | 0…+20 dB | +6 dB |
 | EQ | Low shelf 120 Hz, peak 1 kHz Q=0.8, high shelf 6 kHz | ±12 dB/band | 0/0/0 |
 | Compressor | Feed-forward, dB detector, soft knee 6 dB, auto-makeup | threshold, ratio, attack 5–30, release 50–300, makeup | −18 dB, 3:1, 10 ms, 120 ms |
-| Limiter | Lookahead 4 ms, sliding-min, release 50 ms | enable, ceiling | on, −1 dBFS |
-| Safety | clamp −0.1 dBFS setelah limiter | — | selalu |
+| Limiter | Lookahead 4 ms, sliding-min gain envelope, release 50 ms | enable, ceiling | on, −1 dBFS |
+| Safety | clamp −0.1 dBFS setelah limiter (selalu aktif, termasuk saat limiter off) | — | selalu |
 
 Meter (`LevelFrame`): `micInDb`, `gateInDb`, `gateOpen`, `gateGainDb`, `compGrDb`, `limitGrDb`, `vad`.
 

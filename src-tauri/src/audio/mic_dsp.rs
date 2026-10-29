@@ -13,6 +13,10 @@ use nnnoiseless::DenoiseState;
 /// Sample rate internal engine. Sama dengan `mixer::SAMPLE_RATE`.
 pub const SAMPLE_RATE: f32 = 48_000.0;
 
+/// Safety ceiling akhir chain: −0.1 dBFS. Diterapkan setelah limiter (dan juga
+/// saat limiter off) supaya output mic tidak pernah menyentuh full-scale.
+const SAFETY_CEILING: f32 = 0.988_553;
+
 /// Meter yang dikembalikan per blok. Nilai dB memakai -100.0 sebagai silence.
 #[derive(Clone, Copy, Debug)]
 pub struct MicMeters {
@@ -483,34 +487,47 @@ struct Gate {
     vad: f32,
 }
 
-/// Lookahead limiter: mencegah clipping dengan lookahead 4 ms dan envelope release.
+/// Panjang lookahead limiter (4 ms @ 48 kHz).
+const LIMITER_LOOKAHEAD: usize = (SAMPLE_RATE * 0.004) as usize;
+
+/// Lookahead limiter: mencegah clipping dengan lookahead 4 ms.
 ///
-/// Prinsip: buffer lookahead menyimpan sample 4 ms ke depan (192 sample @ 48 kHz).
-/// Peak detection menggunakan sliding-min dari envelope yang sudah diketahui
-/// di masa depan, lalu gain diinterpolasi per sample. Release 50 ms default
-/// (dapat diatur via `limiterReleaseMs`).
+/// Versi sebelumnya menghitung gain dari sample yang sudah ditunda, sehingga
+/// tidak ada lookahead sama sekali (peak baru diredam setelah lolos). Sekarang:
+///
+/// 1. Envelope gain dihitung dari sample **masuk** (instant attack + release).
+/// 2. Audio ditunda `LIMITER_LOOKAHEAD` sample.
+/// 3. Gain yang dipakai adalah **sliding-min** envelope selama window lookahead.
+///
+/// Sliding-min membuat peak yang akan keluar beberapa ms kemudian sudah
+/// menurunkan gain sejak sekarang. Window `delay + 1` memastikan peak tetap
+/// menahan gain sampai sample tersebut benar-benar keluar.
 struct LookaheadLimiter {
-    /// Lookahead buffer dalam sample (4 ms = 192 sample @ 48 kHz).
+    /// Buffer audio yang ditunda sebesar lookahead.
     delay: Vec<f32>,
     write_pos: usize,
-    read_pos: usize,
-    /// Envelope smoothing: release per sample.
+    /// Riwayat envelope gain untuk sliding-min (delay + 1 sample).
+    gain_hist: Vec<f32>,
+    gain_pos: usize,
+    /// Release per sample (attack selalu instan).
     release_coef: f32,
-    /// Gain level yang sedang aktif (linear, ≤ 1.0).
-    gain: f32,
+    /// Envelope gain pada sample masuk (≤ 1.0).
+    env: f32,
+    /// Lookahead dalam sample (4 ms = 192 sample @ 48 kHz).
     delay_samples: usize,
     release_ms: f32,
 }
 
 impl LookaheadLimiter {
     fn new(release_ms: f32) -> Self {
-        let delay_samples = (SAMPLE_RATE * 4.0 / 1000.0) as usize; // 4 ms
+        let delay_samples = LIMITER_LOOKAHEAD;
         Self {
             delay: vec![0.0; delay_samples],
             write_pos: 0,
-            read_pos: delay_samples.saturating_sub(1),
+            gain_hist: vec![1.0; delay_samples + 1],
+            gain_pos: 0,
             release_coef: one_pole(release_ms.max(5.0)),
-            gain: 1.0,
+            env: 1.0,
             delay_samples,
             release_ms,
         }
@@ -524,8 +541,9 @@ impl LookaheadLimiter {
     fn reset(&mut self) {
         self.delay.fill(0.0);
         self.write_pos = 0;
-        self.read_pos = self.delay_samples.saturating_sub(1);
-        self.gain = 1.0;
+        self.gain_hist.fill(1.0);
+        self.gain_pos = 0;
+        self.env = 1.0;
     }
 
     /// Proses satu blok. `ceiling` = linear (0.0–1.0). Kembalikan gain reduction
@@ -533,49 +551,58 @@ impl LookaheadLimiter {
     #[inline]
     fn process(&mut self, samples: &mut [f32], ceiling: f32) -> f32 {
         let mut max_reduction_db = 0.0f32;
+        let ceiling = ceiling.clamp(0.0, 1.0);
 
         for x in samples.iter_mut() {
-            // Tuliskan sample ke delay line.
+            // Baca sample tertua sebelum slot ditimpa sample baru (delay penuh).
+            let delayed = self.delay[self.write_pos];
             self.delay[self.write_pos] = *x;
             self.write_pos += 1;
             if self.write_pos == self.delay_samples {
                 self.write_pos = 0;
             }
 
-            // Baca sample yang sudah cukup jeda (lookahead).
-            let delayed = self.delay[self.read_pos];
-            self.read_pos += 1;
-            if self.read_pos == self.delay_samples {
-                self.read_pos = 0;
-            }
-
-            // Envelope: target gain agar |delayed| ≤ ceiling.
-            let level = delayed.abs();
-            let target_gain = if level > ceiling && ceiling > 0.0 {
+            // Envelope gain dari sample masuk: attack instan, release lambat.
+            let level = x.abs();
+            let target_gain = if ceiling > 0.0 && level > ceiling {
                 ceiling / level
             } else {
                 1.0
             };
-
-            // Attack cepat (gain turun): langsung ke target karena lookahead
-            // sudah tahu peak di masa depan. Release lambat (gain naik): smooth.
-            if target_gain < self.gain {
-                self.gain = target_gain; // instant attack
+            if target_gain < self.env {
+                self.env = target_gain;
             } else {
-                // release per sample
-                self.gain = target_gain + self.release_coef * (self.gain - target_gain);
+                self.env = target_gain + self.release_coef * (self.env - target_gain);
             }
-            // Gain tidak boleh melebihi 1.0 (unity).
-            self.gain = self.gain.min(1.0);
+            self.env = self.env.clamp(0.0, 1.0);
 
-            // Hitung reduction untuk metering.
-            let reduction_db = -20.0 * self.gain.log10();
+            self.gain_hist[self.gain_pos] = self.env;
+            self.gain_pos += 1;
+            if self.gain_pos == self.gain_hist.len() {
+                self.gain_pos = 0;
+            }
+
+            // Gain minimum selama window lookahead. Peak yang belum keluar
+            // sudah menahan gain sejak sekarang.
+            let mut gain = 1.0f32;
+            for &history in &self.gain_hist {
+                if history < gain {
+                    gain = history;
+                }
+            }
+
+            let reduction_db = if gain > 0.0 {
+                -20.0 * gain.log10()
+            } else {
+                96.0
+            };
             if reduction_db > max_reduction_db {
                 max_reduction_db = reduction_db;
             }
 
-            // Output = delayed sample * gain.
-            *x = delayed * self.gain;
+            // Safety: tidak ada sample yang boleh melewati ceiling.
+            let limited = delayed * gain;
+            *x = limited.clamp(-ceiling, ceiling);
         }
 
         max_reduction_db
@@ -588,17 +615,26 @@ impl Default for LookaheadLimiter {
     }
 }
 
-// ---- Compressor (Fase 5: soft-knee, per-sample gain computer) ----
+// ---- Compressor (Fase 5: soft-knee dB, per-sample gain computer) ----
+
+/// Lebar soft-knee total (dB). Kurva kuadratik menghubungkan bagian linear
+/// (di bawah threshold) dengan kurva rasio penuh.
+const COMP_KNEE_DB: f32 = 6.0;
+/// Attack: gain turun cepat saat level naik di atas threshold.
+const COMP_ATTACK_MS: f32 = 5.0;
+/// Release: gain pulih perlahan supaya tidak pumping.
+const COMP_RELEASE_MS: f32 = 50.0;
+
 struct Compressor {
-    x_g: f32,
-    x_l: f32,
+    attack_coef: f32,
+    release_coef: f32,
     gain: f32,
 }
 impl Default for Compressor {
     fn default() -> Self {
         Self {
-            x_g: 0.0,
-            x_l: 0.0,
+            attack_coef: one_pole(COMP_ATTACK_MS),
+            release_coef: one_pole(COMP_RELEASE_MS),
             gain: 1.0,
         }
     }
@@ -606,15 +642,26 @@ impl Default for Compressor {
 
 impl Compressor {
     fn configure(&mut self) {
-        // Attack 5 ms, release 50 ms. Smoothing supaya perubahan gain tidak
-        // menimbulkan klik pada level sistematik.
-        self.x_g = one_pole(5.0);
-        self.x_l = one_pole(50.0);
+        self.attack_coef = one_pole(COMP_ATTACK_MS);
+        self.release_coef = one_pole(COMP_RELEASE_MS);
+    }
+
+    fn reset(&mut self) {
+        self.gain = 1.0;
     }
 
     /// Hitung gain kompresi per-sample. Kembalikan *gain reduction* dalam dB
     /// (untuk metering) dan timpa `samples` in-place dengan gain yang
     /// di-smooth (makeup gain sudah termasuk).
+    ///
+    /// Kurva statis (dB):
+    /// - di bawah `threshold - knee/2`: gain 0 dB
+    /// - di dalam knee: `(1/ratio - 1) * (x - threshold + knee/2)^2 / (2*knee)`
+    /// - di atas `threshold + knee/2`: `(1/ratio - 1) * (x - threshold)`
+    ///
+    /// Attack dipakai saat gain **turun**, release saat gain **naik**. Versi
+    /// lama memakai koefisien attack untuk gain yang naik (dan sebaliknya),
+    /// sehingga kompresor justru "melepas" secepat attack.
     #[inline]
     fn compute_gain(
         &mut self,
@@ -623,43 +670,39 @@ impl Compressor {
         ratio: f32,
         makeup_db: f32,
     ) -> f32 {
-        let threshold = db_to_linear(threshold_db);
         let ratio = ratio.max(1.0);
-        let makeup = db_to_linear(makeup_db);
-        let knee_wide_db = 6.0; // soft-knee lebar
-        let knee = threshold / db_to_linear(knee_wide_db);
+        let makeup_db = makeup_db.clamp(-24.0, 24.0);
+        let half_knee = COMP_KNEE_DB * 0.5;
+        let slope = 1.0 / ratio - 1.0; // ≤ 0
 
         let mut max_reduction_db = 0.0f32;
 
         for x in samples.iter_mut() {
             let level = x.abs();
-            let over_db = if level > threshold {
-                // di atas threshold: kompresi penuh (hard)
-                20.0 * (level / threshold).log10()
-            } else if level > knee {
-                // zona soft-knee
-                let _f = (level - knee) / (threshold - knee);
-                let knee_width = threshold - knee;
-                let g = (2.0 * level * level - 3.0 * level * level * level + level * level * level * level) / 2.0;
-                20.0 * (g / (threshold * threshold)).max(1e-6).log10()
-            } else {
+            let level_db = 20.0 * level.max(1.0e-9).log10();
+            let over_db = level_db - threshold_db;
+
+            // Perubahan gain dalam dB (≤ 0 = reduksi).
+            let gain_db = if over_db <= -half_knee {
                 0.0
+            } else if over_db < half_knee {
+                let knee_pos = over_db + half_knee;
+                slope * knee_pos * knee_pos / (2.0 * COMP_KNEE_DB)
+            } else {
+                slope * over_db
             };
 
-            if over_db > 0.0 {
-                // Transfer curve kompresi (knee terpisah)
-                let reduction_db = over_db * (1.0 - 1.0 / ratio);
-                max_reduction_db = max_reduction_db.max(reduction_db);
-                let target_gain = db_to_linear(-reduction_db + makeup_db);
-                let coef = if target_gain > self.gain { self.x_g } else { self.x_l };
-                self.gain = target_gain + coef * (self.gain - target_gain);
-                *x *= self.gain;
+            let reduction_db = (-gain_db).max(0.0);
+            max_reduction_db = max_reduction_db.max(reduction_db);
+
+            let target_gain = db_to_linear(gain_db + makeup_db);
+            let coef = if target_gain < self.gain {
+                self.attack_coef
             } else {
-                let target_gain = makeup;
-                let coef = if target_gain > self.gain { self.x_g } else { self.x_l };
-                self.gain = target_gain + coef * (self.gain - target_gain);
-                *x *= self.gain;
-            }
+                self.release_coef
+            };
+            self.gain = target_gain + coef * (self.gain - target_gain);
+            *x *= self.gain;
         }
 
         max_reduction_db
@@ -890,6 +933,9 @@ impl MicChain {
         self.denoise.configure(&settings);
         self.gate.configure(&settings);
         self.compressor.configure();
+        if !settings.compressor_enabled {
+            self.compressor.reset();
+        }
         self.lookahead_limiter
             .configure(settings.limiter_release_ms);
     }
@@ -908,6 +954,7 @@ impl MicChain {
         self.eq_high.reset();
         self.denoise.reset();
         self.gate.reset();
+        self.compressor.reset();
         self.lookahead_limiter.reset();
         self.boost_gain = db_to_linear(self.settings.mic_boost_db);
     }
@@ -1013,13 +1060,21 @@ impl MicChain {
             0.0
         };
 
-        // ---- Lookahead Limiter (Fase 6: 4 ms lookahead + sliding envelope) ----
+        // ---- Lookahead Limiter (Fase 6: 4 ms lookahead + sliding-min) ----
         let limiter_gr_db = if settings.limiter_enabled {
             self.lookahead_limiter
                 .process(samples, db_to_linear(settings.limiter_ceiling))
         } else {
             0.0
         };
+
+        // ---- Safety ceiling (selalu) ----
+        // Menjamin output mic ≤ −0.1 dBFS walau limiter dimatikan atau ceiling
+        // di-set 0 dBFS. Gain staging setelah chain (mic_gain/master_gain) di
+        // mixer hanya 0..1, jadi ceiling ini tetap berlaku sampai output.
+        for sample in samples.iter_mut() {
+            *sample = sample.clamp(-SAFETY_CEILING, SAFETY_CEILING);
+        }
 
         MicMeters {
             input_db: to_db(input_peak),
@@ -1525,6 +1580,116 @@ mod tests {
         assert!(
             chain.denoise.vad > 0.0,
             "VAD RNNoise tidak aktif untuk sinyal voice"
+        );
+    }
+
+    /// Soft-knee: sinyal di dalam knee harus terkompresi bertahap, bukan
+    /// "dead zone" yang menghasilkan dB negatif (bug lama).
+    #[test]
+    fn compressor_soft_knee_bertahap() {
+        let mut comp = Compressor::default();
+        comp.configure();
+
+        // Threshold −20 dB, knee 6 dB. Level −18 dB = 2 dB di atas threshold,
+        // masih di dalam knee atas (0..3 dB).
+        let mut in_knee = vec![db_to_linear(-18.0); 48_000];
+        let gr_knee = comp.compute_gain(&mut in_knee, -20.0, 4.0, 0.0);
+        assert!(
+            gr_knee > 1.0 && gr_knee < 2.2,
+            "GR di dalam knee harus bertahap (~1.6 dB), dapat {gr_knee:.2} dB"
+        );
+
+        // Di bawah knee bawah (threshold − knee/2 = −23 dB) tidak ada reduksi.
+        let mut below = Compressor::default();
+        below.configure();
+        let mut quiet = vec![db_to_linear(-24.0); 48_000];
+        let gr_quiet = below.compute_gain(&mut quiet, -20.0, 4.0, 0.0);
+        assert!(
+            gr_quiet < 0.1,
+            "sinyal di bawah knee tidak boleh terkompresi, dapat {gr_quiet:.2} dB"
+        );
+
+        // Di atas knee: kurva rasio penuh. −8 dB = 12 dB di atas threshold,
+        // 4:1 -> 9 dB reduction.
+        let mut above = Compressor::default();
+        above.configure();
+        let mut loud = vec![db_to_linear(-8.0); 48_000];
+        let gr_above = above.compute_gain(&mut loud, -20.0, 4.0, 0.0);
+        assert!(
+            (gr_above - 9.0).abs() < 0.3,
+            "GR di atas knee harus ~9 dB, dapat {gr_above:.2} dB"
+        );
+    }
+
+    /// Attack (gain turun) harus lebih cepat daripada release (gain naik).
+    #[test]
+    fn compressor_attack_lebih_cepat_dari_release() {
+        let mut comp = Compressor::default();
+        comp.configure();
+        assert!(
+            comp.attack_coef < comp.release_coef,
+            "koefisien attack harus lebih kecil (lebih cepat) dari release"
+        );
+
+        // Burst keras 100 ms: gain harus sudah turun mendekati target.
+        let mut loud = vec![db_to_linear(-6.0); 4_800];
+        comp.compute_gain(&mut loud, -30.0, 4.0, 0.0);
+        let gain_after_attack = comp.gain;
+        assert!(
+            gain_after_attack < 0.2,
+            "attack terlalu lambat, gain masih {gain_after_attack:.3}"
+        );
+
+        // 50 ms senyap: release hanya memulihkan sebagian (bukan instan).
+        let mut quiet = vec![1.0e-6f32; 2_400];
+        comp.compute_gain(&mut quiet, -30.0, 4.0, 0.0);
+        assert!(
+            comp.gain > 0.2 && comp.gain < 0.9,
+            "release harus bertahap, gain {:.3}",
+            comp.gain
+        );
+    }
+
+    /// True lookahead: gain sudah turun untuk sample yang keluar sebelum peak
+    /// (versi lama hanya menunda audio tanpa melihat peak di masa depan).
+    #[test]
+    fn limiter_lookahead_menahan_gain_sebelum_peak() {
+        let ceiling = db_to_linear(-6.0);
+        let mut limiter = LookaheadLimiter::new(50.0);
+
+        let mut buffer = vec![0.2f32; 2_000];
+        buffer[500] = 2.0; // +6 dB di atas 0 dBFS
+
+        let gr = limiter.process(&mut buffer, ceiling);
+
+        // Output index 500 berasal dari input 308 (level 0.2). Karena peak di
+        // index 500 sudah diketahui, gain di index 500 harus sudah turun.
+        assert!(
+            buffer[500] < 0.1,
+            "lookahead tidak menahan gain sebelum peak: out {:.4}",
+            buffer[500]
+        );
+        let peak = buffer.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        assert!(
+            peak <= ceiling * 1.001,
+            "peak {peak:.4} melebihi ceiling {ceiling:.4}"
+        );
+        assert!(gr > 10.0, "GR limiter terlalu kecil: {gr:.1} dB");
+    }
+
+    /// Safety ceiling selalu aktif, termasuk saat limiter dimatikan.
+    #[test]
+    fn safety_ceiling_menjaga_output_tanpa_limiter() {
+        let mut settings = base_settings();
+        settings.limiter_enabled = false;
+        let mut chain = MicChain::new(settings);
+
+        let mut samples = vec![2.0f32; 4_800];
+        chain.process(&mut samples);
+        let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+        assert!(
+            peak <= SAFETY_CEILING + 1.0e-6,
+            "output {peak:.4} melewati safety ceiling {SAFETY_CEILING:.4}"
         );
     }
 }
