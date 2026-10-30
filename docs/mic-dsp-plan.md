@@ -12,15 +12,15 @@ Status: disetujui 2026-10-28. Eksekusi per fase dengan checkpoint commit.
 | 3 - Denoise | selesai (batch 1) | `45521dc` |
 | 4 - EQ biquad | selesai (batch 1) | `45521dc` |
 | 5 - Compressor | selesai (batch 2) | - |
-| 6 - Limiter | selesai (batch 2) | - |
-| 7 - Preset & QA | belum | - |
+| 6 - Limiter | selesai (batch 2) | `c7a98ae` |
+| 7 - Preset & QA | sebagian — QA otomatis selesai (latensi, CPU, 44.1 kHz); hot-plug & fixture rekaman asli pending | batch 4 |
 
 ## Keputusan final
 
 | Topik | Keputusan |
 |---|---|
 | Urutan chain | `HPF 80 Hz → Notch (off/50/100/150) → RNNoise → Gate → Boost (dB) → EQ → Compressor → Limiter → safety clamp` |
-| Target latensi | DSP < 20 ms. Prefill output 240 ms dipertahankan; end-to-end diukur terpisah |
+| Target latensi | DSP 24 ms saat denoise aktif (RNNoise 2 frame = 20 ms + lookahead limiter 4 ms); 4 ms saat denoise off. Target < 20 ms hanya mungkin dengan denoise mati — diterima karena RNNoise memang butuh minimal dua frame. Prefill output 240 ms dipertahankan; end-to-end diukur terpisah |
 | Checkpoint | Commit + acceptance test di akhir setiap fase, lalu tes manual |
 | Default | Gate off, Denoise off, Limiter on, Boost +6 dB, HPF selalu on |
 | Arsitektur | DSP di mixer thread (bukan callback cpal), parameter lewat crossbeam, tanpa alokasi di `process()` |
@@ -172,6 +172,21 @@ Acceptance: input +12 dB di atas ceiling tidak pernah melewati ceiling; THD < 1%
 - Ukur CPU dan latensi DSP; uji 44.1/48 kHz; hot-plug.
 
 Acceptance: CPU < 5% satu core; latensi DSP < 20 ms; preset terukur; `npm test` tetap 39/43 (4 kegagalan BLE/firmware yang diketahui).
+
+### Fase 7 — hasil QA (batch 4)
+
+| Item | Hasil | Cara ukur |
+|---|---|---|
+| Latensi DSP, denoise + limiter | **1152 sample = 24 ms** | test `latensi_dsp_denoise_dan_limiter_sekitar_24ms` (onset tone) |
+| Latensi DSP, denoise off (limiter saja) | **192 sample = 4 ms** | test `latensi_dsp_tanpa_denoise_hanya_lookahead_limiter` |
+| Latensi DSP, rantai dasar (DSP off) | < 1,4 ms | test `latensi_dsp_rantai_dasar_hampir_nol` |
+| CPU, full chain (denoise+filter+gate+comp+limiter), release | rtf 0,0106 (noise 5 s) / 0,0118 (speech 4 s) → **≈ 1–1,2% satu core** | `cargo run --release --example mic_offline -- <fixture> out.wav --gate -40 --comp --json` |
+| 44.1 kHz input mic → 48 kHz | durasi & pitch terjaga (440 Hz), amplitude utuh | test `offline_44100_ke_48000_mempertahankan_durasi_dan_pitch`, `stream_44100_ke_48000_total_frame_sesuai_rasio` |
+| 44.1 kHz device output (48 kHz ring → 44.1 kHz) | konsumsi ring sesuai rasio 48000/44100, tanpa underrun | test `output_44100_mengonsumsi_ring_sesuai_rasio_48k` |
+| Hot-plug | **belum diuji** — butuh perangkat fisik (cabut/pasang mic & output saat app jalan) | manual |
+| Fixture rekaman asli (`noise_only`, `speech_only`, `speech_noise`) | **belum tersedia** | manual |
+
+Catatan latensi: target < 20 ms tidak tercapai saat denoise aktif karena RNNoise memproses per frame 10 ms dan butuh dua frame (buffering + lag internal). Tanpa denoise, target terpenuhi (4 ms).
 
 ## Harness offline
 

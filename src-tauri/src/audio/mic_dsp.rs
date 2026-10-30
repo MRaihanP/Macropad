@@ -1106,16 +1106,17 @@ mod tests {
     }
 
     fn base_settings() -> MicSettings {
-        let mut settings = MicSettings::default();
-        settings.mic_boost_db = 0.0;
-        settings.hum_notch_hz = 0.0;
-        settings.noise_gate_enabled = false;
-        settings.denoise_enabled = false;
-        settings.noise_filter_enabled = false;
-        settings.compressor_enabled = false;
-        settings.equalizer_enabled = false;
-        settings.limiter_enabled = false;
-        settings
+        MicSettings {
+            mic_boost_db: 0.0,
+            hum_notch_hz: 0.0,
+            noise_gate_enabled: false,
+            denoise_enabled: false,
+            noise_filter_enabled: false,
+            compressor_enabled: false,
+            equalizer_enabled: false,
+            limiter_enabled: false,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1690,6 +1691,89 @@ mod tests {
         assert!(
             peak <= SAFETY_CEILING + 1.0e-6,
             "output {peak:.4} melewati safety ceiling {SAFETY_CEILING:.4}"
+        );
+    }
+
+    /// Ukur latensi DSP secara empiris (QA Fase 7).
+    ///
+    /// Masukkan senyap lalu tone 1 kHz, lalu cari sample pertama output yang
+    /// melewati 30% level steady-state. Selisih onset output vs onset input
+    /// (dengan ambang yang sama) adalah delay chain dalam sample.
+    fn ukur_latensi_sampel(settings: MicSettings) -> usize {
+        const TOTAL: usize = 48_000; // 1 s
+        const ONSET: usize = 9_600; // tone mulai di 200 ms
+        let mut input = vec![0.0f32; TOTAL];
+        for (i, sample) in input.iter_mut().enumerate().skip(ONSET) {
+            let t = (i - ONSET) as f32 / SAMPLE_RATE;
+            *sample = 0.3 * (std::f32::consts::TAU * 1_000.0 * t).sin();
+        }
+
+        let mut output = input.clone();
+        let mut chain = MicChain::new(settings);
+        for block in output.chunks_mut(DENOISE_FRAME) {
+            chain.process(block);
+        }
+
+        // Level steady-state di tengah tone (semua ramp sudah selesai).
+        let steady = rms(&output[ONSET + 4_800..ONSET + 9_600]);
+        let threshold = (steady * 0.3).max(1.0e-4);
+        let in_onset = input
+            .iter()
+            .position(|s| s.abs() > threshold)
+            .expect("input tidak pernah melewati ambang");
+        let out_onset = output
+            .iter()
+            .position(|s| s.abs() > threshold)
+            .expect("output tidak pernah melewati ambang");
+        out_onset.saturating_sub(in_onset)
+    }
+
+    /// Denoise (2 frame = 960) + limiter lookahead (192) = 1152 sample = 24 ms.
+    /// Ini angka QA yang terdokumentasi: target < 20 ms tidak tercapai saat
+    /// denoise aktif karena RNNoise butuh minimal dua frame.
+    #[test]
+    fn latensi_dsp_denoise_dan_limiter_sekitar_24ms() {
+        let settings = MicSettings {
+            noise_gate_enabled: false,
+            compressor_enabled: false,
+            equalizer_enabled: false,
+            ..Default::default()
+        };
+
+        let latency = ukur_latensi_sampel(settings);
+        assert!(
+            (1_100..=1_250).contains(&latency),
+            "latensi denoise+limiter {latency} sample ({:.1} ms), harap ~1152",
+            latency as f32 * 1000.0 / SAMPLE_RATE
+        );
+    }
+
+    /// Tanpa denoise hanya ada lookahead limiter (192 sample = 4 ms).
+    #[test]
+    fn latensi_dsp_tanpa_denoise_hanya_lookahead_limiter() {
+        let settings = MicSettings {
+            denoise_enabled: false,
+            noise_gate_enabled: false,
+            compressor_enabled: false,
+            equalizer_enabled: false,
+            ..Default::default()
+        };
+
+        let latency = ukur_latensi_sampel(settings);
+        assert!(
+            (150..=280).contains(&latency),
+            "latensi limiter {latency} sample ({:.1} ms), harap ~192",
+            latency as f32 * 1000.0 / SAMPLE_RATE
+        );
+    }
+
+    /// Chain dasar (semua DSP mati) tidak boleh menambah delay signifikan.
+    #[test]
+    fn latensi_dsp_rantai_dasar_hampir_nol() {
+        let latency = ukur_latensi_sampel(base_settings());
+        assert!(
+            latency <= 64,
+            "rantai dasar menambah {latency} sample delay"
         );
     }
 }

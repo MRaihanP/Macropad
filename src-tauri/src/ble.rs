@@ -295,7 +295,7 @@ impl BleTransport {
         let id = device_info
             .Id()
             .map_err(|e| format!("Gagal get device id: {}", e))?;
-        eprintln!("[ble-trace] connect ke id={}", id.to_string());
+        eprintln!("[ble-trace] connect ke id={}", id);
         let device = block_on_winrt(BluetoothLEDevice::FromIdAsync(&id))
             .map_err(|e| format!("Gagal connect BLE: {}", e))?;
         eprintln!("[ble-trace] FromIdAsync OK, status={:?}", device.ConnectionStatus());

@@ -414,3 +414,37 @@ where
         )
         .map_err(|e| format!("gagal build input stream: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::ring::SpscRing;
+
+    /// QA Fase 7: perangkat output 44.1 kHz (bukan 48 kHz) harus mengambil
+    /// frame dari ring 48 kHz sesuai rasio, tanpa underrun saat data cukup.
+    #[test]
+    fn output_44100_mengonsumsi_ring_sesuai_rasio_48k() {
+        let ring = SpscRing::new(1 << 18);
+        // 1 detik stereo 48 kHz: L = +0.5, R = -0.5.
+        let frames: Vec<f32> = (0..48_000).flat_map(|_| [0.5f32, -0.5f32]).collect();
+        assert_eq!(ring.push(&frames), 96_000, "ring harus menampung 1 s stereo");
+
+        let mut resampler = LinearResampler::new(44_100);
+        let out_frames = 4_410; // 100 ms @ 44.1 kHz
+        let mut data = vec![0.0f32; out_frames * 2];
+        let underrun = write_output(&mut data, 2, 44_100, &ring, &mut resampler);
+        assert!(!underrun, "ring harusnya cukup untuk 100 ms output");
+
+        let consumed_frames = (96_000 - ring.len()) / 2;
+        // 4410 frame @ 44.1 kHz ≈ 4800 frame @ 48 kHz.
+        assert!(
+            (consumed_frames as i64 - 4_800).abs() <= 16,
+            "konsumsi {consumed_frames} frame, harap ~4800"
+        );
+        assert!(
+            data.iter()
+                .all(|s| (*s - 0.5).abs() < 1.0e-3 || (*s + 0.5).abs() < 1.0e-3),
+            "polaritas/sinyal output rusak"
+        );
+    }
+}

@@ -248,7 +248,7 @@ pub fn audio_apply_mic_preset(engine: State<'_, AudioEngine>, id: String) -> Res
         .into_iter()
         .find(|p| p.id == id)
         .ok_or_else(|| format!("preset mic tidak dikenal: {id}"))?;
-    engine.set_mic_pre(preset.settings.clone())?;
+    engine.set_mic_pre(preset.settings)?;
     Ok(preset.settings)
 }
 

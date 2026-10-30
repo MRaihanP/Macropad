@@ -278,20 +278,6 @@ impl Mixer {
         }
     }
 
-/// Susun satu blok stereo monitor dengan koreksi drift yang mulus.
-///
-/// - `Normal`  : tulis `block` apa adanya (tanpa perubahan).
-/// - `Stretch` : sisipkan `DRIFT_FADE_FRAMES` hasil crossfade `prev -> block[0]`
-///               sebelum blok, sehingga durasi bertambah ~2 ms (monitor
-///               kekurangan data). Ujung crossfade mendekati `block[0]`, jadi
-///               sambungan ke blok tetap kontinu.
-/// - `Shrink`  : buang `DRIFT_FADE_FRAMES` pertama dari blok lalu crossfade
-///               `prev -> rest[0]`, sehingga durasi berkurang ~2 ms (monitor
-///               kelebihan data).
-///
-/// `prev` adalah frame stereo terakhir yang sudah ditulis ke ring; fungsi
-/// mengembalikan frame stereo terakhir yang tertulis untuk iterasi berikutnya.
-/// `out` dipakai ulang (capacity cukup) supaya tidak alokasi per blok.
     /// Kembalikan false kalau mixer harus berhenti.
     fn drain_commands(&mut self) -> bool {
         loop {
@@ -583,10 +569,10 @@ impl Mixer {
 ///
 /// - `Normal`  : tulis `block` apa adanya.
 /// - `Stretch` : sisipkan `DRIFT_FADE_FRAMES` hasil crossfade `prev -> block[0]`
-///               sebelum blok (durasi +~2 ms). Ujung crossfade mendekati
-///               `block[0]`, sehingga sambungan ke blok tetap kontinu.
+///   sebelum blok (durasi +~2 ms). Ujung crossfade mendekati
+///   `block[0]`, sehingga sambungan ke blok tetap kontinu.
 /// - `Shrink`  : buang `DRIFT_FADE_FRAMES` pertama dari blok, lalu crossfade
-///               `prev -> rest[0]` (durasi −~2 ms).
+///   `prev -> rest[0]` (durasi −~2 ms).
 ///
 /// `prev` adalah frame stereo terakhir yang sudah ditulis ke ring. Fungsi
 /// mengembalikan frame stereo terakhir yang tertulis untuk iterasi berikutnya.
@@ -648,13 +634,7 @@ fn soft_clip(sample: f32) -> f32 {
     // pada sound effect yang hampir clip, terutama bila master_gain>1.
     // Hard clip di 1.0 hanya berdampak pada sinyal yang benar-benar melampaui
     // ceiling digital — untuk sfx yang sudah within range, tanpa distorsi.
-    if sample > 1.0 {
-        1.0
-    } else if sample < -1.0 {
-        -1.0
-    } else {
-        sample
-    }
+    sample.clamp(-1.0, 1.0)
 }
 
 #[cfg(test)]
@@ -675,9 +655,10 @@ mod tests {
 
     /// Lonjakan maksimum antar sample bertetangga (klik = lonjakan besar).
     fn max_step(samples: &[f32]) -> f32 {
-        samples
-            .chunks_exact(2)
-            .zip(samples.chunks_exact(2).skip(1))
+        let frames = samples.as_chunks::<2>().0;
+        frames
+            .iter()
+            .zip(frames.iter().skip(1))
             .map(|(a, b)| (b[0] - a[0]).abs().max((b[1] - a[1]).abs()))
             .fold(0.0f32, f32::max)
     }
@@ -751,8 +732,10 @@ mod tests {
     fn monitor_sfx_only_dibaca_dari_settings_bukan_hardcoded() {
         // Regression: engine dulu selalu mengirim `monitor_sfx_only: false` ke
         // MixerSettings meskipun settings menyimpan `true`.
-        let mut settings = AudioSettings::default();
-        settings.monitor_sfx_only = true;
+        let settings = AudioSettings {
+            monitor_sfx_only: true,
+            ..Default::default()
+        };
         assert!(settings.monitor_sfx_only);
 
         // AudioState yang dipublish juga harus membawa nilai yang sama.

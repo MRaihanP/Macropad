@@ -300,15 +300,17 @@ mod tests {
 
     #[test]
     fn sanitize_menolak_nan_dan_clamp_rentang() {
-        let mut s = MicSettings::default();
-        s.mic_boost_db = f32::NAN;
-        s.hum_notch_hz = 77.0;
-        s.noise_gate_threshold = -200.0;
-        s.noise_gate_hold_ms = -5.0;
-        s.noise_gate_range_db = 12.0; // positif = salah, harus negatif
-        s.noise_gate_hysteresis_db = 99.0;
-        s.equalizer_low = 100.0;
-        s.limiter_ceiling = 3.0;
+        let mut s = MicSettings {
+            mic_boost_db: f32::NAN,
+            hum_notch_hz: 77.0,
+            noise_gate_threshold: -200.0,
+            noise_gate_hold_ms: -5.0,
+            noise_gate_range_db: 12.0, // positif = salah, harus negatif
+            noise_gate_hysteresis_db: 99.0,
+            equalizer_low: 100.0,
+            limiter_ceiling: 3.0,
+            ..Default::default()
+        };
 
         s.sanitize();
 
@@ -324,9 +326,11 @@ mod tests {
 
     #[test]
     fn sanitize_memilih_notch_terdekat() {
-        let mut s = MicSettings::default();
+        let mut s = MicSettings {
+            hum_notch_hz: -10.0,
+            ..Default::default()
+        };
 
-        s.hum_notch_hz = -10.0;
         s.sanitize();
         assert_eq!(s.hum_notch_hz, 0.0);
 
@@ -381,9 +385,11 @@ mod tests {
 
     #[test]
     fn sanitize_denoise_mix_di_clamp_0_sampai_1() {
-        let mut s = MicSettings::default();
+        let mut s = MicSettings {
+            denoise_mix: f32::NAN,
+            ..Default::default()
+        };
 
-        s.denoise_mix = f32::NAN;
         s.sanitize();
         assert_eq!(s.denoise_mix, MicSettings::default().denoise_mix);
 

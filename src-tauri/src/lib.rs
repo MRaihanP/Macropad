@@ -1921,7 +1921,6 @@ pub fn run() {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::{
         find_app, language_of, normalize_color, normalize_tags, normalize_trim, system_locale,

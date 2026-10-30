@@ -505,7 +505,7 @@ mod tests {
         // LEN = 513. Byte sisanya sengaja berisi 0xA5 supaya decoder yang salah
         // akan membingkai frame palsu dari sisa payload.
         let mut bytes = vec![SOF, VER, T_CFG_WRITE, 0x01, 0x02];
-        bytes.extend(std::iter::repeat(0xa5).take(513));
+        bytes.extend(std::iter::repeat_n(0xa5, 513));
         bytes.extend_from_slice(&encode(T_CFG_QUERY, &[]));
 
         let mut d = FrameDecoder::new();

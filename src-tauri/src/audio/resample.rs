@@ -147,3 +147,97 @@ impl StreamResampler {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine(freq: f32, rate: u32, samples: usize) -> Vec<f32> {
+        (0..samples)
+            .map(|i| (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin())
+            .collect()
+    }
+
+    /// Perkiraan frekuensi dari jumlah zero-crossing naik, hanya pada bagian
+    /// tengah sinyal. Awal output resampler berisi ~320 sample senyap
+    /// (latensi internal FFT) yang kalau ikut dihitung akan menambah
+    /// crossing palsu dari noise numerik.
+    fn freq_from_crossings(samples: &[f32], rate: u32) -> f32 {
+        let start = samples.len() / 8;
+        let end = samples.len() * 7 / 8;
+        let mid = &samples[start..end];
+        let crossings = mid.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        crossings as f32 * rate as f32 / mid.len().max(1) as f32
+    }
+
+    /// QA Fase 7: input mic 44.1 kHz di-resample ke 48 kHz tanpa mengubah
+    /// durasi maupun pitch.
+    #[test]
+    fn offline_44100_ke_48000_mempertahankan_durasi_dan_pitch() {
+        let input = sine(440.0, 44_100, 44_100); // 1 detik
+        let out = resample_interleaved(&input, 1, 44_100, ENGINE_SAMPLE_RATE).unwrap();
+
+        assert!(
+            out.len().abs_diff(ENGINE_SAMPLE_RATE as usize) <= 32,
+            "panjang {} tidak mendekati 48000",
+            out.len()
+        );
+        let freq = freq_from_crossings(&out, ENGINE_SAMPLE_RATE);
+        assert!(
+            (freq - 440.0).abs() < 3.0,
+            "pitch bergeser: {freq:.1} Hz"
+        );
+        // Amplitudo di tengah sinyal harus tetap ~0.707 RMS (sine penuh).
+        let mid = &out[out.len() / 4..out.len() * 3 / 4];
+        let rms = (mid.iter().map(|s| s * s).sum::<f32>() / mid.len() as f32).sqrt();
+        assert!(
+            (rms - 0.707).abs() < 0.05,
+            "amplitudo berubah: rms {rms:.3}"
+        );
+        assert!(out.iter().all(|s| s.is_finite()), "output mengandung NaN");
+    }
+
+    /// Input 48 kHz tidak boleh diubah sama sekali (fast path).
+    #[test]
+    fn offline_48000_ke_48000_passthrough() {
+        let input = sine(1_000.0, 48_000, 2_400);
+        let out = resample_interleaved(&input, 1, 48_000, 48_000).unwrap();
+        assert_eq!(out, input);
+    }
+
+    /// StreamResampler dipakai MicWorker; feeding chunk kecil harus
+    /// menghasilkan total frame sesuai rasio 44.1 → 48 kHz.
+    #[test]
+    fn stream_44100_ke_48000_total_frame_sesuai_rasio() {
+        let input = sine(440.0, 44_100, 44_100);
+        let mut resampler = StreamResampler::new(44_100, ENGINE_SAMPLE_RATE, 1).unwrap();
+
+        let mut out = Vec::new();
+        for chunk in input.chunks(350) {
+            resampler.push(chunk);
+            out.extend(resampler.process().unwrap());
+        }
+
+        let expected = ENGINE_SAMPLE_RATE as usize;
+        assert!(
+            out.len().abs_diff(expected) <= 2_048,
+            "output {} frame, harap ~{expected}",
+            out.len()
+        );
+        let freq = freq_from_crossings(&out, ENGINE_SAMPLE_RATE);
+        assert!(
+            (freq - 440.0).abs() < 5.0,
+            "pitch bergeser setelah streaming: {freq:.1} Hz"
+        );
+    }
+
+    /// Rate sama: StreamResampler harus meneruskan data apa adanya.
+    #[test]
+    fn stream_rate_sama_passthrough() {
+        let input = sine(1_000.0, 48_000, 1_024);
+        let mut resampler = StreamResampler::new(48_000, ENGINE_SAMPLE_RATE, 1).unwrap();
+        resampler.push(&input);
+        let out = resampler.process().unwrap();
+        assert_eq!(out, input);
+    }
+}
