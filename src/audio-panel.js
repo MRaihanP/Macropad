@@ -462,6 +462,12 @@ function applyState(state) {
   }
 
   if ($('audioMonitorToggle')) $('audioMonitorToggle').checked = !!state.monitorEnabled;
+  if ($('audioMonitorSfxOnly')) {
+    const sfxOnlyToggle = $('audioMonitorSfxOnly');
+    if (document.activeElement !== sfxOnlyToggle) {
+      sfxOnlyToggle.checked = !!state.monitorSfxOnly;
+    }
+  }
   if ($('audioMicToggle')) $('audioMicToggle').checked = !!state.micEnabled;
   if ($('audioMicMute')) $('audioMicMute').checked = !!state.micMuted;
   if ($('audioSfxMute')) $('audioSfxMute').checked = !!state.sfxMuted;

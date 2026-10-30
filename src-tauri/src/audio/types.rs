@@ -55,6 +55,8 @@ pub struct AudioState {
     pub monitor_device: String,
     pub monitor_enabled: bool,
     pub monitor_volume: f32,
+    /// Monitor hanya memutar soundboard (tanpa mic).
+    pub monitor_sfx_only: bool,
     pub mic_device: String,
     pub mic_enabled: bool,
     pub mic_gain: f32,

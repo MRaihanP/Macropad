@@ -220,7 +220,7 @@ impl Drop for AudioEngine {
     }
 }
 
-fn state_from_settings(settings: &AudioSettings) -> AudioState {
+pub(crate) fn state_from_settings(settings: &AudioSettings) -> AudioState {
     AudioState {
         cable_device: settings.cable_device.clone(),
         cable_auto: settings.cable_device.trim().is_empty(),
@@ -228,6 +228,7 @@ fn state_from_settings(settings: &AudioSettings) -> AudioState {
         monitor_device: settings.monitor_device.clone(),
         monitor_enabled: settings.monitor_enabled,
         monitor_volume: settings.monitor_volume,
+        monitor_sfx_only: settings.monitor_sfx_only,
         mic_device: settings.mic_device.clone(),
         mic_enabled: settings.mic_enabled,
         mic_gain: settings.mic_gain,
@@ -367,7 +368,7 @@ impl Engine {
                 monitor_volume: settings.monitor_volume,
                 mic_muted: settings.mic_muted,
                 sfx_muted: settings.sfx_muted,
-                monitor_sfx_only: false,
+                monitor_sfx_only: settings.monitor_sfx_only,
                 monitor_enabled: settings.monitor_enabled,
                 mode: PlayMode::parse(&settings.mode),
                 mic_pre: settings.mic_pre,
@@ -521,7 +522,9 @@ impl Engine {
                 let _ = reply.send(result);
             }
             EngineCommand::SetMonitorSfxOnly { only } => {
+                self.settings.monitor_sfx_only = only;
                 let _ = self.mixer_tx.send(MixerCommand::SetMonitorSfxOnly(only));
+                self.dirty = true;
             }
             EngineCommand::SetMic {
                 device,
@@ -835,6 +838,7 @@ impl Engine {
             monitor_device: self.settings.monitor_device.clone(),
             monitor_enabled: self.settings.monitor_enabled,
             monitor_volume: self.settings.monitor_volume,
+            monitor_sfx_only: self.settings.monitor_sfx_only,
             mic_device: self.settings.mic_device.clone(),
             mic_enabled: self.settings.mic_enabled,
             mic_gain: self.settings.mic_gain,

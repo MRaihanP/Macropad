@@ -23,6 +23,9 @@ pub struct AudioSettings {
     pub monitor_device: String,
     pub monitor_enabled: bool,
     pub monitor_volume: f32,
+    /// Monitor hanya memutar soundboard (tanpa mic). Berguna untuk testing
+    /// supaya mic tidak masuk speaker tapi tetap masuk Discord.
+    pub monitor_sfx_only: bool,
     pub mic_device: String,
     pub mic_enabled: bool,
     pub mic_gain: f32,
@@ -183,6 +186,7 @@ impl Default for AudioSettings {
             monitor_device: String::new(),
             monitor_enabled: true,
             monitor_volume: 1.0,
+            monitor_sfx_only: false,
             mic_device: String::new(),
             mic_enabled: false,
             mic_gain: 1.0,

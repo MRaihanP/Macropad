@@ -26,6 +26,26 @@ const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 60 / 1000; // 60 ms stereo
 const RENDER_QUANTUM: usize = 2;
 const TONE_FADE_FRAMES: u64 = 480;
 
+// Monitor drift correction. Fade pendek (2 ms) dipakai saat menyisipkan /
+// membuang sample supaya clock monitor yang sedikit melenceng tidak
+// menghasilkan klik akibat splice blok 20 ms utuh.
+const DRIFT_FADE_FRAMES: usize = 96; // 2 ms stereo
+// Level target ring monitor. Di bawah ini monitor kekurangan data (clock
+// lebih cepat), di atas ini kelebihan (clock lebih lambat).
+const MONITOR_LOW: usize = PREFILL_SAMPLES / 2;
+const MONITOR_HIGH: usize = PREFILL_SAMPLES * 3 / 2;
+
+/// Mode koreksi drift jam monitor terhadap mixer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DriftMode {
+    /// Kecepatan cocok: tulis blok apa adanya.
+    Normal,
+    /// Monitor kekurangan data: sisipkan ~2 ms supaya tidak starvation.
+    Stretch,
+    /// Monitor kelebihan data: buang ~2 ms supaya tidak overflow.
+    Shrink,
+}
+
 pub struct Counters {
     pub cable_underruns: Arc<AtomicU64>,
     pub monitor_underruns: Arc<AtomicU64>,
@@ -180,6 +200,10 @@ impl Mixer {
         let mut mic = vec![0.0f32; BLOCK_FRAMES];
         let mut cable_out = vec![0.0f32; BLOCK_FRAMES * 2];
         let mut monitor_out = vec![0.0f32; BLOCK_FRAMES * 2];
+        // Buffer susun drift monitor (dipakai ulang) + frame terakhir yang
+        // sudah ditulis, untuk menjaga crossfade kontinu antar blok.
+        let mut monitor_scratch: Vec<f32> = Vec::with_capacity(BLOCK_FRAMES * 4);
+        let mut monitor_prev = [0.0f32; 2];
 
         loop {
             if !self.drain_commands() {
@@ -189,16 +213,19 @@ impl Mixer {
             let cable_on = self.cable_active.load(Ordering::Acquire);
             let monitor_on = self.monitor_active.load(Ordering::Acquire) && self.monitor_enabled;
             if !cable_on && !monitor_on {
+                // Monitor baru mati: reset frame terakhir supaya saat dinyalakan
+                // lagi crossfade dimulai dari senyap, bukan sample basi.
+                monitor_prev = [0.0, 0.0];
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
 
-            let fill = if cable_on {
-                self.cable_ring.len()
-            } else {
-                self.monitor_ring.len()
-            };
-            if fill >= PREFILL_SAMPLES {
+            // Render hanya bila ADA satu ring yang masih di bawah prefill.
+            // Sebelumnya hanya `cable_ring` yang dicek, sehingga saat cable
+            // penuh tapi monitor kosong, monitor kehabisan data (underrun).
+            let cable_fill = if cable_on { self.cable_ring.len() } else { PREFILL_SAMPLES };
+            let monitor_fill = if monitor_on { self.monitor_ring.len() } else { PREFILL_SAMPLES };
+            if cable_fill >= PREFILL_SAMPLES && monitor_fill >= PREFILL_SAMPLES {
                 std::thread::sleep(Duration::from_millis(2));
                 continue;
             }
@@ -219,15 +246,23 @@ impl Mixer {
                     let _ = self.cable_ring.push(&cable_out);
                 }
                 if monitor_on {
-                    // Koreksi drift jam monitor: buang blok kalau terlalu penuh,
-                    // duplikasi blok kalau hampir kosong.
+                    // Koreksi drift jam monitor dengan crossfade pendek, bukan
+                    // splice blok 20 ms utuh (yang menimbulkan klik).
                     let fill = self.monitor_ring.len();
-                    if fill < PREFILL_SAMPLES * 3 / 2 {
-                        let _ = self.monitor_ring.push(&monitor_out);
-                        if fill < PREFILL_SAMPLES / 4 {
-                            let _ = self.monitor_ring.push(&monitor_out);
-                        }
-                    }
+                    let mode = if fill < MONITOR_LOW {
+                        DriftMode::Stretch
+                    } else if fill > MONITOR_HIGH {
+                        DriftMode::Shrink
+                    } else {
+                        DriftMode::Normal
+                    };
+                    monitor_prev = build_monitor_block(
+                        monitor_prev,
+                        &monitor_out,
+                        mode,
+                        &mut monitor_scratch,
+                    );
+                    let _ = self.monitor_ring.push(&monitor_scratch);
                 }
 
                 // Reset buffer untuk iterasi berikutnya.
@@ -243,6 +278,20 @@ impl Mixer {
         }
     }
 
+/// Susun satu blok stereo monitor dengan koreksi drift yang mulus.
+///
+/// - `Normal`  : tulis `block` apa adanya (tanpa perubahan).
+/// - `Stretch` : sisipkan `DRIFT_FADE_FRAMES` hasil crossfade `prev -> block[0]`
+///               sebelum blok, sehingga durasi bertambah ~2 ms (monitor
+///               kekurangan data). Ujung crossfade mendekati `block[0]`, jadi
+///               sambungan ke blok tetap kontinu.
+/// - `Shrink`  : buang `DRIFT_FADE_FRAMES` pertama dari blok lalu crossfade
+///               `prev -> rest[0]`, sehingga durasi berkurang ~2 ms (monitor
+///               kelebihan data).
+///
+/// `prev` adalah frame stereo terakhir yang sudah ditulis ke ring; fungsi
+/// mengembalikan frame stereo terakhir yang tertulis untuk iterasi berikutnya.
+/// `out` dipakai ulang (capacity cukup) supaya tidak alokasi per blok.
     /// Kembalikan false kalau mixer harus berhenti.
     fn drain_commands(&mut self) -> bool {
         loop {
@@ -530,6 +579,68 @@ impl Mixer {
     }
 }
 
+/// Susun satu blok stereo monitor dengan koreksi drift yang mulus.
+///
+/// - `Normal`  : tulis `block` apa adanya.
+/// - `Stretch` : sisipkan `DRIFT_FADE_FRAMES` hasil crossfade `prev -> block[0]`
+///               sebelum blok (durasi +~2 ms). Ujung crossfade mendekati
+///               `block[0]`, sehingga sambungan ke blok tetap kontinu.
+/// - `Shrink`  : buang `DRIFT_FADE_FRAMES` pertama dari blok, lalu crossfade
+///               `prev -> rest[0]` (durasi −~2 ms).
+///
+/// `prev` adalah frame stereo terakhir yang sudah ditulis ke ring. Fungsi
+/// mengembalikan frame stereo terakhir yang tertulis untuk iterasi berikutnya.
+/// `out` dipakai ulang (sudah cukup capacity) supaya tidak alokasi per blok.
+fn build_monitor_block(
+    prev: [f32; 2],
+    block: &[f32],
+    mode: DriftMode,
+    out: &mut Vec<f32>,
+) -> [f32; 2] {
+    out.clear();
+    let frames = block.len() / 2;
+    let fade = DRIFT_FADE_FRAMES.min(frames.saturating_sub(1)).max(1);
+
+    match mode {
+        DriftMode::Normal => {
+            out.extend_from_slice(block);
+        }
+        DriftMode::Stretch => {
+            let first = [block[0], block[1]];
+            for i in 0..fade {
+                let t = (i + 1) as f32 / (fade as f32 + 1.0);
+                out.push(prev[0] + (first[0] - prev[0]) * t);
+                out.push(prev[1] + (first[1] - prev[1]) * t);
+            }
+            out.extend_from_slice(block);
+        }
+        DriftMode::Shrink => {
+            let skip = (fade * 2).min(block.len().saturating_sub(2));
+            let rest = &block[skip..];
+            if rest.len() < 2 {
+                return prev;
+            }
+            for i in 0..rest.len() / 2 {
+                if i < fade {
+                    let t = (i + 1) as f32 / (fade as f32 + 1.0);
+                    out.push(prev[0] + (rest[i * 2] - prev[0]) * t);
+                    out.push(prev[1] + (rest[i * 2 + 1] - prev[1]) * t);
+                } else {
+                    out.push(rest[i * 2]);
+                    out.push(rest[i * 2 + 1]);
+                }
+            }
+        }
+    }
+
+    let len = out.len();
+    if len >= 2 {
+        [out[len - 2], out[len - 1]]
+    } else {
+        prev
+    }
+}
+
 #[inline]
 fn soft_clip(sample: f32) -> f32 {
     // Hanya hard-clip ketika sample melebihi 0 dBFS. Soft-clip dengan knee
@@ -543,5 +654,109 @@ fn soft_clip(sample: f32) -> f32 {
         -1.0
     } else {
         sample
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::settings::AudioSettings;
+
+    /// Sinyal kontinu (ramp) untuk mendeteksi klik: setiap sample naik +0.001.
+    fn ramp_block(frames: usize, start: f32) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = start + i as f32 * 0.001;
+            out.push(v);
+            out.push(v);
+        }
+        out
+    }
+
+    /// Lonjakan maksimum antar sample bertetangga (klik = lonjakan besar).
+    fn max_step(samples: &[f32]) -> f32 {
+        samples
+            .chunks_exact(2)
+            .zip(samples.chunks_exact(2).skip(1))
+            .map(|(a, b)| (b[0] - a[0]).abs().max((b[1] - a[1]).abs()))
+            .fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn drift_normal_tidak_mengubah_blok() {
+        let block = ramp_block(BLOCK_FRAMES, 0.0);
+        let mut out = Vec::new();
+        let prev = build_monitor_block([0.0, 0.0], &block, DriftMode::Normal, &mut out);
+        assert_eq!(out, block);
+        assert_eq!(prev, [block[block.len() - 2], block[block.len() - 1]]);
+    }
+
+    #[test]
+    fn drift_stretch_menambah_durasi_tanpa_klik() {
+        // prev kontinu dengan awal blok (sinyal nyata tidak pernah lompat),
+        // sehingga crossfade seharusnya mulus.
+        let block = ramp_block(BLOCK_FRAMES, 1.0);
+        let prev = [1.0 - 0.001, 1.0 - 0.001];
+        let mut out = Vec::new();
+        let new_prev = build_monitor_block(prev, &block, DriftMode::Stretch, &mut out);
+
+        let added = out.len() - block.len();
+        assert_eq!(added, DRIFT_FADE_FRAMES * 2, "stretch harus menambah ~2 ms");
+
+        let mut joined = Vec::with_capacity(out.len() + 2);
+        joined.extend_from_slice(&prev);
+        joined.extend_from_slice(&out);
+        assert!(
+            max_step(&joined) < 0.05,
+            "crossfade stretch menimbulkan klik: step {:.4}",
+            max_step(&joined)
+        );
+        assert_eq!(
+            new_prev,
+            [out[out.len() - 2], out[out.len() - 1]],
+            "prev harus berupa frame terakhir yang tertulis"
+        );
+    }
+
+    #[test]
+    fn drift_shrink_mengurangi_durasi_tanpa_klik() {
+        let block = ramp_block(BLOCK_FRAMES, 1.0);
+        let prev = [0.999, 0.999];
+        let mut out = Vec::new();
+        build_monitor_block(prev, &block, DriftMode::Shrink, &mut out);
+
+        let removed = block.len() - out.len();
+        assert_eq!(removed, DRIFT_FADE_FRAMES * 2, "shrink harus mengurangi ~2 ms");
+
+        let mut joined = Vec::with_capacity(out.len() + 2);
+        joined.extend_from_slice(&prev);
+        joined.extend_from_slice(&out);
+        assert!(
+            max_step(&joined) < 0.05,
+            "crossfade shrink menimbulkan klik: step {:.4}",
+            max_step(&joined)
+        );
+    }
+
+    #[test]
+    fn drift_blok_kecil_tidak_panik() {
+        let block = ramp_block(2, 0.0);
+        let mut out = Vec::new();
+        for mode in [DriftMode::Normal, DriftMode::Stretch, DriftMode::Shrink] {
+            let _ = build_monitor_block([0.0, 0.0], &block, mode, &mut out);
+        }
+    }
+
+    #[test]
+    fn monitor_sfx_only_dibaca_dari_settings_bukan_hardcoded() {
+        // Regression: engine dulu selalu mengirim `monitor_sfx_only: false` ke
+        // MixerSettings meskipun settings menyimpan `true`.
+        let mut settings = AudioSettings::default();
+        settings.monitor_sfx_only = true;
+        assert!(settings.monitor_sfx_only);
+
+        // AudioState yang dipublish juga harus membawa nilai yang sama.
+        let state = crate::audio::engine::state_from_settings(&settings);
+        assert!(state.monitor_sfx_only);
     }
 }
