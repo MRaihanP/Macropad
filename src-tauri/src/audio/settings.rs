@@ -196,7 +196,12 @@ impl Default for AudioSettings {
             mic_muted: false,
             sfx_muted: false,
             mode: "interrupt".into(),
-            buffer_ms: 0,
+            // 60 ms: cukup kecil untuk latency rendah (<50 ms total di
+            // capture+resample+mixer+render+output+input) tapi cukup besar
+            // untuk menstabilkan cpal WASAPI callback & hindari burst underrun.
+            // buffer_ms=0 (BufferSize::Default) membiarkan driver pilih, yang
+            // di Windows bisa 200-2000 ms — akibat utama delay detik pada VB-Cable.
+            buffer_ms: 60,
         }
     }
 }

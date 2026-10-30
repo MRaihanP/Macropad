@@ -1661,6 +1661,18 @@ gb-page-test, dan
   `layer,row,col,type,value` (62 byte terburuk, masih di bawah buffer stack 64 byte
   `vprintf` sehingga tidak kena `malloc`), dan regex app disesuaikan.
 
+### Fixed
+- **Audio latency 2-5 detik (monitor ON)** — akumulasi buffer menumpunya; tiga perbaikan:
+  - `buffer_ms` default `0` → `60`. `BufferSize::Default` membiarkan WASAPI driver pilih
+    buffer (100-2000 ms di virtual endpoint Vb-Cable). 60 ms finite cukup kecil untuk
+    <50 ms total latency tapi stabil.
+  - Device enumeration `check_devices` tiap 2 detik → 5 detik. Setiap panggilan enumerasi
+    (output_present/cable_present/input_present) blocking 100-500 ms di Windows, total
+    sampai 3 detik tiap siklus.
+  - `SetThreadPriority(ABOVE_NORMAL)` + `SetThreadPriorityBoost(disable)` pada engine/mixer/
+    mic-resample thread — mencegah OS scheduler preempt thread audio di bawah beban (browser/
+    Discord). No-op di non-Windows.
+
 ### Removed
 - `firmware/HID_Keypad/HID_Keypad.ino` (monolit 1056 baris). Digantikan berkas-berkas di
   atas; salinan utuh tersimpan di git pada commit `3c020d2` dan dapat dipulihkan dengan

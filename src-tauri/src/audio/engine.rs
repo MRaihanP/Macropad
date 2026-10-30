@@ -18,6 +18,29 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+// Set higher thread scheduling priority so the audio engine + mixer threads
+// are not preempted by the OS scheduler under load (browser / Discord).
+// On Windows we call SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL) via FFI,
+// avoiding winapi/windows-sys dependency. No-op on non-Windows.
+#[cfg(windows)]
+fn boost_thread_priority() {
+    extern "system" {
+        fn GetCurrentThread() -> usize;
+        fn SetThreadPriority(handle: usize, priority: i32) -> i32;
+        fn SetThreadPriorityBoost(handle: usize, disable: i32) -> i32;
+    }
+    // THREAD_PRIORITY_ABOVE_NORMAL = 1
+    unsafe {
+        let t = GetCurrentThread();
+        let _ = SetThreadPriority(t, 1); // ABOVE_NORMAL
+        // Disable priority boosting — prevents lower-priority boosts from jittering us
+        let _ = SetThreadPriorityBoost(t, 1i32);
+    }
+}
+
+#[cfg(not(windows))]
+fn boost_thread_priority() {}
+
 pub enum EngineCommand {
     SetOutput {
         device: String,
@@ -102,7 +125,10 @@ impl AudioEngine {
         let thread_app = app.clone();
         std::thread::Builder::new()
             .name("audio-engine".into())
-            .spawn(move || run(thread_app, rx, thread_state, settings))
+            .spawn(move || {
+                boost_thread_priority();
+                run(thread_app, rx, thread_state, settings)
+            })
             .expect("gagal spawn audio engine thread");
 
         Self {
@@ -259,6 +285,7 @@ impl MicWorker {
         let handle = std::thread::Builder::new()
             .name("audio-mic-resample".into())
             .spawn(move || {
+                boost_thread_priority();
                 let mut resampler = match StreamResampler::new(input_rate, ENGINE_SAMPLE_RATE, 1) {
                     Ok(value) => value,
                     Err(err) => {
@@ -376,7 +403,10 @@ impl Engine {
         );
         let mixer_handle = std::thread::Builder::new()
             .name("audio-mixer".into())
-            .spawn(move || mixer.run())
+            .spawn(move || {
+                boost_thread_priority();
+                mixer.run()
+            })
             .ok();
 
         Self {
@@ -448,16 +478,22 @@ impl Engine {
         eprintln!("[audio] engine thread siap");
         loop {
             match self.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(command) => {
-                    if !self.handle(command) {
-                        break;
+                    Ok(command) => {
+                        if !self.handle(command) {
                     }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
 
-            if self.last_check.elapsed() >= Duration::from_secs(2) {
+            // Periksa kehadiran device tiap 5 detik (bukan 2 detik): tiap
+            // panggil device::output_present / cable_present / input_present
+            // memicu cpal host.output_devices() / input_devices() enumerate
+            // yang di Windows blocking 100-500 ms. Di v0.8.14/0.8.15 ini dipanggil
+            // 6 kali/masuk ke check_devices → hingga 3 detik engine thread tersendat
+            // tiap siklus. Dengan buffer_ms=60ms (lihat settings.rs) delay reconnect
+            // masih <5 detik juga wajar, jauh lebih baik 3 detik blocking tiap 2 detik.
+            if self.last_check.elapsed() >= Duration::from_secs(5) {
                 self.last_check = Instant::now();
                 self.check_devices();
             }
