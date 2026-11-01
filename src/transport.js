@@ -45,23 +45,44 @@ let backendId = 'usb';
 // Modul BLE dimuat sekali dan dipakai ulang. Probe BLE TIDAK boleh memakai
 // import() baru di jalur lain: kalau Vite/HMR memuat dua instance, scan yang
 // mengisi dropdown bisa menulis ke instance yang bukan backend aktif.
+// `bleLoading` menahan import yang sedang berjalan: auto-connect USB+BLE bisa
+// memanggil loadBleModule dari dua jalur bersamaan.
 let bleModule = null;
+let bleLoading = null;
 // Saat true, connection-manager.js memiliki siklus retry. Flag ini diteruskan
 // ke backend yang aktif maupun yang dimuat belakangan.
 let managerMode = false;
 
 async function loadBleModule() {
-  if (!bleModule) {
-    bleModule = await import('./ble-transport.js');
-    if (typeof bleModule.setManagerMode === 'function') bleModule.setManagerMode(managerMode);
+  if (bleModule) return bleModule;
+  if (!bleLoading) {
+    bleLoading = import('./ble-transport.js')
+      .then(m => {
+        bleModule = m;
+        // Manager bisa aktif SEBELUM modul BLE dimuat (auto-connect USB menang
+        // lebih dulu). Teruskan flag-nya saat modul baru masuk.
+        if (typeof m.setManagerMode === 'function') m.setManagerMode(managerMode);
+        return m;
+      })
+      .finally(() => { bleLoading = null; });
   }
-  return bleModule;
+  return bleLoading;
 }
 
 // Dipasang sekali oleh main.js. Hook diteruskan ke backend aktif - backend
 // sendiri yang memanggil hook-nya, supaya framing tetap milik backend dan tidak
 // ada lapisan kedua.
 let pendingHooks = null;
+
+// Aktifkan transport TANPA memutus backend lama. Dipakai coordinator
+// auto-connect saat berpindah medium; pemanggil yang memutuskan koneksi.
+async function switchTo(id) {
+  if (id === backendId) return;
+  if (id === 'ble') await loadBleModule();
+  backend = id === 'usb' ? serialBackend : bleModule;
+  backendId = id;
+  backend.initTransport(pendingHooks);
+}
 
 export function setPendingTransportHooks(h) { pendingHooks = h; }
 
@@ -73,8 +94,43 @@ export function sendRaw(data) { return backend.sendRaw(data); }
 export function sendRawNoAck(data) { return backend.sendRawNoAck(data); }
 export function connect(arg) { return backend.connect(arg); }
 export function disconnect(manual) { return backend.disconnect(manual); }
-export function autoDetect() { return backend.autoDetect(); }
-export function poll() { return backend.poll(); }
+// Auto-connect saat launch: scan USB dan BLE, USB prioritas.
+//
+//   1. Coba USB (enumerate + probe WHOAMI + connect)
+//   2. Kalau USB tidak ada, coba BLE (scan + connect)
+//
+// Kalau keduanya terdeteksi, USB menang karena dicoba lebih dulu. Urutan ini
+// juga yang dipakai saat device berpindah medium (failover): transport lama
+// dipindah, baru transport lain dicoba.
+export async function autoDetect() {
+  if (isConnected()) return true;
+  await switchTo('usb');
+  if (await backend.tryAutoConnect(true)) return true;
+  await switchTo('ble');
+  return await backend.tryAutoConnect(true);
+}
+// Poll transport aktif, lalu kalau tidak konek coba deteksi transport lain
+// (failover). Backend aktif membaca data; backend lain memindai device baru.
+//
+// Setelah transport lain berhasil connect, `backend`/`backendId` ikut dipindah
+// supaya facade (sendLine, isConnected, dst) menunjuk transport yang benar.
+export async function poll() {
+  if (backendId === 'usb') {
+    await serialBackend.poll();
+  } else if (bleModule) {
+    await bleModule.poll();
+  }
+  if (!isConnected()) {
+    if (backendId === 'usb') {
+      const ble = await loadBleModule();
+      await ble.poll();                       // BLE poll memindai device baru saat idle
+      if (ble.isConnected()) await switchTo('ble');
+    } else {
+      await serialBackend.poll();             // USB poll memindai port baru
+      if (serialBackend.isConnected()) await switchTo('usb');
+    }
+  }
+}
 export function enableAutoReconnect() { return backend.enableAutoReconnect(); }
 export function updateConnectButton(state) { return backend.updateConnectButton(state); }
 export function handleDeviceLost() { return backend.handleDeviceLost(); }

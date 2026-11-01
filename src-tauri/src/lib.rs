@@ -1570,6 +1570,28 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                         id
                     )),
                     Some(device_info) => {
+                        // Pair dulu kalau device belum paired. Windows BLE
+                        // tidak selalu membuka akses GATT untuk device yang
+                        // belum paired, dan GetGattServicesForUuidAsync bisa
+                        // mengembalikan daftar kosong tanpa pesan error jelas
+                        // (gejala "FromIdAsync OK" lalu langsung putus).
+                        if let Ok(pairing) = device_info.Pairing() {
+                            if let Ok(paired) = pairing.IsPaired() {
+                                if !paired {
+                                    eprintln!("[ble-trace] device belum paired, lakukan pairing...");
+                                    match BleTransport::pair(&device_info) {
+                                        Ok(true) => {
+                                            // BARU dipairing: beri Windows waktu
+                                            // memperbarui GATT database sebelum
+                                            // connect().
+                                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                                        }
+                                        Ok(false) => { /* sudah paired, tidak perlu jeda */ }
+                                        Err(e) => eprintln!("[ble-trace] pairing gagal: {}", e),
+                                    }
+                                }
+                            }
+                        }
                         // Runtuhkan transport yang sedang hidup SEBELUM membuat
                         // yang baru.
                         //
@@ -1593,7 +1615,15 @@ fn ble_worker(rx: std::sync::mpsc::Receiver<BleRequest>) {
                                 log("[BLE] Connected via command");
                                 Ok(())
                             }
-                            Err(e) => Err(e),
+                            Err(e) => {
+                                // Error connect dicetak ke stderr juga, bukan
+                                // hanya ke panel log app. User sering membaca
+                                // console, dan pesan Rust inilah yang menyebut
+                                // penyebab sebenarnya (mis. "Gagal ambil
+                                // service" = GATT cache belum siap).
+                                eprintln!("[ble-trace] connect GAGAL: {}", e);
+                                Err(e)
+                            }
                         }
                     }
                 };
