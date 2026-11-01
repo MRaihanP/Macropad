@@ -17,23 +17,33 @@ use tauri::Emitter;
 pub const SAMPLE_RATE: usize = 48_000;
 const BLOCK_FRAMES: usize = 480; // 10 ms
 const MAX_VOICES: usize = 8;
-// 60 ms stereo cukup untuk menampung 3 iterasi mixer (masing-masing 20 ms)
-// sehingga cpal callback tidak kehabisan saat thread mixer terlepas sekilas.
-// 240 ms sebelumnya berlebihan dan menambah delay 180 ms pada mic monitoring.
-const PREFILL_SAMPLES: usize = SAMPLE_RATE * 2 * 60 / 1000; // 60 ms stereo
 // Mixer mengisi dua blok sekaligus (20 ms stereo) tiap iterasi agar refill
 // lebih "flat" dan tidak bursty akibat sleep 1 ms yang terlalu pendek relatif.
 const RENDER_QUANTUM: usize = 2;
+const RENDER_QUANTUM_MS: usize = RENDER_QUANTUM * BLOCK_FRAMES * 1000 / SAMPLE_RATE;
 const TONE_FADE_FRAMES: u64 = 480;
+
+/// Prefill minimum. Ring harus selalu ≥ buffer output + satu render quantum,
+/// kalau tidak callback cpal meminta lebih banyak data daripada yang tersedia
+/// dan terjadi underrun. Nilai 0/terlalu kecil tidak dipakai.
+fn prefill_ms_for(buffer_ms: u32) -> usize {
+    (buffer_ms as usize).max(30) + RENDER_QUANTUM_MS
+}
+
+fn prefill_samples_for(buffer_ms: u32) -> usize {
+    SAMPLE_RATE * 2 * prefill_ms_for(buffer_ms) / 1000
+}
 
 // Monitor drift correction. Fade pendek (2 ms) dipakai saat menyisipkan /
 // membuang sample supaya clock monitor yang sedikit melenceng tidak
 // menghasilkan klik akibat splice blok 20 ms utuh.
 const DRIFT_FADE_FRAMES: usize = 96; // 2 ms stereo
-// Level target ring monitor. Di bawah ini monitor kekurangan data (clock
-// lebih cepat), di atas ini kelebihan (clock lebih lambat).
-const MONITOR_LOW: usize = PREFILL_SAMPLES / 2;
-const MONITOR_HIGH: usize = PREFILL_SAMPLES * 3 / 2;
+
+/// Batas backlog mic. Kalau mixer sempat stall, ring bisa menumpuk ratusan ms
+/// audio lama; sebelum diputar, sisanya dibuang supaya output tetap near-real-
+/// time (bukan memutar percakapan yang sudah lewat).
+const MIC_BACKLOG_LIMIT_MS: usize = 80;
+const MIC_BACKLOG_TARGET_MS: usize = 30;
 
 /// Mode koreksi drift jam monitor terhadap mixer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,6 +83,8 @@ pub enum MixerCommand {
     SetMonitorSfxOnly(bool),
     /// Update mic preprocessing filter settings (gain, noise gate, dll).
     SetMicPre(MicSettings),
+    /// Ubah target prefill setelah ukuran buffer output berubah.
+    SetBuffer { ms: u32 },
     /// Isi ring monitor dengan silence sampai level prefill (dipakai setelah
     /// stream monitor dibangun ulang supaya tidak langsung underrun).
     PrefillMonitor,
@@ -107,6 +119,8 @@ pub struct MixerSettings {
     pub monitor_enabled: bool,
     pub mode: PlayMode,
     pub mic_pre: MicSettings,
+    /// Ukuran buffer output/input yang dipakai stream. Menentukan prefill.
+    pub buffer_ms: u32,
 }
 
 struct Voice {
@@ -145,6 +159,8 @@ pub struct Mixer {
     monitor_sfx_only: bool,
     monitor_enabled: bool,
     mode: PlayMode,
+    /// Target isi ring output (stereo sample). Dihitung dari `buffer_ms`.
+    prefill_samples: usize,
 
     mic_chain: MicChain,
 
@@ -187,6 +203,7 @@ impl Mixer {
             monitor_sfx_only: settings.monitor_sfx_only,
             monitor_enabled: settings.monitor_enabled,
             mode: settings.mode,
+            prefill_samples: prefill_samples_for(settings.buffer_ms),
             mic_chain: MicChain::new(settings.mic_pre),
             voices: std::array::from_fn(|_| None),
             next_slot: 0,
@@ -223,9 +240,17 @@ impl Mixer {
             // Render hanya bila ADA satu ring yang masih di bawah prefill.
             // Sebelumnya hanya `cable_ring` yang dicek, sehingga saat cable
             // penuh tapi monitor kosong, monitor kehabisan data (underrun).
-            let cable_fill = if cable_on { self.cable_ring.len() } else { PREFILL_SAMPLES };
-            let monitor_fill = if monitor_on { self.monitor_ring.len() } else { PREFILL_SAMPLES };
-            if cable_fill >= PREFILL_SAMPLES && monitor_fill >= PREFILL_SAMPLES {
+            let cable_fill = if cable_on {
+                self.cable_ring.len()
+            } else {
+                self.prefill_samples
+            };
+            let monitor_fill = if monitor_on {
+                self.monitor_ring.len()
+            } else {
+                self.prefill_samples
+            };
+            if cable_fill >= self.prefill_samples && monitor_fill >= self.prefill_samples {
                 std::thread::sleep(Duration::from_millis(2));
                 continue;
             }
@@ -249,9 +274,11 @@ impl Mixer {
                     // Koreksi drift jam monitor dengan crossfade pendek, bukan
                     // splice blok 20 ms utuh (yang menimbulkan klik).
                     let fill = self.monitor_ring.len();
-                    let mode = if fill < MONITOR_LOW {
+                    let low = self.prefill_samples / 2;
+                    let high = self.prefill_samples * 3 / 2;
+                    let mode = if fill < low {
                         DriftMode::Stretch
-                    } else if fill > MONITOR_HIGH {
+                    } else if fill > high {
                         DriftMode::Shrink
                     } else {
                         DriftMode::Normal
@@ -320,9 +347,12 @@ impl Mixer {
             MixerCommand::SetMicPre(settings) => {
                 self.mic_chain.set_settings(settings);
             }
+            MixerCommand::SetBuffer { ms } => {
+                self.prefill_samples = prefill_samples_for(ms);
+            }
             MixerCommand::PrefillMonitor => {
-                if self.monitor_ring.len() < PREFILL_SAMPLES {
-                    let silence = vec![0.0f32; PREFILL_SAMPLES - self.monitor_ring.len()];
+                if self.monitor_ring.len() < self.prefill_samples {
+                    let silence = vec![0.0f32; self.prefill_samples - self.monitor_ring.len()];
                     let _ = self.monitor_ring.push(&silence);
                 }
             }
@@ -422,6 +452,15 @@ impl Mixer {
     ) {
         block.fill(0.0);
         mic.fill(0.0);
+
+        // Kalau mixer sempat stall (CPU sibuk / stream dibangun ulang), ring mic
+        // bisa berisi ratusan ms audio lama. Buang kelebihannya sebelum diputar
+        // supaya output tidak tertinggal dari ucapan user.
+        let backlog_limit = SAMPLE_RATE * MIC_BACKLOG_LIMIT_MS / 1000;
+        if self.mic_ring.len() > backlog_limit {
+            let target = SAMPLE_RATE * MIC_BACKLOG_TARGET_MS / 1000;
+            self.mic_ring.trim_to(target);
+        }
 
         // Mic: pop sebanyak yang tersedia; sisanya silence.
         let _ = self.mic_ring.pop(mic);
@@ -741,5 +780,29 @@ mod tests {
         // AudioState yang dipublish juga harus membawa nilai yang sama.
         let state = crate::audio::engine::state_from_settings(&settings);
         assert!(state.monitor_sfx_only);
+    }
+
+    #[test]
+    fn prefill_selalu_di_atas_buffer_output() {
+        // Callback cpal meminta `buffer_ms` data sekaligus. Kalau prefill lebih
+        // kecil, setiap callback pasti underrun. Prefill juga harus menyisakan
+        // satu render quantum untuk refill.
+        for buffer_ms in [10, 20, 30, 40, 60, 80, 120] {
+            let prefill = prefill_ms_for(buffer_ms);
+            assert!(
+                prefill >= buffer_ms as usize + RENDER_QUANTUM_MS,
+                "buffer {buffer_ms} ms: prefill {prefill} ms terlalu kecil"
+            );
+        }
+    }
+
+    #[test]
+    fn prefill_samples_mengikuti_buffer_ms() {
+        assert_eq!(
+            prefill_samples_for(30),
+            SAMPLE_RATE * 2 * (30 + RENDER_QUANTUM_MS) / 1000
+        );
+        // Buffer 0 dinormalisasi ke minimum, bukan default driver.
+        assert_eq!(prefill_samples_for(0), prefill_samples_for(30));
     }
 }

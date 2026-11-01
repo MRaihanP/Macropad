@@ -11,6 +11,10 @@ use rubato::{FftFixedIn, Resampler};
 pub const ENGINE_SAMPLE_RATE: u32 = 48_000;
 
 const CHUNK: usize = 1024;
+/// Chunk khusus jalur streaming mic. FFT resampler baru mengeluarkan data
+/// setelah menerima satu chunk penuh, jadi chunk besar = latency tambahan.
+/// 512 frame @ 44.1 kHz ≈ 12 ms (sebelumnya 1024 ≈ 23 ms).
+const STREAM_CHUNK: usize = 512;
 const SUB_CHUNKS: usize = 2;
 
 /// Resample interleaved buffer secara offline.
@@ -86,8 +90,8 @@ impl StreamResampler {
             return Ok(Self {
                 inner: None,
                 channels,
-                input_chunk: CHUNK,
-                pending: Vec::with_capacity(CHUNK * channels * 2),
+                input_chunk: STREAM_CHUNK,
+                pending: Vec::with_capacity(STREAM_CHUNK * channels * 2),
                 scratch: Vec::new(),
             });
         }
@@ -95,7 +99,7 @@ impl StreamResampler {
         let inner = FftFixedIn::<f32>::new(
             in_rate as usize,
             out_rate as usize,
-            CHUNK,
+            STREAM_CHUNK,
             SUB_CHUNKS,
             channels,
         )
@@ -113,7 +117,9 @@ impl StreamResampler {
     pub fn push(&mut self, input: &[f32]) {
         self.pending.extend_from_slice(input);
         // Jaga supaya tidak tumbuh tanpa batas kalau consumer tersendat.
-        let max = self.input_chunk * self.channels * 8;
+        // 4 chunk (~46 ms @ 44.1 kHz) cukup; lebih dari itu berarti audio
+        // sudah tertinggal dan harus dibuang, bukan ditumpuk.
+        let max = self.input_chunk * self.channels * 4;
         if self.pending.len() > max {
             let drop = self.pending.len() - max;
             self.pending.drain(0..drop);

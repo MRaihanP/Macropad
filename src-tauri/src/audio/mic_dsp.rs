@@ -478,8 +478,12 @@ struct Gate {
     range_gain: f32,
     det_attack: f32,
     det_release: f32,
-    gain_attack: f32,
-    gain_release: f32,
+    /// Multiplier gain per sample. Dirancang supaya gain mencapai `range_gain`
+    /// tepat dalam `noiseGateReleaseMs` (attack sebaliknya). One-pole biasa
+    /// membuat ekor ~5–6x lebih panjang dari nilai slider (220 ms → ~1.3 s),
+    /// yang terasa seperti delay 1–2 detik setelah berhenti bicara.
+    gain_close_coef: f32,
+    gain_open_coef: f32,
     /// Sidechain band-pass: HPF 100 Hz lalu LPF 4 kHz.
     sc_hp: Biquad,
     sc_lp: Biquad,
@@ -723,8 +727,8 @@ impl Default for Gate {
             range_gain: 1.0,
             det_attack: 0.0,
             det_release: 0.0,
-            gain_attack: 0.0,
-            gain_release: 0.0,
+            gain_close_coef: 1.0,
+            gain_open_coef: 1.0,
             sc_hp: Biquad::bypass(),
             sc_lp: Biquad::bypass(),
             vad: 0.0,
@@ -753,9 +757,15 @@ impl Gate {
         self.det_attack = one_pole(2.0);
         self.det_release = one_pole(50.0);
 
-        // Gain smoothing memakai attack/release dari UI.
-        self.gain_attack = one_pole(settings.noise_gate_attack_ms);
-        self.gain_release = one_pole(settings.noise_gate_release_ms);
+        // Gain smoothing: hitung multiplier per sample supaya gain benar-benar
+        // mencapai `range_gain` dalam durasi release yang dipilih user.
+        let range = self.range_gain.clamp(1.0e-4, 1.0);
+        let release_samples =
+            (settings.noise_gate_release_ms.max(1.0) / 1000.0 * SAMPLE_RATE).max(1.0);
+        let attack_samples =
+            (settings.noise_gate_attack_ms.max(1.0) / 1000.0 * SAMPLE_RATE).max(1.0);
+        self.gain_close_coef = range.powf(1.0 / release_samples);
+        self.gain_open_coef = (1.0 / range).powf(1.0 / attack_samples);
 
         if !self.enabled {
             self.gain = 1.0;
@@ -806,13 +816,11 @@ impl Gate {
             }
         }
 
-        let target = if self.open { 1.0 } else { self.range_gain };
-        let coef = if target > self.gain {
-            self.gain_attack
+        if self.open {
+            self.gain = (self.gain * self.gain_open_coef).min(1.0);
         } else {
-            self.gain_release
-        };
-        self.gain = target + coef * (self.gain - target);
+            self.gain = (self.gain * self.gain_close_coef).max(self.range_gain);
+        }
         x * self.gain
     }
 }
@@ -1185,6 +1193,40 @@ mod tests {
         assert!(
             (100..=700).contains(&closed),
             "gate menutup di {closed} ms, di luar rentang hold+release"
+        );
+    }
+
+    #[test]
+    fn gate_release_selesai_dalam_durasi_setting() {
+        // Regression: release dulu one-pole (tau = release_ms), sehingga gate
+        // baru menyentuh -50 dB setelah ~1.3 detik untuk setting 220 ms.
+        let mut settings = base_settings();
+        settings.noise_gate_enabled = true;
+        settings.noise_gate_threshold = -30.0;
+        settings.noise_gate_hold_ms = 0.0;
+        settings.noise_gate_attack_ms = 1.0;
+        settings.noise_gate_release_ms = 200.0;
+        settings.noise_gate_range_db = -60.0;
+        settings.denoise_enabled = false;
+
+        let mut chain = MicChain::new(settings);
+        let mut loud = sine(1_000.0, 0.5, 9_600);
+        chain.process(&mut loud);
+
+        let mut reached_at = None;
+        for i in 0..300 {
+            let mut silence = vec![0.0f32; 480];
+            let meters = chain.process(&mut silence);
+            if meters.gate_gain_db < -55.0 {
+                reached_at = Some((i + 1) * 10);
+                break;
+            }
+        }
+
+        let ms = reached_at.expect("gate tidak pernah mencapai range");
+        assert!(
+            ms <= 450,
+            "gate butuh {ms} ms untuk mencapai -55 dB, release 200 ms seharusnya selesai jauh lebih cepat"
         );
     }
 

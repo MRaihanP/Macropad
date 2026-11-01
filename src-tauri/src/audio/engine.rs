@@ -117,6 +117,16 @@ impl Clone for AudioEngine {
 impl AudioEngine {
     pub fn new(app: AppHandle) -> Self {
         let settings = settings::load(&app);
+        eprintln!(
+            "[audio] buffer tetap {} ms (mic: {}, cable: {})",
+            settings.buffer_ms,
+            settings.mic_device,
+            if settings.cable_device.is_empty() {
+                "auto".to_string()
+            } else {
+                settings.cable_device.clone()
+            }
+        );
         let initial = state_from_settings(&settings);
         let state = Arc::new(Mutex::new(initial));
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -278,10 +288,19 @@ struct MicWorker {
     handle: Option<JoinHandle<()>>,
 }
 
+/// Batas backlog ring mic mentah (sebelum resample). Ring ini menampung
+/// 65 536 sample (~1.4 s @ 48 kHz). Kalau thread worker sempat stall, audio
+/// lama akan terus diputar dan delay-nya persisten — persis gejala 1–2 detik.
+/// Buang kelebihannya supaya jalur mic selalu near-real-time.
+const MIC_RAW_BACKLOG_LIMIT_MS: usize = 80;
+const MIC_RAW_BACKLOG_TARGET_MS: usize = 20;
+
 impl MicWorker {
     fn spawn(raw: Arc<SpscRing>, output: Arc<SpscRing>, input_rate: u32) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::clone(&stop);
+        let backlog_limit = input_rate as usize * MIC_RAW_BACKLOG_LIMIT_MS / 1000;
+        let backlog_target = input_rate as usize * MIC_RAW_BACKLOG_TARGET_MS / 1000;
         let handle = std::thread::Builder::new()
             .name("audio-mic-resample".into())
             .spawn(move || {
@@ -294,10 +313,24 @@ impl MicWorker {
                     }
                 };
                 let mut chunk = vec![0.0f32; 4096];
+                let mut last_trim_log = Instant::now() - Duration::from_secs(10);
                 while !stop_flag.load(Ordering::Acquire) {
+                    // Consumer-side trim: kalau ring menumpuk (worker sempat
+                    // tidak dijadwalkan), buang audio paling lama. Tanpa ini
+                    // backlog 1 detik akan terus diputar tertinggal.
+                    if raw.len() > backlog_limit {
+                        raw.trim_to(backlog_target);
+                        if last_trim_log.elapsed() >= Duration::from_secs(1) {
+                            eprintln!(
+                                "[audio] backlog mic dibuang ke {} ms",
+                                MIC_RAW_BACKLOG_TARGET_MS
+                            );
+                            last_trim_log = Instant::now();
+                        }
+                    }
                     let count = raw.pop(&mut chunk);
                     if count == 0 {
-                        std::thread::sleep(Duration::from_millis(3));
+                        std::thread::sleep(Duration::from_millis(2));
                         continue;
                     }
                     resampler.push(&chunk[..count]);
@@ -357,6 +390,9 @@ struct Engine {
     cable_status: StreamStatus,
     monitor_status: StreamStatus,
     mic_status: StreamStatus,
+    /// Hasil deteksi terakhir. Dipakai `publish()` supaya tidak melakukan
+    /// enumerasi device setiap command UI.
+    cable_present: bool,
 
     dirty: bool,
     last_save: Instant,
@@ -373,7 +409,9 @@ impl Engine {
         let cable_ring = Arc::new(SpscRing::new(1 << 18));
         let monitor_ring = Arc::new(SpscRing::new(1 << 18));
         let mic_raw_ring = Arc::new(SpscRing::new(1 << 16));
-        let mic48_ring = Arc::new(SpscRing::new(1 << 16));
+        // Ring mic 48 kHz sengaja kecil (~170 ms mono). Ring besar (1.36 s)
+        // membuat audio lama bisa ikut diputar kalau mixer sempat stall.
+        let mic48_ring = Arc::new(SpscRing::new(1 << 13));
         let cable_active = Arc::new(AtomicBool::new(false));
         let monitor_active = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(Counters::default());
@@ -399,6 +437,7 @@ impl Engine {
                 monitor_enabled: settings.monitor_enabled,
                 mode: PlayMode::parse(&settings.mode),
                 mic_pre: settings.mic_pre,
+                buffer_ms: settings.buffer_ms,
             },
         );
         let mixer_handle = std::thread::Builder::new()
@@ -430,6 +469,7 @@ impl Engine {
             cable_status: StreamStatus::stopped("cable", None),
             monitor_status: StreamStatus::stopped("monitor", None),
             mic_status: StreamStatus::stopped("mic", None),
+            cable_present: devices::cable_present(),
             dirty: false,
             last_save: Instant::now(),
             last_check: Instant::now(),
@@ -478,21 +518,18 @@ impl Engine {
         eprintln!("[audio] engine thread siap");
         loop {
             match self.rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(command) => {
-                        if !self.handle(command) {
+                Ok(command) => {
+                    if !self.handle(command) {
+                        break;
                     }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
 
-            // Periksa kehadiran device tiap 5 detik (bukan 2 detik): tiap
-            // panggil device::output_present / cable_present / input_present
-            // memicu cpal host.output_devices() / input_devices() enumerate
-            // yang di Windows blocking 100-500 ms. Di v0.8.14/0.8.15 ini dipanggil
-            // 6 kali/masuk ke check_devices → hingga 3 detik engine thread tersendat
-            // tiap siklus. Dengan buffer_ms=60ms (lihat settings.rs) delay reconnect
-            // masih <5 detik juga wajar, jauh lebih baik 3 detik blocking tiap 2 detik.
+            // Periksa kehadiran device tiap 5 detik: enumerasi cpal di Windows
+            // bisa blocking 100-500 ms, jadi jangan dilakukan tiap command UI.
+            // Nama device juga di-cache 2 detik di devices.rs.
             if self.last_check.elapsed() >= Duration::from_secs(5) {
                 self.last_check = Instant::now();
                 self.check_devices();
@@ -608,7 +645,11 @@ impl Engine {
                 self.publish(true);
             }
             EngineCommand::SetBuffer { ms, reply } => {
+                // 0 = "default driver" adalah sumber delay; normalisasi ke
+                // buffer tetap. Batas atas mencegah prefill/ring membengkak.
+                let ms = settings::normalize_buffer_ms(ms);
                 self.settings.buffer_ms = ms;
+                let _ = self.mixer_tx.send(MixerCommand::SetBuffer { ms });
                 let cable = self.settings.cable_device.clone();
                 let monitor = self.settings.monitor_device.clone();
                 let mic = self.settings.mic_device.clone();
@@ -668,12 +709,13 @@ impl Engine {
     }
 
     fn check_devices(&mut self) {
+        self.cable_present = devices::cable_present();
         let cable_lost =
             self.cable_out.is_some() && !devices::output_present(&self.cable_status.device);
         if cable_lost {
             eprintln!("[audio] CABLE hilang, menunggu device kembali");
             self.stop_cable();
-        } else if self.cable_out.is_none() && devices::cable_present() {
+        } else if self.cable_out.is_none() && self.cable_present {
             let device = self.settings.cable_device.clone();
             if let Err(err) = self.rebuild_cable(&device) {
                 self.cable_status = StreamStatus::stopped("cable", Some(err));
@@ -723,11 +765,13 @@ impl Engine {
             devices::find_output(requested)
         };
         let Some((device, name)) = resolved else {
+            self.cable_present = false;
             self.cable_status =
                 StreamStatus::stopped("cable", Some("output device tidak ditemukan".into()));
             return Err("output device tidak ditemukan".into());
         };
 
+        self.cable_present = true;
         self.settings.cable_device = name.clone();
         let handle = output::build_output(
             "cable",
@@ -747,6 +791,7 @@ impl Engine {
         self.cable_active.store(false, Ordering::Release);
         self.cable_out = None;
         self.cable_ring.clear();
+        self.cable_present = false;
         self.cable_status = StreamStatus::stopped("cable", Some("menunggu device".into()));
     }
 
@@ -870,7 +915,7 @@ impl Engine {
         let state = AudioState {
             cable_device: self.settings.cable_device.clone(),
             cable_auto: self.settings.cable_device.trim().is_empty(),
-            cable_present: devices::cable_present(),
+            cable_present: self.cable_present,
             monitor_device: self.settings.monitor_device.clone(),
             monitor_enabled: self.settings.monitor_enabled,
             monitor_volume: self.settings.monitor_volume,

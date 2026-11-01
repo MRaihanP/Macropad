@@ -418,9 +418,13 @@ function renderStatus(state) {
 
     const metaNode = document.createElement('span');
     metaNode.className = 'audio-status-meta';
+    const bufferLabel = stream.bufferMs ? `${stream.bufferMs} ms` : 'buffer driver';
     metaNode.textContent = stream.state === 'running'
-      ? `${stream.sample_rate} Hz · ${stream.channels}ch · ${stream.format}`
+      ? `${stream.sample_rate} Hz · ${stream.channels}ch · ${stream.format} · ${bufferLabel}`
       : '—';
+    metaNode.title = stream.bufferMs
+      ? `Buffer efektif: ${stream.bufferMs} ms`
+      : 'Buffer fixed ditolak device; memakai default driver (bisa menambah delay)';
 
     const stateNode = document.createElement('span');
     const running = stream.state === 'running';
@@ -486,7 +490,9 @@ function applyState(state) {
   setPercentLabel('monitorVolumeVal', (state.monitorVolume ?? 1));
 
   if ($('audioBufferSelect')) {
-    const value = String(state.bufferMs ?? 0);
+    // 0 = default driver tidak lagi dipakai: selalu tampilkan buffer tetap
+    // yang benar-benar aktif supaya user tidak terjebak delay multi-detik.
+    const value = String(state.bufferMs || 30);
     const select = $('audioBufferSelect');
     if (![...select.options].some((option) => option.value === value)) {
       const option = document.createElement('option');

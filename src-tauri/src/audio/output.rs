@@ -24,6 +24,21 @@ pub struct InputHandle {
     pub sample_rate: u32,
 }
 
+/// Urutan ukuran buffer tetap yang dicoba. Kalau ukuran yang diminta ditolak,
+/// coba ukuran lain sebelum menyerah ke `BufferSize::Default`. Fallback ke
+/// default driver adalah sumber delay 200–2000 ms di endpoint virtual.
+fn buffer_candidates(requested: u32) -> Vec<u32> {
+    let requested = if requested == 0 { 30 } else { requested };
+    let mut out = Vec::with_capacity(6);
+    out.push(requested);
+    for ms in [30, 40, 60, 80, 120] {
+        if !out.contains(&ms) {
+            out.push(ms);
+        }
+    }
+    out
+}
+
 fn status(
     role: &str,
     device: &str,
@@ -98,20 +113,40 @@ pub fn build_output(
         }
     };
 
-    let mut used_buffer_ms = buffer_ms;
-    let stream = match try_build(&config) {
-        Ok(stream) => stream,
-        Err(first_error) if config.buffer_size != BufferSize::Default => {
+    let mut used_buffer_ms = 0;
+    let mut built = None;
+    let mut last_error = None;
+    for ms in buffer_candidates(buffer_ms) {
+        let frames = (config.sample_rate.0 as u64 * ms as u64 / 1000).max(64) as u32;
+        config.buffer_size = BufferSize::Fixed(frames);
+        match try_build(&config) {
+            Ok(stream) => {
+                used_buffer_ms = ms;
+                built = Some(stream);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let stream = match built {
+        Some(stream) => stream,
+        None => {
             eprintln!(
-                "[audio] buffer {} ms ditolak ({}), fallback ke default",
-                buffer_ms, first_error
+                "[audio] semua fixed buffer ditolak untuk {} ({}), fallback ke default",
+                device_name,
+                last_error.unwrap_or_else(|| "unknown".into())
             );
             config.buffer_size = BufferSize::Default;
             used_buffer_ms = 0;
             try_build(&config)?
         }
-        Err(error) => return Err(error),
     };
+    if used_buffer_ms != 0 && used_buffer_ms != buffer_ms {
+        eprintln!(
+            "[audio] buffer {} ms tidak didukung {}, memakai {} ms",
+            buffer_ms, device_name, used_buffer_ms
+        );
+    }
 
     stream
         .play()
@@ -335,20 +370,40 @@ pub fn build_input(
         }
     };
 
-    let mut used_buffer_ms = buffer_ms;
-    let stream = match try_build(&config) {
-        Ok(stream) => stream,
-        Err(first_error) if config.buffer_size != BufferSize::Default => {
+    let mut used_buffer_ms = 0;
+    let mut built = None;
+    let mut last_error = None;
+    for ms in buffer_candidates(buffer_ms) {
+        let frames = (config.sample_rate.0 as u64 * ms as u64 / 1000).max(64) as u32;
+        config.buffer_size = BufferSize::Fixed(frames);
+        match try_build(&config) {
+            Ok(stream) => {
+                used_buffer_ms = ms;
+                built = Some(stream);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let stream = match built {
+        Some(stream) => stream,
+        None => {
             eprintln!(
-                "[audio] buffer mic {} ms ditolak ({}), fallback ke default",
-                buffer_ms, first_error
+                "[audio] semua fixed buffer mic ditolak untuk {} ({}), fallback ke default",
+                device_name,
+                last_error.unwrap_or_else(|| "unknown".into())
             );
             config.buffer_size = BufferSize::Default;
             used_buffer_ms = 0;
             try_build(&config)?
         }
-        Err(error) => return Err(error),
     };
+    if used_buffer_ms != 0 && used_buffer_ms != buffer_ms {
+        eprintln!(
+            "[audio] buffer mic {} ms tidak didukung {}, memakai {} ms",
+            buffer_ms, device_name, used_buffer_ms
+        );
+    }
 
     stream
         .play()
@@ -446,5 +501,60 @@ mod tests {
                 .all(|s| (*s - 0.5).abs() < 1.0e-3 || (*s + 0.5).abs() < 1.0e-3),
             "polaritas/sinyal output rusak"
         );
+    }
+
+    /// Diagnostik manual: cetak format default + rentang channel tiap endpoint.
+    /// Jalankan dengan:
+    /// `cargo test --lib debug_audio_configs -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn debug_audio_configs() {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        let Ok(devices) = host.output_devices() else {
+            println!("tidak bisa enumerate output device");
+            return;
+        };
+        for device in devices {
+            let name = device.name().unwrap_or_else(|_| "<tanpa nama>".into());
+            match device.default_output_config() {
+                Ok(config) => println!(
+                    "{name}: default {}ch {} Hz {:?}",
+                    config.channels(),
+                    config.sample_rate().0,
+                    config.sample_format()
+                ),
+                Err(error) => println!("{name}: default config error: {error}"),
+            }
+            if let Ok(ranges) = device.supported_output_configs() {
+                for range in ranges {
+                    println!(
+                        "    {:?} {}ch {}..{} Hz",
+                        range.sample_format(),
+                        range.channels(),
+                        range.min_sample_rate().0,
+                        range.max_sample_rate().0
+                    );
+                }
+            }
+        }
+
+        println!("--- INPUT ---");
+        let Ok(devices) = host.input_devices() else {
+            println!("tidak bisa enumerate input device");
+            return;
+        };
+        for device in devices {
+            let name = device.name().unwrap_or_else(|_| "<tanpa nama>".into());
+            match device.default_input_config() {
+                Ok(config) => println!(
+                    "{name}: default {}ch {} Hz {:?}",
+                    config.channels(),
+                    config.sample_rate().0,
+                    config.sample_format()
+                ),
+                Err(error) => println!("{name}: default config error: {error}"),
+            }
+        }
     }
 }

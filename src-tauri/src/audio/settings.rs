@@ -10,7 +10,27 @@ use tauri::Manager;
 /// - 1: `micPre.micBoostDb` (dB) + `micPre.humNotchHz`.
 /// - 2: `micPre.limiterReleaseMs` (default 50 ms).
 /// - 3: `micPre.noiseFilterEnabled` (de-click + low-pass hiss, default aktif).
-pub const SETTINGS_VERSION: u32 = 3;
+/// - 4: `bufferMs` 0 (default driver) dimigrasikan ke buffer tetap 30 ms.
+pub const SETTINGS_VERSION: u32 = 4;
+
+/// Buffer tetap default. `0` (BufferSize::Default) membiarkan WASAPI memilih
+/// buffer; di endpoint virtual seperti VB-Cable nilainya bisa 200–2000 ms dan
+/// menjadi penyebab utama delay mic multi-detik.
+pub const DEFAULT_BUFFER_MS: u32 = 30;
+pub const MIN_BUFFER_MS: u32 = 10;
+pub const MAX_BUFFER_MS: u32 = 120;
+
+/// Normalisasi nilai buffer dari file lama / UI.
+///
+/// `0` tidak lagi berarti "terserah driver" karena itulah sumber delay.
+/// Nilai di luar rentang dijepit supaya stream tetap bisa dibangun.
+pub fn normalize_buffer_ms(ms: u32) -> u32 {
+    if ms == 0 {
+        DEFAULT_BUFFER_MS
+    } else {
+        ms.clamp(MIN_BUFFER_MS, MAX_BUFFER_MS)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -196,12 +216,10 @@ impl Default for AudioSettings {
             mic_muted: false,
             sfx_muted: false,
             mode: "interrupt".into(),
-            // 60 ms: cukup kecil untuk latency rendah (<50 ms total di
-            // capture+resample+mixer+render+output+input) tapi cukup besar
-            // untuk menstabilkan cpal WASAPI callback & hindari burst underrun.
-            // buffer_ms=0 (BufferSize::Default) membiarkan driver pilih, yang
-            // di Windows bisa 200-2000 ms — akibat utama delay detik pada VB-Cable.
-            buffer_ms: 60,
+            // 30 ms: buffer tetap yang cukup kecil untuk respons cepat, tetapi
+            // masih memberi ruang bagi callback WASAPI. Nilai 0 (default driver)
+            // sengaja tidak dipakai karena di VB-Cable bisa 200–2000 ms.
+            buffer_ms: DEFAULT_BUFFER_MS,
         }
     }
 }
@@ -219,6 +237,7 @@ fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// Versi 0: `micPre.micBoost` linear → `micPre.micBoostDb` (dB).
 /// Versi 1: tidak ada perubahan skema — hanya versi ditulis.
 /// Versi 2: `micPre.limiterReleaseMs` (default 50 ms).
+/// Versi 4: `bufferMs` 0 → buffer tetap 30 ms.
 fn migrate(value: &mut serde_json::Value) {
     let from = value
         .get("version")
@@ -250,6 +269,22 @@ fn migrate(value: &mut serde_json::Value) {
         }
     }
 
+    // Versi lama menyimpan 0 = "Default perangkat". Di endpoint virtual nilai
+    // itu berarti driver bebas memilih buffer (bisa >1 detik), jadi migrasikan
+    // ke buffer tetap yang rendah latency. Pilihan eksplisit 0 setelah versi 4
+    // tetap dinormalisasi di `load()` supaya delay tidak bisa muncul lagi.
+    if from < 4 {
+        if let Some(object) = value.as_object_mut() {
+            let buffer = object
+                .get("bufferMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if buffer == 0 {
+                object.insert("bufferMs".into(), serde_json::json!(DEFAULT_BUFFER_MS));
+            }
+        }
+    }
+
     if let Some(object) = value.as_object_mut() {
         object.insert("version".into(), serde_json::json!(SETTINGS_VERSION));
     }
@@ -270,6 +305,18 @@ pub fn load(app: &tauri::AppHandle) -> AudioSettings {
             return AudioSettings::default();
         }
     };
+
+    // Simpan kondisi mentah sebelum migrasi supaya kita tahu apakah file di
+    // disk perlu ditulis ulang (mis. bufferMs 0 → 30).
+    let stored_version = value
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let stored_buffer = value
+        .get("bufferMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
     migrate(&mut value);
 
     let mut settings: AudioSettings = match serde_json::from_value(value) {
@@ -280,6 +327,19 @@ pub fn load(app: &tauri::AppHandle) -> AudioSettings {
         }
     };
     settings.mic_pre.sanitize();
+    // Jangan pernah biarkan 0 (default driver) lolos, termasuk kalau file
+    // sudah versi 4 tetapi user memilih "Default perangkat" dari UI lama.
+    settings.buffer_ms = normalize_buffer_ms(settings.buffer_ms);
+
+    // Migrasi harus terlihat di disk, bukan cuma di memori. Tanpa ini file
+    // lama tetap berisi `bufferMs: 0` / versi lama dan delay bisa kembali saat
+    // app dijalankan tanpa save settings.
+    if stored_version != SETTINGS_VERSION || stored_buffer != settings.buffer_ms {
+        if let Err(error) = save(app, &settings) {
+            eprintln!("[audio] gagal menyimpan hasil migrasi settings: {error}");
+        }
+    }
+
     settings
 }
 
@@ -450,5 +510,44 @@ mod tests {
         // 50 Hz notch default: file lama tanpa humNotchHz memetekan 50 Hz.
         let s = MicSettings::default();
         assert_eq!(s.hum_notch_hz, 50.0, "notch 50 Hz harus default untuk filter buzz listrik");
+    }
+
+    #[test]
+    fn migrasi_buffer_default_driver_ke_30ms() {
+        // File lama: bufferMs 0 = terserah driver (bisa 200-2000 ms).
+        let mut value = serde_json::json!({
+            "version": 3,
+            "bufferMs": 0,
+            "micPre": {}
+        });
+
+        migrate(&mut value);
+
+        assert_eq!(
+            value["bufferMs"].as_u64(),
+            Some(DEFAULT_BUFFER_MS as u64),
+            "bufferMs 0 harus dimigrasikan ke buffer tetap"
+        );
+        assert_eq!(value["version"].as_u64(), Some(SETTINGS_VERSION as u64));
+    }
+
+    #[test]
+    fn migrasi_buffer_tidak_menimpa_nilai_eksplisit() {
+        let mut value = serde_json::json!({
+            "version": 3,
+            "bufferMs": 40
+        });
+
+        migrate(&mut value);
+
+        assert_eq!(value["bufferMs"].as_u64(), Some(40));
+    }
+
+    #[test]
+    fn normalisasi_buffer_ms_menolak_nol_dan_clamp() {
+        assert_eq!(normalize_buffer_ms(0), DEFAULT_BUFFER_MS);
+        assert_eq!(normalize_buffer_ms(5), MIN_BUFFER_MS);
+        assert_eq!(normalize_buffer_ms(30), 30);
+        assert_eq!(normalize_buffer_ms(500), MAX_BUFFER_MS);
     }
 }

@@ -103,6 +103,20 @@ impl SpscRing {
         let head = self.head.load(Ordering::Acquire);
         self.tail.store(head, Ordering::Release);
     }
+
+    /// Consumer only. Buang sample paling lama sampai tersisa `target` sample.
+    ///
+    /// Dipakai mic ring: kalau mixer sempat stall, audio lama tidak boleh
+    /// diputar tertinggal; lebih baik dibuang supaya tetap near-real-time.
+    pub fn trim_to(&self, target: usize) {
+        let used = self.len();
+        if used <= target {
+            return;
+        }
+        let drop = used - target;
+        let tail = self.tail.load(Ordering::Relaxed);
+        self.tail.store(tail.wrapping_add(drop), Ordering::Release);
+    }
 }
 
 // SAFETY: `SpscRing` hanya mengizinkan satu producer dan satu consumer, dan
@@ -152,5 +166,28 @@ mod tests {
         let mut out = [0.0f32; 3];
         assert_eq!(ring.pop(&mut out), 0);
         assert_eq!(ring.len(), 0);
+    }
+
+    #[test]
+    fn trim_to_membuang_sample_paling_lama() {
+        let ring = SpscRing::new(8);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 6);
+
+        ring.trim_to(3);
+
+        assert_eq!(ring.len(), 3);
+        let mut out = [0.0f32; 3];
+        assert_eq!(ring.pop(&mut out), 3);
+        assert_eq!(out, [4.0, 5.0, 6.0], "sample terbaru harus dipertahankan");
+    }
+
+    #[test]
+    fn trim_to_tidak_mengubah_ring_yang_sudah_kecil() {
+        let ring = SpscRing::new(8);
+        assert_eq!(ring.push(&[1.0, 2.0]), 2);
+
+        ring.trim_to(4);
+
+        assert_eq!(ring.len(), 2);
     }
 }
