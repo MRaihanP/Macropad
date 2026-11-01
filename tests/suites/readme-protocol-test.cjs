@@ -1,17 +1,15 @@
-// Memastikan README.md tidak berbohong tentang protokol.
+// Memastikan dokumentasi protokol tidak berbohong tentang firmware.
 //
-// README adalah satu-satunya spesifikasi protokol yang dibaca manusia, tapi
-// tidak ada yang memverifikasinya terhadap firmware. Kalau README menyebut
-// perintah yang tidak lagi ada di firmware (atau sebaliknya), dokumentasi itu
-// menyesatkan dan tidak ada yang akan tahu.
-//
-// Test ini membandingkan isi README dengan bukti nyata di
+// Sejak README dirapikan untuk pembaca repo, spesifikasi protokol tinggal di
+// docs/PROTOCOL.md. Isinya tetap satu-satunya spesifikasi yang dibaca manusia,
+// jadi test ini membandingkannya dengan bukti nyata di
 // firmware/common/macropad_core.h dan dengan app.
 const fs = require('fs');
 const path = require('path');
 
 const root = process.cwd();
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+const protocol = fs.readFileSync(path.join(root, 'docs/PROTOCOL.md'), 'utf8');
 const core = fs.readFileSync(path.join(root, 'firmware/common/macropad_core.h'), 'utf8');
 const limits = fs.readFileSync(path.join(root, 'firmware/common/limits.h'), 'utf8');
 // Perintah diagnosa (DIAG) tinggal di diag.h, bukan di core. Tanpa baris ini,
@@ -36,7 +34,7 @@ ok(!/This template should help you get started/.test(readme),
 
 console.log('\n--- B. Setiap perintah yang didokumentasikan ADA di firmware ---');
 // Ambil nama perintah dari kolom pertama tabel Perintah.
-const cmdRows = [...readme.matchAll(/^\| `([A-Z][A-Z0-9]*)(?::[^`]*)?` \|/gm)].map(m => m[1]);
+const cmdRows = [...protocol.matchAll(/^\| `([A-Z][A-Z0-9]*)(?::[^`]*)?` \|/gm)].map(m => m[1]);
 const uniqCmds = [...new Set(cmdRows)];
 ok(uniqCmds.length >= 20, `README mendokumentasikan ${uniqCmds.length} perintah`);
 
@@ -58,7 +56,7 @@ for (const p of prefixes) {
 console.log('\n--- D. Batas angka yang diklaim README benar ---');
 const mm = limits.match(/#define MACRO_MAX_LEN\s+(\d+)/);
 ok(!!mm, 'MACRO_MAX_LEN ada di limits.h');
-ok(/47 byte/.test(readme), 'README menyebut 47 byte');
+ok(/47 byte/.test(protocol), 'README menyebut 47 byte');
 ok(mm && parseInt(mm[1]) - 1 === 47,
   `47 = MACRO_MAX_LEN (${mm && mm[1]}) - 1 untuk terminator`);
 
@@ -68,12 +66,12 @@ ok(rgbCount && parseInt(rgbCount[1]) === 9, `RGB_COUNT = ${rgbCount && rgbCount[
 // Yang penting: angka di README harus BENAR-BENAR sama dengan firmware.
 // Hanya mengecek "firmware = 9" tidak cukup - kalau README menulis 16,
 // test tetap hijau. Jadi bandingkan keduanya secara langsung.
-const readmeRgb = readme.match(/RGB slots \| (\d+)/);
+const readmeRgb = protocol.match(/RGB slots \| (\d+)/);
 ok(!!readmeRgb, 'README menyebut jumlah RGB slots di tabel konstanta');
 ok(readmeRgb && rgbCount && readmeRgb[1] === rgbCount[1],
   `jumlah RGB slots di README (${readmeRgb && readmeRgb[1]}) = RGB_COUNT di firmware (${rgbCount && rgbCount[1]})`);
 
-const readmeSlots = readme.match(/`APP_SLOTS` \| (\d+)/);
+const readmeSlots = protocol.match(/`APP_SLOTS` \| (\d+)/);
 ok(!!readmeSlots, 'README menyebut APP_SLOTS di tabel konstanta');
 const coreSlots = core.match(/#define APP_SLOTS\s+(\d+)/) || limits.match(/#define APP_SLOTS\s+(\d+)/);
 ok(!!coreSlots, 'APP_SLOTS ada di firmware');
@@ -92,21 +90,21 @@ ok(!!keyLine, 'format [KEY] di firmware persis seperti yang README gambarkan');
 const full = '[KEY] ' + '7,2,2,3,' + 'a'.repeat(47);
 const longest = full.length + 1;   // +1 untuk newline
 ok(longest === 62, `hitungan ulang: ${full.length} + newline = ${longest} byte (README bilang 62)`);
-ok(/62 byte/.test(readme), 'README menyebut 62 byte');
-ok(/64 byte/.test(readme), 'README menyebut batas buffer stack vprintf (64)');
+ok(/62 byte/.test(protocol), 'README menyebut 62 byte');
+ok(/64 byte/.test(protocol), 'README menyebut batas buffer stack vprintf (64)');
 ok(longest <= 64, `${longest} <= 64 byte, jadi tidak kena alokasi malloc di vprintf`);
 
 console.log('\n--- F. Klaim "currentLayer ikut tersimpan ke flash" ---');
 ok(/cmd == "SAVE"\) \{ saveConfigToFlash\(\); return; \}/.test(core),
   'firmware SAVE menuliskan seluruh struct cfg (berisi currentLayer)');
 ok(/uint8_t currentLayer;/.test(core), 'currentLayer memang anggota struct cfg');
-ok(/LAYER:0/.test(readme), 'README menyebut solusi app-side (LAYER:0 setelah connect)');
+ok(/LAYER:0/.test(protocol), 'README menyebut solusi app-side (LAYER:0 setelah connect)');
 
 console.log('\n--- G. README menyebut keadaan yang benar ---');
 ok(/cargo test --lib/.test(readme), 'README menyebut cara test Rust');
 ok(/npx vite build|vite build/.test(readme), 'README menyebut cara build frontend');
-ok(/Toolchain Arduino|tidak ada\s*\n?\s*toolchain Arduino/i.test(readme) || /tidak ada toolchain Arduino/.test(readme),
-  'README jujur soal keterbatasan verifikasi firmware');
+ok(/uji di device tetap wajib/i.test(readme),
+  'README jujur bahwa uji hardware tetap wajib');
 ok(/USB-OTG \(TinyUSB\)/.test(readme), 'README menyebut setting board Arduino');
 ok(/PROTOTYPE/.test(readme) && /FINAL/.test(readme), 'README menjelaskan dua profil');
 
