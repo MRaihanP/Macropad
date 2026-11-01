@@ -5,7 +5,12 @@ Dokumen ini berisi dua hal:
 1. **Ringkasan perkembangan** — apa yang sudah selesai dan apa yang belum.
 2. **Prosedur pengujian** — langkah-langkah memastikan semua fitur aman.
 
-Status verifikasi terakhir: **SEMUA HIJAU** (lihat [Bagian 3](#3-hasil-verifikasi-terakhir)).
+Status verifikasi terakhir: **84 test Rust hijau, `vite build` sukses, kedua
+sketsh firmware terkompilasi**, dan 40 dari 44 suite Node hijau. Empat suite yang
+merah sudah merah sebelum rilis 0.9.0 dan tidak terkait firmware FINAL
+(`ble-transport-test.mjs`, `contract-chunk-test.cjs`, `diag-report-test.mjs`,
+satu assertion jalur teks di `frame-transport-test.mjs`). Lihat
+[Bagian 3](#3-hasil-verifikasi-terakhir).
 
 ---
 
@@ -52,7 +57,8 @@ setiap tahap bisa di-revert.
 
 #### Aplikasi (JavaScript)
 
-- 21 skrip uji Node, semua hijau.
+- 40 dari 44 suite uji Node hijau (4 suite merah sudah ada sebelumnya dan
+  dicatat sebagai known issue di CHANGELOG 0.9.0).
 - `vite build` sukses.
 - Aksesibilitas: navigasi sidebar & layer dengan keyboard, modal dengan focus trap
   dan focus restore, live region untuk status & log.
@@ -318,18 +324,22 @@ supaya riwayatnya tetap bisa ditelusuri).
 
 | Yang diuji | Hasil |
 |---|---|
-| `cargo check` | Bersih (0 error) |
-| `cargo test --lib` | **9 passed**, 0 failed |
-| `npx vite build` | Sukses, 32 modul |
-| 21 skrip uji Node | **21/21 PASS** |
+| `cargo check --lib` | Bersih (0 error) |
+| `cargo test --lib` | **84 passed**, 0 failed, 1 ignored |
+| `npx vite build` | Sukses |
+| Suite uji Node | **40/44 hijau** (4 known issue lama) |
+| `arduino-cli compile` FINAL v8 | 716.369 B flash (54%), 112.364 B RAM (34%) |
+| `arduino-cli compile` PROTOTYPE v8 | 700.857 B flash (53%), 110.676 B RAM (33%) |
 
-Dua skrip sempat gagal setelah Phase 10 karena masih mencari `Serial.printf(`,
-padahal firmware sekarang memakai macro `SERIAL->printf(`. Itu **test usang, bukan
-regresi** — regex-nya sudah diperbaiki, dan sekarang menerima keduanya.
+Empat suite Node yang masih merah sudah merah sebelum 0.9.0 dan tidak
+berhubungan dengan perubahan firmware FINAL: `ble-transport-test.mjs` (4
+assertion), `contract-chunk-test.cjs`, `diag-report-test.mjs`, dan satu assertion
+"upload penuh jalur teks" di `frame-transport-test.mjs`.
 
 ### Yang belum terverifikasi
 
-- Compile Arduino (tidak ada toolchain).
 - Perilaku nyata di device (tidak ada akses ke device dari lingkungan ini).
-- Fase FINAL yang butuh charger/VBUS/RGB asli.
-- BLE end-to-end (masih dalam pengerjaan).
+- Polaritas `EN_RGB` (GPIO15) dan `EN_VD` (GPIO17).
+- Arah putaran kedua knob (`ENC_DIR_INVERT` bila terbalik).
+- Status charger MCP73831 sebenarnya, termasuk membedakan "selesai" dari
+  "tidak ada baterai" (keduanya high-Z pada pin STAT).
