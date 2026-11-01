@@ -5,6 +5,65 @@ Semua perubahan penting pada proyek ini dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan proyek ini memakai [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-01
+
+Rilis pertama yang menyatukan firmware FINAL (2 knob, RGB, baterai, BLE) dengan
+perbaikan transport auto-connect dan audio. Firmware FINAL memakai `FW_VERSION 8`.
+Git tag: `v0.9.0`.
+
+### Added
+- **Firmware FINAL v8 lengkap.** 2 knob, strip RGB 9 LED, pembagi baterai
+  100k/100k di `VD` (GPIO16) dengan switch `EN_VD` (GPIO17), deteksi transport
+  `VD_VB` (GPIO21), dan status charger MCP73831 (GPIO18).
+- **Media otomatis USB <-> BLE di FINAL.** `VD_VB` HIGH memilih HID/protokol USB
+  dan mematikan BLE; LOW memindahkan HID ke BLE dan melepas enumerasi USB.
+  Pergantian butuh 3 bacaan stabil (~0,9 dtk) supaya kapasitor kopling tidak
+  memicu switch palsu. Tombol BOOT/GPIO0 tidak dipakai lagi di FINAL.
+- **Gesture tahan per knob yang bisa diatur dari app.** Dua tier per knob
+  (pindah layer berikutnya/sebelumnya, keluar preset) dengan durasi
+  100-20000 ms. Disimpan di NVS namespace `gestcfg`, dibaca lewat `GEST` dan
+  ditulis lewat `SETGEST:<idx>:<1|2>:<type>:<ms>`. Default knob 1: pindah layer
+  2000 ms, keluar preset 3000 ms; knob 2 tanpa gesture.
+- **Efek RGB di device.** `rgb_effects.h` dipakai FINAL: breathing, color cycle,
+  rainbow, waves, snake, random, react. Mode 0/1 tetap statis.
+- **Battery sense asli**: `EN_VD` on, tunggu 5 ms, 16 sampel ADC, `EN_VD` off;
+  dilaporkan tiap 10 detik.
+- **Auto-connect USB + BLE dengan USB prioritas** di app, termasuk auto-pair
+  perangkat BLE yang belum paired dan reset adapter Windows setelah 3x gagal.
+- **Suite kontrak firmware FINAL** (`tests/suites/firmware-final-contract-test.cjs`)
+  mengunci perilaku media otomatis, pin ADC, battery sense, RGB off, gesture,
+  dan ukuran payload biner 2 knob.
+
+### Fixed
+- **`VD_VB` dibaca sebagai ADC padahal GPIO21 bukan pin ADC di ESP32-S3**, jadi
+  USB/charger tidak pernah terdeteksi. Sekarang `digitalRead` (pembagi memberi
+  ~2,98 V saat terpasang).
+- **Payload biner preset terlalu kecil untuk 2 knob** (`CFG_STAGING_SIZE` 5120
+  vs kebutuhan 6014 byte), sehingga upload biner selalu ditolak dan app turun ke
+  jalur teks. Sekarang `CFG_LAYER_BYTES` diturunkan dari `NUM_ENCODERS`, staging
+  6144, dengan `static_assert`.
+- **`cfgSig()` membaca encoder dengan urutan salah** untuk lebih dari satu knob;
+  sidik jari tidak pernah cocok dengan app. Kini urutan kanonik CW,CCW,BTN per knob.
+- **`rgb_effects.h` tidak bisa dikompilasi** (`%` pada float) - FINAL gagal build.
+- **RGB "off" tidak mematikan MOSFET `EN_RGB`.** Sekarang `RGB:EN:0`, brightness
+  0, atau warna hitam mematikan rail; `rgbInit()` tidak lagi melakukan sweep saat
+  state tersimpan off.
+- **Banner boot memakai "v5" hardcode**; sekarang mengikuti `FW_VERSION`.
+- **Status charger dipoll tiap loop**; sekarang tiap 500 ms.
+- **Buffer audio default driver** bisa 200-2000 ms di endpoint virtual. Output
+  dan input mencoba fixed buffer (default 30 ms, kandidat 30/40/60/80/120) dan
+  settings lama `bufferMs=0` dimigrasikan (settings v4). Panel audio menampilkan
+  buffer efektif yang benar-benar dipakai.
+- **Two-file lazy loader di `transport.js`** (sisa merge) disatukan supaya modul
+  BLE hanya dimuat sekali dan `setManagerMode` selalu diteruskan.
+
+### Known issues
+- Verifikasi hardware belum dilakukan: polaritas `EN_RGB`/`EN_VD`, arah putaran
+  knob (gunakan `ENC_DIR_INVERT` bila terbalik), dan status charger sebenarnya.
+- Empat suite uji lama masih merah dan tidak terkait rilis ini:
+  `ble-transport-test.mjs`, `contract-chunk-test.cjs`, `diag-report-test.mjs`,
+  dan satu assertion jalur teks di `frame-transport-test.mjs`.
+
 ## [0.6.0] - 2026-10-12
 
 Checkpoint. Transport BLE sudah bisa dipilih dari app; switch USB<->BLE via

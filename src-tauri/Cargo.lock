@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "macropad-configurator"
-version = "0.6.6"
+version = "0.9.0"
 dependencies = [
  "cpal",
  "crossbeam-channel",

@@ -306,17 +306,55 @@ npx vite build                     # menangkap error yang lolos node --check
 # lalu jalankan skrip uji Node
 ```
 
-Status verifikasi saat ini: `cargo check` bersih, 9 test Rust hijau,
-`vite build` sukses, 28 skrip uji Node hijau.
+Status verifikasi saat ini (2026-11-01): `vite build` sukses, 40 dari 44 suite
+uji Node hijau, dan kedua sketsh firmware dikompilasi dengan `arduino-cli`
+(core esp32 3.3.8) untuk `esp32:esp32:esp32s3`:
 
-Firmware **tidak** bisa diverifikasi penuh di lingkungan build ini (tidak ada
-toolchain Arduino). Pemeriksaan yang dilakukan bersifat statis: kurung kurawal
-seimbang, simbol domain terdefinisi, dan kontrak offset protokol di atas.
-Compile Arduino dan uji di device tetap wajib.
+| Sketsh | Flash | RAM statis |
+| --- | --- | --- |
+| FINAL v8 | 716.369 B (54%) | 112.364 B (34%) |
+| PROTOTYPE v8 | 700.857 B (53%) | 110.676 B (33%) |
+
+Empat suite Node masih merah dan **sudah merah sebelum rilis ini** (tidak
+terkait firmware FINAL): `ble-transport-test.mjs`, `contract-chunk-test.cjs`,
+`diag-report-test.mjs`, dan satu assertion jalur teks di
+`frame-transport-test.mjs`.
+
+Kompilasi ulang tetap wajib setiap kali firmware diubah, dan uji di device tetap
+wajib untuk hal yang tidak bisa dibuktikan statis: polaritas `EN_RGB`/`EN_VD`,
+arah putaran knob, dan status charger sebenarnya.
 
 ---
 
 ## Changelog
+
+### v0.9.0 — firmware FINAL, gesture per knob, media otomatis
+
+Rilis ini mengubah FINAL dari "prototype yang diberi label final" menjadi
+firmware perangkat sebenarnya.
+
+**Firmware FINAL v8.** 2 knob, strip RGB 9 LED (urutan serpentine
+`RGB_INDEX`), baterai 100k/100k di `VD` dengan switch `EN_VD`, deteksi kabel
+`VD_VB`, dan status charger. Media dipilih otomatis: kabel terpasang → USB,
+tanpa kabel → BLE. Tombol BOOT/GPIO0 tidak dipakai lagi.
+
+**Yang tidak terlihat dari catatan pinout tapi wajib** (lihat CHANGELOG 0.9.0
+untuk detail):
+
+- GPIO21 bukan pin ADC di ESP32-S3 → deteksi USB harus `digitalRead`.
+- FINAL harus benar-benar mengompilasi BLE (`HID_BLE_SUPPORT 1`).
+- Payload biner preset 2 knob butuh 6014 byte; staging lama 5120 membuat setiap
+  upload biner ditolak dan app diam-diam turun ke jalur teks.
+- `cfgSig()` harus menyusun encoder kanonik per knob, kalau tidak cache preset
+  tidak pernah cocok.
+- RGB off / brightness 0 / warna hitam harus mematikan MOSFET `EN_RGB`.
+- `rgb_effects.h` sebelumnya tidak bisa dikompilasi sama sekali (`%` pada float).
+
+**Gesture tahan kini per knob** dan diatur dari app (`GEST`/`SETGEST`, dua tier,
+100–20000 ms), disimpan di NVS sehingga tidak ikut payload preset.
+
+**Audio:** buffer tetap 30 ms + kandidat fallback menggantikan "default driver"
+yang bisa 200–2000 ms di endpoint virtual.
 
 ### v0.6.6 (perbaikan)
 
