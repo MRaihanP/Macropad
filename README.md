@@ -66,6 +66,8 @@ app selalu memvalidasinya sebelum dipakai.
 | `SET:<layer>:<r>:<c>:<type>:<value>` | tulis satu key | `[OK] Set ...` |
 | `GET:<layer>:<r>:<c>` | baca satu key | `L<n> R<n> C<n> -> type=.. value=..` |
 | `SETENC:<idx>:<CW\|CCW\|BTN>:<type>:<value>` | tulis binding encoder | `[OK] SetEnc ...` |
+| `GEST` | baca gesture tahan per knob | `GEST_BEGIN` ... `GEST:<idx>:<t1Type>,<t1Ms>,<t2Type>,<t2Ms>` ... `GEST_END` |
+| `SETGEST:<idx>:<1\|2>:<type>:<ms>` | atur satu tier gesture knob (disimpan di NVS `gestcfg`) | `[OK] Gesture knob n tier n ...` |
 | `ADDLAYER` | tambah layer | `[OK] Layer ditambah, total ...` |
 | `DELLAYER` | hapus layer aktif | `[OK] Layer dihapus, ...` |
 | `RENAMELAYER:<n>:<name>` | ganti nama | `[OK] Layer <n> diganti nama jadi ...` |
@@ -103,6 +105,12 @@ beserta satu kalimat vonis yang menyebut lapis penyebabnya. Lihat
 
 Tipe aksi (`type` pada SET/SETENC): `0` none, `1` teks, `2` kombinasi,
 `3` macro, `4` consumer/media, `5` buka aplikasi.
+
+Tipe gesture (`type` pada SETGEST): `0` tidak ada, `1` layer berikutnya,
+`2` layer sebelumnya, `3` keluar preset. Gesture berlaku saat tombol knob
+ditahan: tier 1 = tahan lebih lama dari `<ms>` tier 1, tier 2 = lebih lama lagi.
+Tap singkat tetap menjalankan binding `BTN`. Durasi valid 100–20000 ms dan tier 2
+harus lebih lama dari tier 1. Pengaturan ini per knob dan tidak ikut payload preset.
 
 ### Protokol frame v2 (migrasi, belum dipakai app)
 

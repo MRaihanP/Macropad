@@ -663,6 +663,7 @@ async function afterConnectHandshake() {
     await sendLine('LAYER:0');
     await sendLine('INFO');
     await sendLine('DUMPENC');
+    await sendLine('GEST');
     await sendLine('BATT');
     await sendLine('RGB:DUMP');
     // Batas waktu. Kalau device tidak menjawab dalam 6 detik, tunjukkan di log

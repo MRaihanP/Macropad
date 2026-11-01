@@ -73,11 +73,32 @@ setiap tahap bisa di-revert.
 - Belum ada auto-connect / auto-reconnect.
 - Fallback force-connect manual harus disembunyikan (bukan dihapus) selama 1–2 rilis.
 
-#### Firmware FINAL — mesin efek RGB
+#### Firmware FINAL — media otomatis, baterai, RGB (v8)
 
-`rgbApplyState()` baru menerjemahkan mode menjadi warna per LED, **belum
-menganimasikannya** (breathing / rainbow / wave / snake / random / react belum jalan).
-Preview di app sudah jalan, tapi device FINAL belum. Butuh hardware.
+Sudah diimplementasikan di `firmware/HID_Keypad_Final/HID_Keypad_Final.ino`:
+
+- **BLE HID aktif** (`HID_BLE_SUPPORT 1`). Media dipilih otomatis dari VD_VB:
+  HIGH (USB) -> HID/protokol USB + BLE dimatikan; LOW (baterai) -> BLE + USB
+  di-de-enumerasi. Debounce ~0,9 detik supaya cross-coupling capacitor tidak
+  memicu switch palsu. Tidak ada lagi tombol BOOT/GPIO0 di FINAL.
+- **VD_VB dibaca digital** (GPIO21 bukan pin ADC di ESP32-S3). ADC 8 sampel
+  per loop yang lama (~2 ms blocking) diganti satu `digitalRead` per 500 ms.
+- **Battery sense asli**: `EN_VD` HIGH -> settle 5 ms -> 16 sampel ADC -> `EN_VD`
+  LOW, dilaporkan tiap 10 detik (bukan tiap detik/loop).
+- **RGB off benar-benar mematikan MOSFET**: `RGB:EN:0`, brightness 0, atau warna
+  hitam -> `rgbPower(false)`. `rgbInit()` tidak lagi melakukan sweep saat state
+  tersimpan off.
+- **Mesin efek RGB terpasang** (`rgb_effects.h`): breathing, color cycle,
+  rainbow, waves, snake, random, react. Mode 0/1 tetap statis.
+- **Gesture knob bisa diatur**: per knob, dua tier, tipe dan durasi dari app
+  (`GEST` / `SETGEST`), disimpan di NVS. Default: knob 1 pindah layer 2 dtk,
+  keluar preset 3 dtk; knob 2 tanpa gesture.
+- **Payload biner 2 knob**: `CFG_STAGING_SIZE` 6144 (payload maksimum 6014),
+  `needLen` dihitung dari `NUM_ENCODERS`, `cfgSig()` menyusun encoder dalam
+  urutan kanonik CW,CCW,BTN per knob.
+
+Yang masih perlu hardware: verifikasi polaritas `EN_RGB`/`EN_VD`, arah putaran
+knob (bisa dibalik lewat `ENC_DIR_INVERT`), dan pembacaan charger sebenarnya.
 
 #### Phase 6.1 — ditunda dengan sengaja
 
@@ -245,22 +266,36 @@ Periksa:
 - [ ] **Jendela putih**: tutup app paksa lalu jalankan lagi → harus normal
       (watchdog `paint-watch.js`).
 
-### 2.6 Tingkat 6 — Uji firmware (wajib, belum bisa di sini)
+### 2.6 Tingkat 6 — Uji firmware
 
-Tidak ada toolchain Arduino di lingkungan pengembangan, jadi firmware hanya
-diverifikasi **statis** (kurung kurawal seimbang, simbol domain terdefinisi,
-region verbatim utuh, kontrak offset protokol firmware↔app).
+Toolchain Arduino tersedia (`arduino-cli` + core esp32 3.3.8). Kedua sketsh
+sudah dikompilasi untuk `esp32:esp32:esp32s3`:
 
-Sebelum rilis:
+| Sketsh | Flash | RAM statis |
+| --- | --- | --- |
+| FINAL v8 | 716.369 B (54%) | 112.364 B (34%) |
+| PROTOTYPE v8 | 700.857 B (53%) | 110.676 B (33%) |
 
-- [ ] `arduino-cli compile` untuk **kedua** sketsh (PROTOTYPE & FINAL) tanpa error/warning.
+Verifikasi statis tetap dijalankan lewat suite Node
+(`firmware-compile-guard-test.js`, `firmware-final-contract-test.cjs`,
+`firmware-switch-iface-test.cjs`).
+
+Sebelum rilis ke device:
+
+- [x] `arduino-cli compile` untuk **kedua** sketsh (PROTOTYPE & FINAL) tanpa error.
+- [x] Cek ukuran flash & RAM dipakai tidak mendekati batas.
 - [ ] Flash ke device dan ulangi seluruh uji di Bagian 2.3.
-- [ ] Cek ukuran flash & RAM dipakai tidak mendekati batas.
-- [ ] Uji FINAL saat VBUS terpasang → `EVT:CHG:state=0/1/2` (tidak mengisi / mengisi /
+- [ ] Uji FINAL saat VBUS terpasang -> `EVT:CHG:state=0/1/2` (tidak mengisi / mengisi /
       selesai) benar.
-- [ ] Uji FINAL tanpa VBUS → `usb=0`, `charging=0`.
-- [ ] **Mesin efek RGB FINAL** — setelah diimplementasikan: breathing, rainbow, wave,
-      snake, random, react semuanya jalan dan tidak flicker.
+- [ ] Uji FINAL tanpa VBUS -> `usb=0`, `charging=0`, dan media otomatis pindah ke BLE
+      (`IFACE:link=ble`), lalu kembali ke USB saat kabel dipasang.
+- [ ] Verifikasi polaritas `EN_RGB` (GPIO15) dan `EN_VD` (GPIO17).
+- [ ] Verifikasi arah putaran kedua knob; kalau terbalik set `ENC_DIR_INVERT 1`
+      di sketsh FINAL (jangan mengubah tabel quadrature bersama).
+- [ ] Mesin efek RGB FINAL: breathing, rainbow, wave, snake, random, react jalan
+      dan tidak flicker; RGB off/brightness 0/warna hitam mematikan rail (ukur arus).
+- [ ] Gesture: pindah tier 1/tier 2 di app benar-benar mengubah knob dan durasinya,
+      dan tersimpan setelah reboot.
 
 ### 2.7 Prosedur per-commit
 

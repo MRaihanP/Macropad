@@ -266,6 +266,17 @@ input[readonly] { color: var(--accent); cursor: default; }
   margin: 10px 0 2px; }
 .enc-group-label:first-child { margin-top: 0; }
 
+/* Editor gesture per knob: dua baris (tahan 1 / tahan 2) di bawah binding. */
+.enc-gesture { margin: 2px 0 10px; padding: 8px 10px; border: 1px dashed var(--line);
+  border-radius: 10px; display: flex; flex-direction: column; gap: 6px; }
+.enc-gesture.invalid { border-color: var(--danger, #e5534b); }
+.enc-gesture-title { font-size: 0.68rem; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.04em; }
+.enc-gesture-row { display: flex; align-items: center; gap: 8px; }
+.enc-gesture-row .label { font-size: 0.76rem; color: var(--muted); min-width: 62px; }
+.enc-gesture-type { flex: 1 1 auto; min-width: 0; }
+.enc-gesture-ms { width: 82px; flex: 0 0 auto; }
+
 .adaptive-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .preset-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .preset-row { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line);

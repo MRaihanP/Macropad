@@ -133,7 +133,7 @@ static inline void rgbFrame(uint8_t mode, uint8_t speed, const uint8_t color[3],
       float tri = t < 0.5f ? (t * 2.0f) : (2.0f - t * 2.0f);
       float val = 0.05f + tri * 0.90f;
       float s = 255.0f;                             // full saturation
-      float h = (float)seed % 360.0f;               // warna acak per siklus
+      float h = fmodf((float)seed, 360.0f);         // warna acak per siklus
       for (uint8_t i = 0; i < RGB_COUNT; i++) out[i] = rgbHsv(h, s, val * 255.0f);
       return;
     }

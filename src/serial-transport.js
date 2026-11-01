@@ -303,6 +303,7 @@ export async function connect(pathArg) {
     await sendLine('LAYER:0');
     await sendLine('INFO');
     await sendLine('DUMPENC');
+    await sendLine('GEST');
     await sendLine('BATT');
     await sendLine('RGB:DUMP');
   }, 400);

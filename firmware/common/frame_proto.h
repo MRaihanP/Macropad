@@ -118,14 +118,20 @@ static uint32_t faCxUnsup     = 0;
 //   u8  layerCount    - 1..MAX_LAYERS
 //   per layer (layerCount x):
 //     char  name[16]                (NAME_LEN)
-//     key  : u8 type, char value[48] x (ROWS*COLS)      = 9 x 49 = 441
-//     enc  : u8 type, char value[48] x (NUM_ENCODERS*3) = 3 x 49 = 147
-//     subtotal = 16 + 441 + 147 = 604 byte
+//     key  : u8 type, char value[48] x (ROWS*COLS)          = 9 x 49 = 441
+//     enc  : u8 type, char value[48] x (NUM_ENCODERS*3)      = 6 x 49 = 294 (FINAL)
+//     subtotal = 16 + 441 + 294 = 751 byte (FINAL, 2 knob)
 //   u32 crc32      - CRC32/ISO-HDLC atas seluruh byte di atas
 //
-// Size maksimum: 2 + 604*8 + 4 = 4838 byte. Buffer 5120 (5KB) muat dengan
-// sedikit ruang, jauh di bawah limit stack ESP32-S3 di IRAM.
-#define CFG_STAGING_SIZE 5120u
+// Ukuran per layer DIHITUNG dari NUM_ENCODERS, bukan angka 604 yang dulu
+// di-hardcode untuk 1 knob. Dengan 2 knob (FINAL) satu layer berisi 751 byte,
+// sehingga payload 8 layer = 2 + 751*8 + 4 = 6014 byte - melebihi 5120 yang
+// lama. Akibatnya upload biner selalu ditolak dan app diam-diam turun ke jalur
+// teks (lambat). Buffer sekarang 6144 (6KB) supaya muat penuh.
+#define CFG_LAYER_BYTES (NAME_LEN + (ROWS * COLS + NUM_ENCODERS * 3) * (1 + MACRO_MAX_LEN))
+#define CFG_MAX_PAYLOAD (2u + (unsigned)CFG_LAYER_BYTES * MAX_LAYERS + 4u)
+#define CFG_STAGING_SIZE 6144u
+static_assert(CFG_MAX_PAYLOAD <= CFG_STAGING_SIZE, "CFG_STAGING_SIZE tidak cukup untuk payload maksimum");
 //
 // FASE 5: Credit flow control.
 //
@@ -137,11 +143,11 @@ static uint32_t faCxUnsup     = 0;
 // melacak sendiri sisa itu, jadi tidak ada drift akumulasi.
 //
 // PENTING - credit tidak pernah ditambah. Itu disengaja: payload maksimum satu
-// preset adalah 4838 byte (lihat perhitungan di atas) dan CFG_STAGING_SIZE
-// 5120, jadi credit penuh selalu cukup untuk SELURUH preset dalam satu sesi.
-// Alur flow control-nya sederhana: device memberi tahu sisa ruang, app
-// menghormatinya. Tidak ada siklus refill karena tidak ada siklus flush - staging
-// di-commit utuh di akhir, bukan ditulis berkala.
+// preset sudah dihitung di CFG_MAX_PAYLOAD (static_assert di atas menjaganya
+// tetap <= staging), jadi credit penuh selalu cukup untuk SELURUH preset dalam
+// satu sesi. Alur flow control-nya sederhana: device memberi tahu sisa ruang,
+// app menghormatinya. Tidak ada siklus refill karena tidak ada siklus flush -
+// staging di-commit utuh di akhir, bukan ditulis berkala.
 //
 // Kalau suatu saat payload bisa melebihi staging, check `len > cfgStageCredit`
 // di faCmdCfgWrite sudah menolaknya dengan FA_ERR_CREDIT_EXHAUSTED, dan app
@@ -344,8 +350,23 @@ static uint32_t cfgSig(const MacroConfig& c) {
   s.layerNames   = c.layerNames[0];
   s.keyTypes     = (const uint8_t*)&c.layerMap[0][0][0].type;
   s.keyValues    = &c.layerMap[0][0][0].value[0];
-  s.encTypes     = (const uint8_t*)&c.encCW[0].type;
-  s.encValues    = &c.encCW[0].value[0];
+
+  // cfg_sig.h menghitung encoder dalam urutan KANONIK per knob:
+  //   CW0, CCW0, BTN0, CW1, CCW1, BTN1, ...
+  // Di struct MacroConfig binding tersimpan sebagai tiga array terpisah
+  // (CW0, CW1, CCW0, CCW1, BTN0, BTN1). Menunjuk &encCW[0] dengan satu stride
+  // hanya kebetulan benar untuk SATU knob; dengan dua knob urutannya terbaca
+  // salah, sidik jari tidak pernah cocok dengan app, dan app mengunggah ulang
+  // preset terus-menerus tanpa error di kedua sisi. Jadi susun salinan kecil
+  // dalam urutan kanonik lebih dulu.
+  static KeyAction encCanon[NUM_ENCODERS * 3];
+  for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
+    encCanon[i * 3 + 0] = c.encCW[i];
+    encCanon[i * 3 + 1] = c.encCCW[i];
+    encCanon[i * 3 + 2] = c.encBtn[i];
+  }
+  s.encTypes     = (const uint8_t*)&encCanon[0].type;
+  s.encValues    = &encCanon[0].value[0];
   // Keempat stride type dan value sengaja sama: keduanya berada di dalam satu
   // struct KeyAction, jadi jaraknya memang sama. Kalau struct-nya berubah,
   // keempat baris ini berubah bersama - dan itulah gunanya memisahkannya di
@@ -681,8 +702,9 @@ static void faCmdCfgCommit() {
   // Parse binary payload field-per-field ke dalam struct.
   // Layout binary (canonical, LE, no padding):
   //   u8 version, u8 layerCount
-  //   per layer: char name[16], 9*(u8 type, char value[48]), 3*(u8 type, char value[48])
-  // Panjang per layer = 16 + 9*49 + 3*49 = 604 byte
+  //   per layer: char name[16], 9*(u8 type, char value[48]),
+  //              NUM_ENCODERS*(CW,CCW,BTN)*(u8 type, char value[48])
+  // Panjang per layer dihitung dari CFG_LAYER_BYTES (751 byte untuk FINAL).
   const uint8_t version = cfgStage[0];
   const uint8_t layerCount = cfgStage[1];
   if (version != CONFIG_VERSION) {
@@ -696,7 +718,7 @@ static void faCmdCfgCommit() {
   uint8_t nLayers = (layerCount < MAX_LAYERS) ? layerCount : MAX_LAYERS;
 
   // Hitung berapa byte yang sebenarnya ada untuk layer data (tanpa CRC)
-  const uint16_t needLen = (uint16_t)(2 + 604u * nLayers);
+  const uint16_t needLen = (uint16_t)(2u + (unsigned)CFG_LAYER_BYTES * nLayers);
   if (dataLen < needLen) {
     // data terlalu pendek untuk layerCount yang diklaim — ini CRC mismatch
     // konseptual (app menghitung salah) jadi laporkan sebagai CRC error.

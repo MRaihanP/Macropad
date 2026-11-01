@@ -12,6 +12,7 @@
 import {
   ROWS, COLS, NUM_ENCODERS, TYPE_NAMES,
   currentLayer, layerCount, maxLayers, layerNames, mapping, encConfig,
+  gestConfig, setGest, GEST_MS_MIN, GEST_MS_MAX,
   setCurrentLayer, reorderLayer, emptyLayer,
 } from './device-state.js';
 import { el, escapeHtml } from './dom.js';
@@ -249,6 +250,94 @@ export function renderGrid() {
   }
 }
 
+// ==================== EDITOR GESTURE KNOB ====================
+// Gesture disimpan di DEVICE (bukan di preset), jadi setiap perubahan langsung
+// dikirim lewat SETGEST dan device yang menyimpannya ke NVS. Nilai awal datang
+// dari dump GEST saat handshake.
+const GEST_TYPES = [
+  { value: 0, key: 'gest.none' },
+  { value: 1, key: 'gest.next' },
+  { value: 2, key: 'gest.prev' },
+  { value: 3, key: 'gest.escape' },
+];
+
+function buildGestureEditor(idx) {
+  const g = gestConfig[idx] || { t1Type: 0, t1Ms: 2000, t2Type: 0, t2Ms: 3000 };
+  const box = document.createElement('div');
+  box.className = 'enc-gesture';
+
+  const title = document.createElement('div');
+  title.className = 'enc-gesture-title';
+  title.textContent = t('gest.title');
+  title.title = t('gest.hint');
+  box.appendChild(title);
+
+  const rows = [1, 2].map(tier => {
+    const row = document.createElement('div');
+    row.className = 'enc-gesture-row';
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = tier === 1 ? t('gest.tier1') : t('gest.tier2');
+
+    const typeSel = document.createElement('select');
+    typeSel.className = 'enc-gesture-type';
+    for (const opt of GEST_TYPES) {
+      const o = document.createElement('option');
+      o.value = String(opt.value);
+      o.textContent = t(opt.key);
+      typeSel.appendChild(o);
+    }
+    typeSel.value = String(tier === 1 ? g.t1Type : g.t2Type);
+
+    const ms = document.createElement('input');
+    ms.type = 'number';
+    ms.className = 'enc-gesture-ms';
+    ms.min = String(GEST_MS_MIN);
+    ms.max = String(GEST_MS_MAX);
+    ms.step = '100';
+    ms.value = String(tier === 1 ? g.t1Ms : g.t2Ms);
+    ms.setAttribute('aria-label', (tier === 1 ? t('gest.tier1') : t('gest.tier2')) + ' (ms)');
+
+    row.appendChild(label);
+    row.appendChild(typeSel);
+    row.appendChild(ms);
+    box.appendChild(row);
+    return { tier, typeSel, ms };
+  });
+
+  const apply = () => {
+    const next = {
+      t1Type: parseInt(rows[0].typeSel.value, 10),
+      t1Ms: parseInt(rows[0].ms.value, 10),
+      t2Type: parseInt(rows[1].typeSel.value, 10),
+      t2Ms: parseInt(rows[1].ms.value, 10),
+    };
+    const msOk = [next.t1Ms, next.t2Ms].every(n => Number.isInteger(n) && n >= GEST_MS_MIN && n <= GEST_MS_MAX);
+    const orderOk = next.t1Type === 0 || next.t2Type === 0 || next.t2Ms > next.t1Ms;
+    if (!msOk || !orderOk) {
+      // Jangan kirim nilai yang pasti ditolak device; kembalikan ke nilai terakhir.
+      const cur = gestConfig[idx] || g;
+      rows[0].typeSel.value = String(cur.t1Type); rows[0].ms.value = String(cur.t1Ms);
+      rows[1].typeSel.value = String(cur.t2Type); rows[1].ms.value = String(cur.t2Ms);
+      box.classList.add('invalid');
+      box.title = t('gest.invalid');
+      return;
+    }
+    box.classList.remove('invalid');
+    box.removeAttribute('title');
+    setGest(idx, next);
+    sendLine(`SETGEST:${idx}:1:${next.t1Type}:${next.t1Ms}`);
+    sendLine(`SETGEST:${idx}:2:${next.t2Type}:${next.t2Ms}`);
+  };
+
+  for (const r of rows) {
+    r.typeSel.onchange = apply;
+    r.ms.onchange = apply;
+  }
+  return box;
+}
+
 export function renderEncoderList() {
   const list = el('encList');
   list.innerHTML = '';
@@ -256,7 +345,7 @@ export function renderEncoderList() {
     if (NUM_ENCODERS > 1) {
       const h = document.createElement('div');
       h.className = 'enc-group-label';
-      h.textContent = t('enc.knobHeader', { i }) + (i === 0 ? t('enc.gestureBasic') : '');
+      h.textContent = t('enc.knobHeader', { i: i + 1 });
       list.appendChild(h);
     }
     ['CW', 'CCW', 'BTN'].forEach(which => {
@@ -272,6 +361,7 @@ export function renderEncoderList() {
       makeInteractive(row, () => openEditor('enc', { idx: i, which }), label);
       list.appendChild(row);
     });
+    list.appendChild(buildGestureEditor(i));
   }
 }
 

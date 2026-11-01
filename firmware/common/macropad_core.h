@@ -97,23 +97,57 @@ volatile int8_t  encQuadAcc[NUM_ENCODERS]   = { 0 };
 // Jumlah transisi quadrature (= perubahan A/B) untuk satu detent penuh.
 #define QUAD_STEPS_PER_DETENT 4
 
-// =================== STATE ENCODER BUTTON (per index; index ENC_PRIMARY pakai
-// gesture lengkap di checkEncoder(), index lain cuma tap sederhana) ===================
+// Arah putaran bisa dibalik per profil tanpa mengubah sketsh lain. Dipakai
+// kalau penamaan A/B di PCB terbalik dari yang diharapkan (GEOMETRI, bukan
+// bug): set 1 di sketsh profil, jangan menyunting tabel transisi bersama.
+#ifndef ENC_DIR_INVERT
+#define ENC_DIR_INVERT 0
+#endif
+
+// =================== STATE ENCODER BUTTON + GESTURE (per index) ===================
+//
+// Sejak FINAL, gesture TIDAK lagi menempel mati ke satu knob. Setiap knob punya
+// dua tingkat tahan (tier 1 dan tier 2) yang tipenya dan durasinya diatur dari
+// companion app lewat perintah GEST / SETGEST. Default pabrik tetap sama dengan
+// perilaku lama: knob 1 -> pindah layer (2 dtk), lalu keluar preset (3 dtk);
+// knob 2 tidak punya gesture.
+//
+// Tap (tekan-lepas cepat) selalu menjalankan aksi encBtn[] yang dipetakan di
+// keymap, jadi gesture tidak pernah "mencuri" aksi tombol biasa.
+enum GestureType : uint8_t {
+  GEST_NONE = 0,
+  GEST_NEXT_LAYER = 1,
+  GEST_PREV_LAYER = 2,
+  GEST_ESCAPE = 3          // kembali ke Default Preset
+};
+
+struct EncGesture {
+  uint8_t  t1Type;         // GestureType tier 1 (tahan sedang)
+  uint16_t t1Ms;           // durasi tier 1
+  uint8_t  t2Type;         // GestureType tier 2 (tahan lama)
+  uint16_t t2Ms;           // durasi tier 2 (harus > t1Ms untuk urutan yang masuk akal)
+};
+
+EncGesture gestCfg[NUM_ENCODERS];
+
 bool encBtnRawState[NUM_ENCODERS]        = { false };
 bool encBtnDebouncedState[NUM_ENCODERS]  = { false };
 unsigned long encBtnLastChangeTime[NUM_ENCODERS] = { 0 };
 const unsigned long ENC_BTN_DEBOUNCE_MS = 30;
 
-unsigned long encBtnPressStart = 0;
-bool layerSwitchTriggered = false;   // true setelah threshold 1s tercapai (masih ditahan)
-bool escapeTriggered = false;        // true setelah threshold 3.5s tercapai (masih ditahan)
+unsigned long encBtnPressStart[NUM_ENCODERS] = { 0 };
+bool encTier1Done[NUM_ENCODERS] = { false };
+bool encTier2Done[NUM_ENCODERS] = { false };
 bool encoderLedActive = false;
 unsigned long holdBlinkLast = 0;
 bool holdBlinkState = false;
-const unsigned long LONG_PRESS_MS   = 1000;  // cycle layer (scoped ke activeCfg)
-const unsigned long ESCAPE_HOLD_MS  = 3500;  // tahan lebih lama lagi -> escape ke Default Preset
 const unsigned long HOLD_BLINK_INTERVAL_MS = 150;
 const unsigned long ESCAPE_BLINK_INTERVAL_MS = 80; // kedip lebih cepat di zona escape
+
+// Batas aman durasi gesture. 0 ms tidak masuk akal (langsung terpicu saat
+// ditekan) dan > 20 dtk membuat user mengira device hang.
+const uint16_t GEST_MS_MIN = 100;
+const uint16_t GEST_MS_MAX = 20000;
 
 // =================== STATE LED HEARTBEAT ===================
 unsigned long lastHeartbeat = 0;
@@ -157,6 +191,9 @@ void IRAM_ATTR handleEncoderISR(void* arg) {
   int8_t d = QUAD_DELTA[(prev << 2) | now];
   encQuadState[i] = now;
   if (d == 0) return;                        // bouncing / transisi tidak valid
+#if ENC_DIR_INVERT
+  d = (int8_t)-d;
+#endif
 
   int16_t acc = (int16_t)encQuadAcc[i] + d;
   if (acc >= QUAD_STEPS_PER_DETENT) {
@@ -263,6 +300,32 @@ void setDefaultConfig() {
   cfg.encCW[ENC_PRIMARY]  = {ACTION_CONSUMER, "VOLUP"};
   cfg.encCCW[ENC_PRIMARY] = {ACTION_CONSUMER, "VOLDOWN"};
   cfg.encBtn[ENC_PRIMARY] = {ACTION_CONSUMER, "MUTE"};
+
+  // Knob 2 ikut dipetakan dari pabrik. Tanpa ini, knob kedua ada secara fisik
+  // tapi tidak menghasilkan apa pun sampai user membuka app - persis kesan
+  // "knob rusak" pada device baru.
+  for (uint8_t i = 1; i < NUM_ENCODERS; i++) {
+    cfg.encCW[i]  = {ACTION_KEY, "DOWN"};
+    cfg.encCCW[i] = {ACTION_KEY, "UP"};
+    cfg.encBtn[i] = {ACTION_KEY, "ENTER"};
+  }
+}
+
+// Gesture default = perilaku lama PROTOTYPE, tapi sekarang per knob dan bisa
+// diubah dari app: knob 1 memegang pindah layer (2 dtk) dan escape (3 dtk).
+void setDefaultGestures() {
+  for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
+    gestCfg[i].t1Type = GEST_NONE;
+    gestCfg[i].t1Ms   = 2000;
+    gestCfg[i].t2Type = GEST_NONE;
+    gestCfg[i].t2Ms   = 3000;
+  }
+  if (NUM_ENCODERS > 0) {
+    gestCfg[0].t1Type = GEST_NEXT_LAYER;
+    gestCfg[0].t1Ms   = 2000;
+    gestCfg[0].t2Type = GEST_ESCAPE;
+    gestCfg[0].t2Ms   = 3000;
+  }
 }
 
 // =================== APP PRESET (RAM only) ===================
@@ -488,7 +551,30 @@ void scanMatrix() {
   for (uint8_t rr = 0; rr < ROWS; rr++) digitalWrite(ROW_PINS[rr], HIGH);
 }
 
-// =================== CEK ENCODER — semua knob + gesture lengkap di ENC_PRIMARY ===================
+// =================== CEK ENCODER — semua knob + gesture yang bisa diatur ===================
+// Jalankan satu gesture knob. Tipe berasal dari gestCfg[] (diatur app), bukan
+// lagi dari konstanta tetap, sehingga knob 1/2 bisa bertukar peran.
+void runEncoderGesture(uint8_t type, uint8_t idx) {
+  switch (type) {
+    case GEST_NEXT_LAYER:
+      activeCfg->currentLayer = (uint8_t)((activeCfg->currentLayer + 1) % activeCfg->layerCount);
+      broadcastLayerChanged();
+      break;
+    case GEST_PREV_LAYER:
+      activeCfg->currentLayer = (uint8_t)((activeCfg->currentLayer + activeCfg->layerCount - 1) % activeCfg->layerCount);
+      broadcastLayerChanged();
+      break;
+    case GEST_ESCAPE:
+      activeCfg = &cfg;           // paksa balik ke Default SEKARANG JUGA, tidak nunggu companion
+      SERIAL->println("EVT:ESCAPE");
+      broadcastLayerChanged();    // broadcast currentLayer Default yang sebenarnya
+      break;
+    default:
+      return;
+  }
+  SERIAL->printf("[GEST] knob %d -> tipe %d\n", (int)idx, (int)type);
+}
+
 void checkEncoder() {
   unsigned long now = millis();
 
@@ -506,91 +592,87 @@ void checkEncoder() {
     }
   }
 
-  // ---- Tombol knob TAMBAHAN (bukan ENC_PRIMARY): tap sederhana, tanpa long-press/escape ----
+  // ---- Tombol tiap knob: tap = aksi encBtn[], tahan = gesture bertingkat ----
   for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
-    if (i == ENC_PRIMARY) continue;
+    const EncGesture& g = gestCfg[i];
     bool rawPressed = (digitalRead(ENC_BTN_PINS[i]) == LOW);
     if (rawPressed != encBtnRawState[i]) { encBtnRawState[i] = rawPressed; encBtnLastChangeTime[i] = now; }
+
     if ((now - encBtnLastChangeTime[i] >= ENC_BTN_DEBOUNCE_MS) && (encBtnRawState[i] != encBtnDebouncedState[i])) {
       encBtnDebouncedState[i] = encBtnRawState[i];
-      if (!encBtnDebouncedState[i]) { // eksekusi saat dilepas
-        executeAction(activeCfg->encBtn[i]);
-        SERIAL->printf("[ENC_BTN] Knob %d: aksi terkonfigurasi dijalankan\n", i);
-        flashLed();
-      }
-    }
-  }
 
-  // ---- Tombol knob ENC_PRIMARY: gesture dasar (cycle layer, escape) — SAMA seperti sebelumnya ----
-  const uint8_t p = ENC_PRIMARY;
-  bool rawPressed = (digitalRead(ENC_BTN_PINS[p]) == LOW);
-  if (rawPressed != encBtnRawState[p]) { encBtnRawState[p] = rawPressed; encBtnLastChangeTime[p] = now; }
-
-  if ((now - encBtnLastChangeTime[p] >= ENC_BTN_DEBOUNCE_MS) && (encBtnRawState[p] != encBtnDebouncedState[p])) {
-    encBtnDebouncedState[p] = encBtnRawState[p];
-
-    if (encBtnDebouncedState[p]) {
-      encBtnPressStart = now;
-      layerSwitchTriggered = false;
-      escapeTriggered = false;
-      encoderLedActive = true;
-      holdBlinkLast = now;
-      holdBlinkState = false;
-    } else {
-      // Baru dilepas
-      if (escapeTriggered) {
-        // Pola beda sengaja: 1 kedipan panjang, bukan N-kali-sesuai-layer
-        // (currentLayer appCfg sudah tidak relevan, sebentar lagi dibuang companion).
-        // Dijalankan non-blocking lewat serviceEscapeBlink(); sebelumnya delay(100)
-        // + delay(300) membekukan loop selama 400ms.
-        statusLed(false);
-        escapeBlinkStage = 1;
-        escapeBlinkNextAt = millis() + 100;
-        escapeTriggered = false;
-        layerSwitchTriggered = false;
-      } else if (layerSwitchTriggered) {
-        statusLed(false);
-        blinkLedTimes(activeCfg->currentLayer + 1);
-        layerSwitchTriggered = false;
-      } else {
-        executeAction(activeCfg->encBtn[p]);
-        SERIAL->println("[ENC_BTN] Aksi terkonfigurasi dijalankan");
-        hidTrace("ENC_BTN", "knob utama");
-        flashLed();
-      }
-      encoderLedActive = false;
-      lastHeartbeat = now;
-    }
-  }
-
-  // ---- State machine LED selama tombol ENC_PRIMARY ditahan (3 tier) ----
-  if (encBtnDebouncedState[p]) {
-    unsigned long elapsed = now - encBtnPressStart;
-
-    if (!layerSwitchTriggered && elapsed < LONG_PRESS_MS) {
-      if (now - holdBlinkLast >= HOLD_BLINK_INTERVAL_MS) {
+      if (encBtnDebouncedState[i]) {
+        // Baru ditekan
+        encBtnPressStart[i] = now;
+        encTier1Done[i] = false;
+        encTier2Done[i] = false;
         holdBlinkLast = now;
-        holdBlinkState = !holdBlinkState;
-        statusLed(holdBlinkState);
+        holdBlinkState = false;
+      } else {
+        // Baru dilepas
+        if (!encTier1Done[i] && !encTier2Done[i]) {
+          executeAction(activeCfg->encBtn[i]);
+          SERIAL->printf("[ENC_BTN] Knob %d: aksi terkonfigurasi dijalankan\n", i);
+          hidTrace("ENC_BTN", (i == 0) ? "knob 1" : "knob 2");
+          flashLed();
+        } else if (encTier2Done[i] && g.t2Type == GEST_ESCAPE) {
+          // Pola beda sengaja: 1 kedipan panjang, bukan N-kali-sesuai-layer.
+          statusLed(false);
+          escapeBlinkStage = 1;
+          escapeBlinkNextAt = millis() + 100;
+        } else {
+          statusLed(false);
+          blinkLedTimes(activeCfg->currentLayer + 1);
+        }
+        encTier1Done[i] = false;
+        encTier2Done[i] = false;
+        lastHeartbeat = now;
       }
-    } else if (!layerSwitchTriggered && elapsed >= LONG_PRESS_MS) {
-      layerSwitchTriggered = true;
-      activeCfg->currentLayer = (activeCfg->currentLayer + 1) % activeCfg->layerCount;
-      // [LAYER] trace dihapus — duplikat dari broadcastLayerChanged() (EVT:LAYER)
-      broadcastLayerChanged();
-      statusLed(true); // solid
-    } else if (layerSwitchTriggered && !escapeTriggered && elapsed >= ESCAPE_HOLD_MS) {
-      escapeTriggered = true;
-      activeCfg = &cfg;           // paksa balik ke Default SEKARANG JUGA, tidak nunggu companion
-      SERIAL->println("EVT:ESCAPE");
-      broadcastLayerChanged();    // broadcast currentLayer Default yang sebenarnya, menimpa EVT:LAYER tadi
-    } else if (escapeTriggered) {
+    }
+
+    // ---- Selama ditahan: picu tier sesuai durasi yang diatur user ----
+    if (encBtnDebouncedState[i]) {
+      unsigned long elapsed = now - encBtnPressStart[i];
+
+      if (!encTier1Done[i] && g.t1Type != GEST_NONE && elapsed >= g.t1Ms) {
+        encTier1Done[i] = true;
+        runEncoderGesture(g.t1Type, i);
+        statusLed(true);            // solid: tier 1 sudah tercapai
+        holdBlinkLast = now;
+      }
+      if (!encTier2Done[i] && g.t2Type != GEST_NONE && elapsed >= g.t2Ms) {
+        encTier2Done[i] = true;
+        runEncoderGesture(g.t2Type, i);
+        holdBlinkLast = now;
+      }
+    }
+  }
+
+  // ---- Indikator tahan: kedip lambat -> solid setelah tier 1 -> kedip cepat ----
+  encoderLedActive = false;
+  bool anyT1 = false, anyT2 = false;
+  for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
+    if (!encBtnDebouncedState[i]) continue;
+    if (gestCfg[i].t1Type == GEST_NONE && gestCfg[i].t2Type == GEST_NONE) continue;
+    encoderLedActive = true;
+    if (encTier1Done[i]) anyT1 = true;
+    if (encTier2Done[i]) anyT2 = true;
+  }
+  if (encoderLedActive) {
+    if (anyT2) {
       if (now - holdBlinkLast >= ESCAPE_BLINK_INTERVAL_MS) {
         holdBlinkLast = now;
         holdBlinkState = !holdBlinkState;
         statusLed(holdBlinkState);
       }
+    } else if (!anyT1) {
+      if (now - holdBlinkLast >= HOLD_BLINK_INTERVAL_MS) {
+        holdBlinkLast = now;
+        holdBlinkState = !holdBlinkState;
+        statusLed(holdBlinkState);
+      }
     }
+    // anyT1 && !anyT2: biarkan solid (sudah dinyalakan saat tier 1 terpicu).
   }
 }
 
@@ -642,31 +724,94 @@ uint8_t battPercentFromMv(uint32_t mv) {
 }
 
 const unsigned long BATT_REPORT_INTERVAL_MS = 10000;  // Turun dari 5s → 10s
+// VBUS/STAT dicek jauh lebih sering daripada baterai, tapi TIDAK setiap loop:
+// vbusPresent() dulu memanggil ADC 8x + delayMicroseconds tiap iterasi (~2 ms
+// blocking). Sekarang cukup satu digitalRead per 500 ms; perubahan status
+// charger tetap terdeteksi di bawah satu detik.
+const unsigned long CHARGE_POLL_INTERVAL_MS = 500;
 unsigned long lastBattReportMs = 0;
+unsigned long lastChargePollMs = 0;
 ChargeState lastChargeState = CHARGE_NONE;
 bool battStateValid = false;
+bool usbPresentCached = false;
 
 // Laporkan baterai + status charger. Nilai diambil lewat antarmuka profil, jadi
 // PROTOTYPE mengirim angka simulasi dan FINAL mengirim angka hardware dengan
 // format pesan yang sama persis.
 void reportBatt() {
-  ChargeState cs = readChargeState();
-  bool chargeChanged = !battStateValid || (cs != lastChargeState);
   unsigned long now = millis();
+  bool chargeChanged = false;
+
+  if (!battStateValid || (long)(now - lastChargePollMs) >= (long)CHARGE_POLL_INTERVAL_MS) {
+    lastChargePollMs = now;
+    usbPresentCached = usbHostConnected();
+    ChargeState cs = readChargeState();
+    if (!battStateValid || cs != lastChargeState) {
+      chargeChanged = true;
+      lastChargeState = cs;
+    }
+  }
+
   if (!chargeChanged && (long)(now - lastBattReportMs) < (long)BATT_REPORT_INTERVAL_MS) return;
 
   lastBattReportMs = now;
-  lastChargeState = cs;
   battStateValid = true;
 
   uint32_t pinMv = 0;
   uint32_t battMv = readBatteryMv(&pinMv);
   SERIAL->printf("EVT:BATT:pct=%d,mv=%lu,charging=%d,usb=%d,profile=%s\n",
                 battPercentFromMv(battMv), (unsigned long)battMv,
-                (cs == CHARGE_CHARGING) ? 1 : 0,
-                usbHostConnected() ? 1 : 0, HW_PROFILE_NAME);
+                (lastChargeState == CHARGE_CHARGING) ? 1 : 0,
+                usbPresentCached ? 1 : 0, HW_PROFILE_NAME);
   if (chargeChanged)
-    SERIAL->printf("EVT:CHG:state=%d\n", (int)cs);
+    SERIAL->printf("EVT:CHG:state=%d\n", (int)lastChargeState);
+}
+
+// =================== GESTURE KNOB (NVS, di luar preset) ===================
+// Gesture adalah preferensi DEVICE (seperti state RGB), bukan isi keymap:
+// berpindah preset app tidak boleh mengubah cara knob memicu gesture. Karena
+// itu disimpan di namespace NVS sendiri dan tidak ikut payload biner preset -
+// layout CFG_WRITE dan CFG_SIG tetap kompatibel dengan app yang sudah ada.
+#define GEST_NS "gestcfg"
+#define GEST_BLOB_VER 1
+
+struct GestBlob {
+  uint8_t ver;
+  EncGesture g[NUM_ENCODERS];
+};
+
+bool gestPersist() {
+  GestBlob b;
+  b.ver = GEST_BLOB_VER;
+  for (uint8_t i = 0; i < NUM_ENCODERS; i++) b.g[i] = gestCfg[i];
+  if (!prefs.begin(GEST_NS, false)) {
+    SERIAL->println("[ERROR] Gesture: NVS tidak bisa dibuka");
+    return false;
+  }
+  size_t w = prefs.putBytes("g", &b, sizeof(b));
+  prefs.end();
+  return (w == sizeof(b));
+}
+
+void gestRestore() {
+  setDefaultGestures();
+  if (!prefs.begin(GEST_NS, true)) return;
+  if (prefs.getBytesLength("g") == sizeof(GestBlob)) {
+    GestBlob b;
+    if (prefs.getBytes("g", &b, sizeof(b)) == sizeof(b) && b.ver == GEST_BLOB_VER) {
+      for (uint8_t i = 0; i < NUM_ENCODERS; i++) gestCfg[i] = b.g[i];
+    }
+  }
+  prefs.end();
+}
+
+void dumpGestures() {
+  SERIAL->printf("GEST_BEGIN:count=%d\n", NUM_ENCODERS);
+  for (uint8_t i = 0; i < NUM_ENCODERS; i++)
+    SERIAL->printf("GEST:%d:%d,%u,%d,%u\n", i,
+                   (int)gestCfg[i].t1Type, (unsigned)gestCfg[i].t1Ms,
+                   (int)gestCfg[i].t2Type, (unsigned)gestCfg[i].t2Ms);
+  SERIAL->println("GEST_END");
 }
 
 ActionType parseActionType(const String& s) {
@@ -894,6 +1039,47 @@ void handleSerialCommand(const String& cmd) {
 
     OK_PRINTF("[OK] SetEnc %d/%s -> %s : %s\n", encIdx, which.c_str(), typeStr.c_str(), value.c_str());
     encoderConfigDumped = false;  // reset agi DUMPENC bisa dikirim lagi
+    return;
+  }
+
+  if (cmd == "GEST") {
+    dumpGestures();
+    return;
+  }
+
+  if (cmd.startsWith("SETGEST:")) {
+    // Format: SETGEST:<idx>:<1|2>:<tipe>:<ms>
+    int i1 = cmd.indexOf(':', 8);
+    int i2 = cmd.indexOf(':', i1 + 1);
+    int i3 = cmd.indexOf(':', i2 + 1);
+    if (i1 < 0 || i2 < 0 || i3 < 0) {
+      SERIAL->println("[ERROR] Format SETGEST:<idx>:<1|2>:<tipe>:<ms>");
+      return;
+    }
+    long idx, tier, type, ms;
+    if (!parseIntRange(cmd.substring(8, i1), 0, NUM_ENCODERS - 1, idx) ||
+        !parseIntRange(cmd.substring(i1 + 1, i2), 1, 2, tier) ||
+        !parseIntRange(cmd.substring(i2 + 1, i3), GEST_NONE, GEST_ESCAPE, type) ||
+        !parseIntRange(cmd.substring(i3 + 1), GEST_MS_MIN, GEST_MS_MAX, ms)) {
+      SERIAL->printf("[ERROR] Nilai SETGEST di luar batas (ms %u..%u)\n", GEST_MS_MIN, GEST_MS_MAX);
+      return;
+    }
+
+    EncGesture g = gestCfg[(uint8_t)idx];
+    if (tier == 1) { g.t1Type = (uint8_t)type; g.t1Ms = (uint16_t)ms; }
+    else           { g.t2Type = (uint8_t)type; g.t2Ms = (uint16_t)ms; }
+
+    // Tier 2 harus lebih lama dari tier 1 supaya keduanya bisa dibedakan.
+    // Divalidasi SEBELUM disimpan, jadi penolakan tidak meninggalkan state separuh.
+    if (g.t1Type != GEST_NONE && g.t2Type != GEST_NONE && g.t2Ms <= g.t1Ms) {
+      SERIAL->println("[ERROR] Durasi tier 2 harus lebih besar dari tier 1");
+      return;
+    }
+
+    gestCfg[(uint8_t)idx] = g;
+    bool ok = gestPersist();
+    OK_PRINTF("[OK] Gesture knob %ld tier %ld -> tipe %ld, %ld ms%s\n",
+              idx, tier, type, ms, ok ? "" : " (GAGAL SIMPAN)");
     return;
   }
 
@@ -1304,7 +1490,7 @@ void updateLed() {
 static bool bootBannerArmed = false;
 
 static void printBootBanner() {
-  SERIAL->println("=== ESP32-S3 Macro Pad Firmware v5 ===");
+  SERIAL->printf("=== ESP32-S3 Macro Pad Firmware v%d ===\n", FW_VERSION);
   SERIAL->printf("[HW] Profil: %s, knob=%d\n", HW_PROFILE_NAME, NUM_ENCODERS);
   // uptime sengaja ikut dicetak. Tanpa ini, "hanya mulai mencetak setelah
   // beberapa saat" tidak bisa dibedakan dari device yang memang lambat -
@@ -1347,6 +1533,7 @@ void setup() {
   // sebelum flash), tandai supaya banner tidak dicetak dua kali.
   if (LOGS->isConnected()) bootBannerArmed = true;
   loadConfigFromFlash();
+  gestRestore();                // gesture knob: preferensi device, bukan isi preset
   for (uint8_t i = 0; i < APP_SLOTS; i++) resetCfgStruct(slotCfg[i]);
   resetAppCfg(); // siapkan appCfg kosong dari awal (belum dipakai sampai ada CONTEXT:APP:NEW)
 
@@ -1369,9 +1556,11 @@ void setup() {
     attachInterruptArg(digitalPinToInterrupt(ENC_B_PINS[i]), handleEncoderISR, (void*)(uintptr_t)i, CHANGE);
   }
 
-  hwPeripheralsInit();
+  // Urutan ini penting: state RGB dibaca LEBIH DULU supaya rgbInit() bisa
+  // menghormati "RGB off" yang tersimpan (tidak menyalakan MOSFET + sweep).
   rgbStateReset();
   rgbRestore();
+  hwPeripheralsInit();
   rgbApplyState();
 
   // Hook milik profil (default kosong). Dipakai HID_Keypad_Prototype.ino untuk

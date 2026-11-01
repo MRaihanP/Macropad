@@ -595,11 +595,15 @@ ok(/MAX_WRITE_BYTES\s*=\s*244/.test(ftSrc),
 ok(/FRAME_OVERHEAD\s*=\s*7/.test(ftSrc),
   'overhead frame 7 byte (header 5 + CRC 2) dinyatakan eksplisit');
 
-// (8) Credit harus cukup untuk satu preset utuh. Payload maksimum 4838 byte
-// (lihat frame_proto.h) dan staging 5120 - jadi credit penuh selalu cukup dan
-// tidak ada siklus refill yang perlu ada.
-ok(/CFG_STAGING_SIZE 5120/.test(frameProto),
-  'staging 5120 byte cukup untuk payload maksimum 4838 byte');
+// (8) Credit harus cukup untuk satu preset utuh. Payload terbesar berasal dari
+// FINAL (2 knob, 8 layer): 16 + (9 key + 6 binding) * 49 byte per layer, lalu
+// header 2 + CRC 4. Angka ini dihitung ulang di sini, bukan disalin, supaya
+// test ikut gagal kalau layout/ukuran staging menyimpang.
+const staging = parseInt((frameProto.match(/#define CFG_STAGING_SIZE\s+(\d+)/) || [])[1], 10);
+const layerBytes2Knob = 16 + (3 * 3 + 2 * 3) * (1 + 48);   // 751
+const maxPayload2Knob = 2 + layerBytes2Knob * 8 + 4;       // 6014
+ok(Number.isInteger(staging) && staging >= maxPayload2Knob,
+  `staging ${staging} byte cukup untuk payload maksimum ${maxPayload2Knob} byte (2 knob, 8 layer)`);
 
 // (9) Locale untuk log baru harus ada di kedua bahasa.
 ok(/adaptive\.frameSwitchStart/.test(idSrc) && /adaptive\.frameSwitchStart/.test(enSrc),

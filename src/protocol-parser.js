@@ -27,6 +27,7 @@ import {
   encConfigCached,
   setNumEncoders, applyInfo, applyDumpRow, applyEncRow, applyName,
   applyLayerEvent, applyEncCount, applyEncIdx, setEncConfigCached,
+  applyGestRow,
 } from './device-state.js';
 import { el, log } from './dom.js';
 import { t } from './i18n.js';
@@ -352,6 +353,24 @@ function handleFrameLine(line) {
     // Allowlist kunci ada di applyEncRow - tanpa itu device bisa mengirim
     // "__proto__" yang menjadi prototype assignment pada objek knob.
     if (p.length >= 3) applyEncRow(encParseIdx, p[0], parseInt(p[1]), p.slice(2).join(','), log);
+    return;
+  }
+  if (line.startsWith('GEST_BEGIN')) {
+    // Dump gesture per knob; setiap baris membawa indexnya sendiri, jadi tidak
+    // perlu state "sedang membaca knob berapa".
+    return;
+  }
+  if (line === 'GEST_END') {
+    hooks.renderEncoderList();
+    return;
+  }
+  if (line.startsWith('GEST:')) {
+    // GEST:<idx>:<t1Type>,<t1Ms>,<t2Type>,<t2Ms>
+    const parts = line.substring(5).split(':');
+    const kv = (parts[1] || '').split(',');
+    if (parts.length >= 2 && kv.length >= 4) {
+      applyGestRow(parseInt(parts[0]), kv[0], kv[1], kv[2], kv[3], log);
+    }
     return;
   }
   if (line.startsWith('HWINFO:')) {

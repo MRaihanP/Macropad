@@ -29,6 +29,16 @@ export let encConfig = [{ CW: null, CCW: null, BTN: null }];
 export let encParseIdx = 0;
 export let encConfigCached = false;  // true setelah menerima ENC_BEGIN/END sekali
 
+// Gesture tahan per knob, dari dump GEST di firmware (bukan disimpan di preset).
+// Tipe: 0=none, 1=layer berikutnya, 2=layer sebelumnya, 3=keluar preset.
+export const GEST_NONE = 0;
+export const GEST_NEXT_LAYER = 1;
+export const GEST_PREV_LAYER = 2;
+export const GEST_ESCAPE = 3;
+export const GEST_MS_MIN = 100;
+export const GEST_MS_MAX = 20000;
+export let gestConfig = [];
+
 // ---- Akses untuk pengujian ----
 // Life bindings (export let) bersifat read-only dari luar modul, jadi test butuh
 // jalan baca ini. Dipakai juga oleh modul lain yang butuh nilai yang dijamin mutlak.
@@ -36,6 +46,8 @@ export const getDims = () => ({ ROWS, COLS });
 export const getLayer = (l) => mapping[l];
 export const getEnc = (i) => encConfig[i];
 export const getEncList = () => encConfig;
+export const getGest = (i) => gestConfig[i];
+export const getGestList = () => gestConfig;
 export const getNames = () => layerNames;
 export const getNumEnc = () => NUM_ENCODERS;
 export const getCurrentLayer = () => currentLayer;
@@ -49,6 +61,7 @@ export function resetForTest() {
   encConfig = [{ CW: null, CCW: null, BTN: null }];
   encParseIdx = 0;
   encConfigCached = false;
+  gestConfig = [];
 }
 
 // ---- Setter ----
@@ -65,10 +78,52 @@ export function setMapping(m) { mapping = m; }
 export function setNumEncoders(n) {
   NUM_ENCODERS = n;
   ensureEncConfigSize();
+  ensureGestSize();
 }
 
 export function ensureEncConfigSize() {
   encConfig = Array.from({ length: NUM_ENCODERS }, () => ({ CW: null, CCW: null, BTN: null }));
+}
+
+// Gesture default di app hanya placeholder sampai dump GEST dari device tiba.
+// Nilainya SAMA dengan default firmware supaya UI tidak menampilkan angka aneh
+// sebelum device menjawab.
+export function ensureGestSize() {
+  const prev = gestConfig;
+  gestConfig = Array.from({ length: NUM_ENCODERS }, (_, i) => prev[i] || {
+    t1Type: i === 0 ? GEST_NEXT_LAYER : GEST_NONE,
+    t1Ms: 2000,
+    t2Type: i === 0 ? GEST_ESCAPE : GEST_NONE,
+    t2Ms: 3000,
+  });
+}
+
+// Satu baris GEST:<idx>:<t1Type>,<t1Ms>,<t2Type>,<t2Ms>.
+export function applyGestRow(idx, t1Type, t1Ms, t2Type, t2Ms, log) {
+  ensureGestSize();
+  if (!isInt(idx) || idx < 0 || idx >= NUM_ENCODERS) {
+    if (log) log(`[ERROR] GEST: index knob ${idx} di luar batas`, 'err');
+    return false;
+  }
+  const clampMs = (v) => {
+    const n = parseInt(v);
+    if (!isInt(n) || n < GEST_MS_MIN || n > GEST_MS_MAX) return null;
+    return n;
+  };
+  const ms1 = clampMs(t1Ms), ms2 = clampMs(t2Ms);
+  if (ms1 === null || ms2 === null) {
+    if (log) log(`[ERROR] GEST: durasi di luar ${GEST_MS_MIN}..${GEST_MS_MAX} ms`, 'err');
+    return false;
+  }
+  const t1 = isInt(parseInt(t1Type)) ? parseInt(t1Type) : GEST_NONE;
+  const t2 = isInt(parseInt(t2Type)) ? parseInt(t2Type) : GEST_NONE;
+  gestConfig[idx] = { t1Type: t1, t1Ms: ms1, t2Type: t2, t2Ms: ms2 };
+  return true;
+}
+
+export function setGest(idx, g) {
+  ensureGestSize();
+  if (idx >= 0 && idx < gestConfig.length) gestConfig[idx] = { ...g };
 }
 
 // Parser juga butuh index knob yang sedang dibaca (DUMPENC), diekspor agar bisa di-reset.
