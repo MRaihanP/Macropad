@@ -6,6 +6,7 @@ from your desktop — everything is stored on the device, so the macro pad keeps
 working without the app.
 
 [![Release](https://img.shields.io/github/v/release/MRaihanP/Macropad?label=release)](https://github.com/MRaihanP/Macropad/releases/latest)
+[![License](https://img.shields.io/github/license/MRaihanP/Macropad?label=license)](LICENSE)
 
 ---
 
@@ -119,4 +120,4 @@ and charger status.
 
 ## License
 
-Not set yet.
+MIT © 2026 MRaihanP. See [LICENSE](LICENSE) for the full text.
