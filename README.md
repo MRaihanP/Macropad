@@ -1,85 +1,86 @@
 # Macro Pad Configurator
 
-Companion app untuk macro pad **ESP32-S3**: 3×3 tombol, hingga 2 rotary encoder,
-9 LED RGB, dan baterai. Atur keymap, gesture knob, dan efek RGB dari desktop —
-semuanya disimpan di perangkat, jadi macro pad tetap berfungsi tanpa app.
+Companion app for an **ESP32-S3** macro pad: 3×3 keys, up to 2 rotary encoders,
+9 RGB LEDs, and a battery. Configure the keymap, knob gestures, and RGB effects
+from your desktop — everything is stored on the device, so the macro pad keeps
+working without the app.
 
-[![Release](https://img.shields.io/github/v/release/MRaihanP/Macropad?label=rilis)](https://github.com/MRaihanP/Macropad/releases/latest)
+[![Release](https://img.shields.io/github/v/release/MRaihanP/Macropad?label=release)](https://github.com/MRaihanP/Macropad/releases/latest)
 
 ---
 
 ## Download
 
-Installer Windows 64-bit tersedia di halaman **[Releases](https://github.com/MRaihanP/Macropad/releases)**:
+A Windows 64-bit installer is available on the **[Releases](https://github.com/MRaihanP/Macropad/releases)** page:
 
-| File | Keterangan |
+| File | Description |
 |---|---|
-| `macropad-configurator_0.9.0_x64-setup.exe` | Installer NSIS — pilihan yang disarankan |
-| `macropad-configurator_0.9.0_x64_en-US.msi` | Paket MSI untuk instalasi terkelola |
+| `macropad-configurator_0.9.0_x64-setup.exe` | NSIS installer — recommended |
+| `macropad-configurator_0.9.0_x64_en-US.msi` | MSI package for managed installs |
 
-Unduh, jalankan installer, lalu buka **Macro Pad Configurator** dari Start Menu.
-Windows 10/11 64-bit. Bila WebView2 Runtime belum ada, installer akan
-menawarkannya.
-
----
-
-## Fitur
-
-- **Keymap 3×3 sampai 8 layer** — setiap tombol bisa berisi teks, kombinasi
-  tombol, macro, tombol media, atau membuka aplikasi.
-- **Knob yang bisa diprogram** — putar CW/CCW dan tekan; mendukung 1 atau 2 knob
-  tergantung board.
-- **Gesture tahan per knob** — tahan untuk pindah layer atau keluar preset,
-  durasinya diatur sendiri dari app (100–20000 ms) dan disimpan di device.
-- **RGB 9 LED** — warna per tombol, breathing, color cycle, rainbow, wave, snake,
-  random, dan react.
-- **Baterai & status charger** — persentase, tegangan, dan indikator mengisi
-  (khusus board FINAL).
-- **USB atau Bluetooth otomatis** — board FINAL berpindah ke BLE saat kabel
-  dilepas dan kembali ke USB saat kabel dipasang.
-- **Preset adaptif** — konfigurasi mengikuti aplikasi yang sedang aktif.
-- **Bahasa Indonesia & English** — mengikuti bahasa Windows saat pertama dibuka.
+Download it, run the installer, then open **Macro Pad Configurator** from the
+Start Menu. Windows 10/11 64-bit. If the WebView2 Runtime is missing, the
+installer offers to install it.
 
 ---
 
-## Dua profil board
+## Features
 
-Repo ini berisi firmware untuk dua board. Pindah profil = membuka sketsh yang
-lain, bukan mengubah sakelar.
+- **3×3 keymap with up to 8 layers** — every key can hold text, a key combo, a
+  macro, a media key, or launch an application.
+- **Programmable knob** — rotate CW/CCW and press; supports 1 or 2 knobs
+  depending on the board.
+- **Per-knob hold gestures** — hold to change layer or leave a preset, with a
+  duration you set in the app (100–20000 ms) and stored on the device.
+- **9-LED RGB** — per-key colour, breathing, colour cycle, rainbow, wave, snake,
+  random, and react.
+- **Battery & charger status** — percentage, voltage, and charging indicator
+  (FINAL board only).
+- **Automatic USB or Bluetooth** — the FINAL board switches to BLE when the cable
+  is unplugged and back to USB when it is plugged in.
+- **Adaptive presets** — configuration follows the currently active application.
+- **Indonesian & English** — follows the Windows language on first launch.
 
-| Profil | Isi | Catatan |
+---
+
+## Two board profiles
+
+The repo contains firmware for two boards. Switching profiles means opening the
+other sketch — not flipping a switch.
+
+| Profile | Contents | Notes |
 |---|---|---|
-| **PROTOTYPE** | 1 knob, LED status di GPIO12 | Tanpa RGB, baterai, VBUS, atau charger. Angka baterai & RGB disimulasikan firmware. |
-| **FINAL** | 2 knob, 9× SK6812 MINI-E | RGB, pembagi baterai 100k/100k, deteksi VBUS, charger MCP73831, BLE HID. |
+| **PROTOTYPE** | 1 knob, status LED on GPIO12 | No RGB, battery, VBUS, or charger. Battery & RGB values are simulated by the firmware. |
+| **FINAL** | 2 knobs, 9× SK6812 MINI-E | RGB, 100k/100k battery divider, VBUS detection, MCP73831 charger, BLE HID. |
 
 ---
 
-## Mulai cepat
+## Quick start
 
-1. **Install app** dari halaman Releases.
-2. **Flash firmware** ke board lewat Arduino IDE. Pengaturan Board yang sama
-   untuk kedua sketsh:
+1. **Install the app** from the Releases page.
+2. **Flash the firmware** to the board with the Arduino IDE. The same Board
+   settings apply to both sketches:
    - Tools → USB Mode: `USB-OTG (TinyUSB)`
    - Tools → USB CDC On Boot: `Enabled`
    - Tools → Upload Mode: `USB-OTG CDC (TinyUSB)`
-3. **Sambungkan** macro pad lewat USB. App akan mendeteksi port secara otomatis;
-   untuk BLE, pilih transport BLE di panel koneksi lalu pilih perangkatnya.
-4. **Atur** keymap, knob, dan RGB. Tekan **Save** agar konfigurasi ditulis ke
-   flash device dan tetap ada setelah reboot.
+3. **Connect** the macro pad over USB. The app detects the port automatically;
+   for BLE, pick the BLE transport in the connection panel and select the device.
+4. **Configure** the keymap, knobs, and RGB. Press **Save** so the configuration
+   is written to the device flash and survives a reboot.
 
 ---
 
-## Build sendiri
+## Build it yourself
 
-Prasyarat: Node.js, Rust (stable), dan dependensi Tauri untuk Windows.
+Prerequisites: Node.js, Rust (stable), and the Tauri dependencies for Windows.
 
 ```bash
 npm install
-npm run tauri dev      # mode pengembangan
-npm run tauri build    # menghasilkan installer di src-tauri/target/release/bundle/
+npm run tauri dev      # development mode
+npm run tauri build    # produces an installer in src-tauri/target/release/bundle/
 ```
 
-Firmware dikompilasi dengan `arduino-cli` (core `esp32` 3.3.8):
+The firmware is compiled with `arduino-cli` (`esp32` core 3.3.8):
 
 ```bash
 arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/HID_Keypad_Final
@@ -88,34 +89,34 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/HID_Keypad_Prototype
 
 ---
 
-## Pengujian
+## Testing
 
 ```bash
-npm test                           # seluruh suite uji Node
-cd src-tauri; cargo test --lib     # test Rust
-npx vite build                     # build frontend
+npm test                           # all Node test suites
+cd src-tauri; cargo test --lib     # Rust tests
+npx vite build                     # frontend build
 ```
 
-Hasil terakhir: 84 test Rust hijau, `vite build` sukses, kedua sketsh firmware
-terkompilasi, dan 40 dari 44 suite Node hijau (4 suite merah sudah ada sebelum
-rilis 0.9.0, lihat [CHANGELOG](CHANGELOG.md)). Uji di device tetap wajib untuk
-hal yang tidak bisa dibuktikan statis: polaritas pin enable, arah putaran knob,
-dan status charger.
+Latest results: 84 Rust tests green, `vite build` succeeds, both firmware sketches
+compile, and 40 of 44 Node suites are green (the 4 red suites predate the 0.9.0
+release, see [CHANGELOG](CHANGELOG.md)). On-device testing is still required for
+what cannot be proven statically: enable-pin polarity, knob rotation direction,
+and charger status.
 
 ---
 
-## Dokumentasi
+## Documentation
 
-| Dokumen | Isi |
+| Document | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Struktur repo, modul app, aturan import, alur data |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | Perintah serial, protokol frame v2, batasan |
-| [docs/STATUS-AND-TESTING.md](docs/STATUS-AND-TESTING.md) | Status fitur, prosedur uji, checklist hardware |
-| [CHANGELOG.md](CHANGELOG.md) | Riwayat perubahan per versi |
-| [docs/HISTORY.md](docs/HISTORY.md) | Catatan rilis panjang (arsip) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Repo structure, app modules, import rules, data flow |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | Serial commands, frame protocol v2, limits |
+| [docs/STATUS-AND-TESTING.md](docs/STATUS-AND-TESTING.md) | Feature status, test procedures, hardware checklist |
+| [CHANGELOG.md](CHANGELOG.md) | Change history per version (Indonesian) |
+| [docs/HISTORY.md](docs/HISTORY.md) | Long-form release notes (archive) |
 
 ---
 
-## Lisensi
+## License
 
-Belum ditetapkan.
+Not set yet.

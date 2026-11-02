@@ -91,7 +91,7 @@ const full = '[KEY] ' + '7,2,2,3,' + 'a'.repeat(47);
 const longest = full.length + 1;   // +1 untuk newline
 ok(longest === 62, `hitungan ulang: ${full.length} + newline = ${longest} byte (README bilang 62)`);
 ok(/62 byte/.test(protocol), 'README menyebut 62 byte');
-ok(/64 byte/.test(protocol), 'README menyebut batas buffer stack vprintf (64)');
+ok(/64[- ]byte/.test(protocol), 'README menyebut batas buffer stack vprintf (64)');
 ok(longest <= 64, `${longest} <= 64 byte, jadi tidak kena alokasi malloc di vprintf`);
 
 console.log('\n--- F. Klaim "currentLayer ikut tersimpan ke flash" ---');
@@ -103,7 +103,7 @@ ok(/LAYER:0/.test(protocol), 'README menyebut solusi app-side (LAYER:0 setelah c
 console.log('\n--- G. README menyebut keadaan yang benar ---');
 ok(/cargo test --lib/.test(readme), 'README menyebut cara test Rust');
 ok(/npx vite build|vite build/.test(readme), 'README menyebut cara build frontend');
-ok(/uji di device tetap wajib/i.test(readme),
+ok(/on-device testing is still required/i.test(readme),
   'README jujur bahwa uji hardware tetap wajib');
 ok(/USB-OTG \(TinyUSB\)/.test(readme), 'README menyebut setting board Arduino');
 ok(/PROTOTYPE/.test(readme) && /FINAL/.test(readme), 'README menjelaskan dua profil');

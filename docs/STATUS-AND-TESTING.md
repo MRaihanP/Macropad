@@ -1,345 +1,336 @@
-# Ringkasan Developments & Prosedur Pengujian
+# Development status & testing procedures
 
-Dokumen ini berisi dua hal:
+This document covers two things:
 
-1. **Ringkasan perkembangan** — apa yang sudah selesai dan apa yang belum.
-2. **Prosedur pengujian** — langkah-langkah memastikan semua fitur aman.
+1. **Development summary** — what is done and what is not.
+2. **Testing procedure** — the steps that prove every feature is safe.
 
-Status verifikasi terakhir: **84 test Rust hijau, `vite build` sukses, kedua
-sketsh firmware terkompilasi**, dan 40 dari 44 suite Node hijau. Empat suite yang
-merah sudah merah sebelum rilis 0.9.0 dan tidak terkait firmware FINAL
-(`ble-transport-test.mjs`, `contract-chunk-test.cjs`, `diag-report-test.mjs`,
-satu assertion jalur teks di `frame-transport-test.mjs`). Lihat
-[Bagian 3](#3-hasil-verifikasi-terakhir).
+Latest verification status: **84 Rust tests green, `vite build` succeeds, both
+firmware sketches compile**, and 40 of 44 Node suites are green. The four red
+suites were already red before the 0.9.0 release and are unrelated to the FINAL
+firmware (`ble-transport-test.mjs`, `contract-chunk-test.cjs`,
+`diag-report-test.mjs`, and one text-path assertion in
+`frame-transport-test.mjs`). See [Section 3](#3-latest-verification-results).
 
 ---
 
-## 1. Ringkasan perkembangan
+## 1. Development summary
 
-### 1.1 Yang sudah selesai
+### 1.1 Completed
 
-Semua perubahan sudah di-commit satu per satu dengan entri CHANGELOG, jadi
-setiap tahap bisa di-revert.
+Every change was committed one step at a time with a CHANGELOG entry, so each
+stage can be reverted.
 
-| Commit | Tahap | Isi |
+| Commit | Phase | Contents |
 |---|---|---|
-| `604c3b4` | Phase 0 | Baseline repo + CHANGELOG |
-| `3c020d2` | Phase 1 | Quick wins: overlay build, parsing indeks, escaping, styling |
-| `d2215c8` | Phase 2 | Firmware PROTOTYPE dan FINAL dipisah |
-| `77f6ae7` | Phase 3 | Data baterai & RGB berasal dari firmware, bukan app |
-| `6106dcf` | Phase 4 | Transport reliability: listener bocor, buffer tak terbatas, parser tahan data rusak |
-| `88cade1` | Phase 5 | Waiter DUMP per-layer dengan timeout; pisahkan baca vs ganti layer |
-| `7693615` | Phase 6 | Hilangkan bekuannya firmware (blink, gestur app, log key) |
-| `d2c97f6` | Phase 7 | Hardening: CSP, izin Tauri, `eval` → event, file atomik, test Rust |
-| `9b9dcd0` … `d508acb` | Phase 8 | `main.js` 1864 → 263 baris, dipecah jadi 15 modul |
-| `e8cf630` | Phase 9a | Aksesibilitas: navigasi keyboard, modal, focus trap, `aria-*` |
-| `8b9c956` | Phase 9b-1 | Fondasi i18n: deteksi locale Windows, tabel ID/EN, pengalih di Setting |
-| `71bd1c9` | Phase 9b-2 | Semua string runtime (~200 kunci) diterjemahkan |
+| `604c3b4` | Phase 0 | Repo baseline + CHANGELOG |
+| `3c020d2` | Phase 1 | Quick wins: overlay build, index parsing, escaping, styling |
+| `d2215c8` | Phase 2 | PROTOTYPE and FINAL firmware split |
+| `77f6ae7` | Phase 3 | Battery & RGB data come from firmware, not the app |
+| `6106dcf` | Phase 4 | Transport reliability: leaked listeners, unbounded buffer, parser resilient to bad data |
+| `88cade1` | Phase 5 | Per-layer DUMP waiter with timeout; separate read from layer switch |
+| `7693615` | Phase 6 | Remove firmware freezes (blink, app gesture, key log) |
+| `d2c97f6` | Phase 7 | Hardening: CSP, Tauri permissions, `eval` → events, atomic files, Rust tests |
+| `9b9dcd0` … `d508acb` | Phase 8 | `main.js` 1864 → 263 lines, split into 15 modules |
+| `e8cf630` | Phase 9a | Accessibility: keyboard navigation, modals, focus trap, `aria-*` |
+| `8b9c956` | Phase 9b-1 | i18n foundation: Windows locale detection, ID/EN tables, Settings switcher |
+| `71bd1c9` | Phase 9b-2 | Every runtime string (~200 keys) translated |
 
 #### Firmware
 
-- Terpisah: `firmware/HID_Keypad_Prototype/` dan `firmware/HID_Keypad_Final/`,
-  berbagi `firmware/common/macropad_core.h`.
-- Data baterai & RGB dibaca dari firmware (`HWINFO:`, `EVT:BATT:`, `EVT:CHG:state=`,
-  `RGB_DUMP:`, `RGB_KEY:`). App tidak menebak-nebak lagi.
-- Encoder memakai state machine quadrature (arah tidak lagi terbalik).
-- Transport sudah di abstraksi: `firmware/common/transport.h` (interface `Transport`)
-  + `transport_usb.h` (`UsbTransport`). Core memakai macro `SERIAL->`.
-  `TRANSPORT_USB` / `TRANSPORT_BLE` di `limits.h`, default `TRANSPORT_USB`.
-  Mengganti ke BLE nanti cukup mengubah satu `#define`.
+- Split into `firmware/HID_Keypad_Prototype/` and `firmware/HID_Keypad_Final/`,
+  sharing `firmware/common/macropad_core.h`.
+- Battery & RGB data are read from firmware (`HWINFO:`, `EVT:BATT:`,
+  `EVT:CHG:state=`, `RGB_DUMP:`, `RGB_KEY:`). The app no longer guesses.
+- Encoders use a quadrature state machine (direction is no longer inverted).
+- Transport is abstracted: `firmware/common/transport.h` (the `Transport`
+  interface), `transport_usb.h` (`UsbTransport`), `transport_ble.h`
+  (`BleTransport`). Core code uses the `SERIAL->` macro.
+- FINAL enables BLE HID (`HID_BLE_SUPPORT 1`) and switches media automatically
+  from `VD_VB`.
 
-#### Aplikasi (Rust)
+#### App (Rust)
 
-- 9 unit test hijau, termasuk pembacaan locale Windows asli.
-- Perintah Tauri: aplikasi, consent, autostart, locale, bindable apps, preset,
-  notifikasi, overlay, foreground exe.
-- Modul BLE (`src-tauri/src/ble.rs`) sudah ada dan **kompilasi bersih**.
+- 84 unit tests green, including reading the real Windows locale.
+- Tauri commands: application, consent, autostart, locale, bindable apps, preset,
+  notifications, overlay, foreground exe.
+- BLE module (`src-tauri/src/ble.rs`) is implemented and **compiles clean**, and
+  is used by the frontend through the transport facade.
 
-#### Aplikasi (JavaScript)
+#### App (JavaScript)
 
-- 40 dari 44 suite uji Node hijau (4 suite merah sudah ada sebelumnya dan
-  dicatat sebagai known issue di CHANGELOG 0.9.0).
-- `vite build` sukses.
-- Aksesibilitas: navigasi sidebar & layer dengan keyboard, modal dengan focus trap
-  dan focus restore, live region untuk status & log.
-- i18n: ID + EN, deteksi otomatis dari bahasa Windows pada first run,
-  pengalih manual di halaman Setting.
+- 40 of 44 Node suites green (the 4 red suites predate this and are recorded as
+  known issues in CHANGELOG 0.9.0).
+- `vite build` succeeds.
+- Accessibility: keyboard navigation for the sidebar & layers, modals with focus
+  trap and focus restore, live regions for status & log.
+- i18n: ID + EN, automatic detection from the Windows language on first run, a
+  manual switcher on the Settings page.
 
-### 1.2 Yang belum selesai
+### 1.2 Not yet done
 
-#### Phase 10 — BLE (sedang berjalan, belum di-commit)
+#### Phase 10 — BLE (completed in 0.9.0)
 
-- **Sisi firmware**: abstraksi transport sudah siap, `TRANSPORT_TYPE` masih `TRANSPORT_USB`.
-  Belum ada implementasi `BleTransport` di firmware.
-- **Sisi Rust**: `ble_scan`, `ble_connect`, `ble_disconnect`, `ble_write`, `ble_read`,
-  `ble_is_connected` sudah terdaftar di `generate_handler!` dan bisa dikompilasi,
-  tapi **belum dipakai frontend** — masih command yang berdiri sendiri.
-- **Sisi JavaScript**: belum ada transport BLE. Dropdown COM (`#portSelect`),
-  tombol Refresh (`#btnRefreshPorts`) dan Connect (`#btnConnect`) masih ada.
-- Belum ada auto-connect / auto-reconnect.
-- Fallback force-connect manual harus disembunyikan (bukan dihapus) selama 1–2 rilis.
+The transport abstraction, the Rust BLE commands, the JavaScript BLE backend, the
+auto-connect/failover coordinator, and the FINAL BLE HID stack are all in place.
+The remaining work is hardware validation, listed in Section 2.6.
 
-#### Firmware FINAL — media otomatis, baterai, RGB (v8)
+#### FINAL firmware — automatic media, battery, RGB (v8)
 
-Sudah diimplementasikan di `firmware/HID_Keypad_Final/HID_Keypad_Final.ino`:
+Implemented in `firmware/HID_Keypad_Final/HID_Keypad_Final.ino`:
 
-- **BLE HID aktif** (`HID_BLE_SUPPORT 1`). Media dipilih otomatis dari VD_VB:
-  HIGH (USB) -> HID/protokol USB + BLE dimatikan; LOW (baterai) -> BLE + USB
-  di-de-enumerasi. Debounce ~0,9 detik supaya cross-coupling capacitor tidak
-  memicu switch palsu. Tidak ada lagi tombol BOOT/GPIO0 di FINAL.
-- **VD_VB dibaca digital** (GPIO21 bukan pin ADC di ESP32-S3). ADC 8 sampel
-  per loop yang lama (~2 ms blocking) diganti satu `digitalRead` per 500 ms.
-- **Battery sense asli**: `EN_VD` HIGH -> settle 5 ms -> 16 sampel ADC -> `EN_VD`
-  LOW, dilaporkan tiap 10 detik (bukan tiap detik/loop).
-- **RGB off benar-benar mematikan MOSFET**: `RGB:EN:0`, brightness 0, atau warna
-  hitam -> `rgbPower(false)`. `rgbInit()` tidak lagi melakukan sweep saat state
-  tersimpan off.
-- **Mesin efek RGB terpasang** (`rgb_effects.h`): breathing, color cycle,
-  rainbow, waves, snake, random, react. Mode 0/1 tetap statis.
-- **Gesture knob bisa diatur**: per knob, dua tier, tipe dan durasi dari app
-  (`GEST` / `SETGEST`), disimpan di NVS. Default: knob 1 pindah layer 2 dtk,
-  keluar preset 3 dtk; knob 2 tanpa gesture.
-- **Payload biner 2 knob**: `CFG_STAGING_SIZE` 6144 (payload maksimum 6014),
-  `needLen` dihitung dari `NUM_ENCODERS`, `cfgSig()` menyusun encoder dalam
-  urutan kanonik CW,CCW,BTN per knob.
+- **BLE HID enabled** (`HID_BLE_SUPPORT 1`). Media is chosen automatically from
+  VD_VB: HIGH (USB) -> USB HID/protocol + BLE off; LOW (battery) -> BLE + USB
+  de-enumerated. ~0.9 s debounce so the cross-coupling capacitor cannot trigger a
+  false switch. No more BOOT/GPIO0 button in FINAL.
+- **VD_VB is read digitally** (GPIO21 is not an ADC pin on the ESP32-S3). The old
+  8-sample ADC read per loop (~2 ms blocking) is replaced by one `digitalRead`
+  every 500 ms.
+- **Real battery sense**: `EN_VD` HIGH -> 5 ms settle -> 16 ADC samples -> `EN_VD`
+  LOW, reported every 10 seconds (not every second/loop).
+- **RGB off really turns the MOSFET off**: `RGB:EN:0`, brightness 0, or black
+  colour -> `rgbPower(false)`. `rgbInit()` no longer sweeps when the saved state
+  is off.
+- **RGB effect engine wired in** (`rgb_effects.h`): breathing, color cycle,
+  rainbow, waves, snake, random, react. Modes 0/1 stay static.
+- **Configurable knob gestures**: per knob, two tiers, type and duration from the
+  app (`GEST` / `SETGEST`), stored in NVS. Defaults: knob 1 next layer at 2 s,
+  exit preset at 3 s; knob 2 without gestures.
+- **2-knob binary payload**: `CFG_STAGING_SIZE` 6144 (max payload 6014),
+  `needLen` derived from `NUM_ENCODERS`, `cfgSig()` arranges encoders in the
+  canonical CW,CCW,BTN order per knob.
 
-Yang masih perlu hardware: verifikasi polaritas `EN_RGB`/`EN_VD`, arah putaran
-knob (bisa dibalik lewat `ENC_DIR_INVERT`), dan pembacaan charger sebenarnya.
+Still needs hardware: verifying `EN_RGB`/`EN_VD` polarity, knob rotation direction
+(can be flipped with `ENC_DIR_INVERT`), and the real charger reading.
 
-#### Phase 6.1 — ditunda dengan sengaja
+#### Phase 6.1 — deliberately deferred
 
-Memindahkan scan matrix + serial ke task FreeRTOS terpisah. Setelah Phase 6.2–6.4,
-satu-satunya blocking tersisa `Keyboard.print()` (~1 ms/karakter). Pindah ke task
-terpisah menuntut `Keyboard`, `Adafruit_NeoPixel`, `Preferences` jadi thread-safe
-— tidak satu pun thread-safe. Melakukan refactor itu tanpa bisa compile dan tanpa
-hardware berisiko menghasilkan-hasil lebih buruk daripada masalah aslinya.
+Moving matrix scan + serial into a separate FreeRTOS task. After Phases 6.2–6.4,
+the only blocking left is `Keyboard.print()` (~1 ms/character). Moving to a
+separate task requires `Keyboard`, `Adafruit_NeoPixel`, and `Preferences` to be
+thread-safe — none of them are. Doing that refactor without being able to compile
+and without hardware risks producing worse results than the original problem.
 
-#### Planned work (masih Ideas)
+#### Planned work (still ideas)
 
-- **Filter waktu untuk rotary encoder.** State machine quadrature sudah menangani
-  bounce pada detent, tapi noise acak yang mengubah A/B secara acak tetap terlihat
-  identik dengan putaran nyata. Butuh filter berbasis waktu (abaikan transisi < 2 ms
-  setelah transisi sebelumnya). Gejalanya: langkah acak saat knob diam.
-- **Pause auto-switch setelah user pindah layer.** `lastDeviceLayerEventAt` sudah diisi
-  setiap ada `EVT:LAYER:` tapi belum pernah dibaca. Rencana: hentikan auto-switch
-  sesaat setelah user pindah layer lewat knob, supaya preset tidak langsung menimpa.
-  Belum diputuskan apa yang terjadi kalau `fetchAllLayersForPacking()` sedang berjalan
-  dan user memindah layer di tengah dump.
+- **Time filter for the rotary encoder.** The quadrature state machine already
+  handles bounce at the detent, but random noise flipping A/B at random still
+  looks identical to a real rotation. A time-based filter is needed (ignore
+  transitions < 2 ms after the previous one). Symptom: random steps while the
+  knob is still.
+- **Pause auto-switch after the user changes layer.** `lastDeviceLayerEventAt` is
+  set on every `EVT:LAYER:` but never read. Plan: stop auto-switch briefly after
+  the user changes layer from the knob, so a preset does not immediately override
+  it. What should happen when `fetchAllLayersForPacking()` is running and the user
+  changes layer mid-dump is still undecided.
 
 ---
 
-## 2. Prosedur pengujian
+## 2. Testing procedure
 
-### 2.1 Tingkat 1 — Otomatis (jalan setiap sebelum commit)
+### 2.1 Level 1 — Automated (run before every commit)
 
-Jalankan dari root repo. Semua harus hijau.
+Run from the repo root. Everything must be green.
 
 ```powershell
-# A. Unit test Rust
+# A. Rust unit tests
 cd src-tauri
-cargo test --lib            # harus: 9 passed; 0 failed
-cargo check                 # harus: tidak ada error
+cargo test --lib            # must be: 84 passed; 0 failed
+cargo check                 # must report no errors
 cd ..
 
-# B. Build frontend (menangkap error yang tidak ditangkap node --check)
-npx vite build              # harus: "built in ..." tanpa error
+# B. Frontend build (catches errors `node --check` does not)
+npx vite build              # must print "built in ..." without errors
 
-# C. 21 skrip uji Node
-$dir = 'C:\Users\Raihan\AppData\Local\Temp\opencode'
-$names = @(
-  'a11y-test.js','adaptive-contract-test.js','dump-waiter-test.js',
-  'encoder-quadrature-test.js','firmware-symbol-check.js','handleLine-diff.js',
-  'home-page-diff.js','key-event-test.js','no-lost-functions-test.js',
-  'parser-wiring-test.js','protocol-contract-test.js','settings-test.js',
-  'shell-ui-diff.js','tray-diff.js','device-state-test.mjs','i18n-test.mjs',
-  'protocol-parser-test.mjs','rgb-page-test.mjs','serial-transport-test.mjs',
-  'startup-smoke-test.mjs','battery-ui-test.mjs'
-)
-foreach ($n in $names) {
-  $out = & node "$dir\$n" 2>&1 | Out-String
-  if ($LASTEXITCODE -ne 0) { Write-Output "FAIL $n"; Write-Output $out }
-  else { Write-Output "PASS $n" }
-}
+# C. Node test suites
+npm test                    # must be 40/44 green (4 known issues)
 ```
 
-**Semua 21 harus PASS.** Kalau ada FAIL, jangan commit — perbaiki dulu.
+**All four red suites are pre-existing and tracked in CHANGELOG.** If a NEW suite
+fails, do not commit — fix it first.
 
-> Catatan: skrip diff meng-*pin* commit tertentu, bukan `HEAD`. Kalau Phase berikutnya
-> mengubah bentuk fungsi, skrip diff harus di-update (ada langkah de-translate untuk
-> memetakan `t('key', ...)` kembali ke literal lama).
-
-### 2.2 Tingkat 2 — Build & jalankan app
+### 2.2 Level 2 — Build & run the app
 
 ```powershell
 npm run tauri dev
 ```
 
-Periksa:
+Check:
 
-- [ ] Jendela utama muncul, **tidak putih**. (Bila putih: `src/paint-watch.js` melakukan
-      reload otomatis lewat `requestAnimationFrame` — biarkan bekerja sekali lalu cek log.)
-- [ ] Tray icon muncul di system tray.
-- [ ] Dropdown COM terisi daftar port serial.
-- [ ] Tidak ada error di log `#log` maupun di DevTools console.
+- [ ] The main window appears, **not white**. (If white: `src/paint-watch.js`
+      reloads automatically through `requestAnimationFrame` — let it work once,
+      then check the log.)
+- [ ] A tray icon appears in the system tray.
+- [ ] The COM dropdown is filled with the serial port list.
+- [ ] No errors in the `#log` panel or the DevTools console.
 
-### 2.3 Tingkat 3 — Uji manual dengan hardware PROTOTYPE
+### 2.3 Level 3 — Manual testing with PROTOTYPE hardware
 
-> **Prasyarat**: firmware sudah di-flash. Static check **tidak** menggantikan ini.
+> **Prerequisite**: firmware is already flashed. Static checks **do not** replace
+> this.
 
-#### Koneksi
+#### Connection
 
-- [ ] Pilih port yang benar di dropdown COM → klik **Connect**.
-- [ ] Status berubah "Not connected" → "Connected".
-- [ ] Matikan colok USB → status jadi disconnected, app **tidak** crash.
-- [ ] Colok lagi → hubungkan ulang, tidak perlu restart app.
+- [ ] Select the correct port in the COM dropdown → click **Connect**.
+- [ ] Status changes from "Not connected" to "Connected".
+- [ ] Unplug USB → status becomes disconnected, the app does **not** crash.
+- [ ] Plug it back in → reconnect, no app restart needed.
 
-#### Info perangkat
+#### Device info
 
-- [ ] Kolom **HWINFO** terisi: profile, encoders, statusLed, rgb, rgbSlots, vdiv, chg.
-- [ ] `profile` = `P` untuk PROTOTYPE (FINAL = `F`).
-- [ ] Baterai menampilkan **angka persen** yang berubah-ubah.
-- [ ] Ikon baterai punya `aria-label` yang menyebut persentase (cek di DevTools →
-      Accessibility Tree).
-- [ ] Ada peringatan jelas di UI bahwa pada PROTOTYPE angka baterai & RGB itu
-      **simulasi** (`simulated=1` di HWINFO).
+- [ ] The **HWINFO** fields are filled: profile, encoders, statusLed, rgb,
+      rgbSlots, vdiv, chg.
+- [ ] `profile` = `P` for PROTOTYPE (FINAL = `F`).
+- [ ] Battery shows a **percentage** that changes over time.
+- [ ] The battery icon has an `aria-label` mentioning the percentage (check in
+      DevTools → Accessibility Tree).
+- [ ] There is a clear warning in the UI that on PROTOTYPE the battery & RGB
+      numbers are **simulated** (`simulated=1` in HWINFO).
 
-#### Grid & layer
+#### Grid & layers
 
-- [ ] Tekan setiap tombol → **app** (bukan OS) yang menerima aksi, sesuai tipe:
-      teks, kombinasi, macro, aplikasi, consumer/media.
-- [ ] Notifikasi per key muncul di app (`[KEY] layer,row,col,type,value`).
-- [ ] `+ Layer` / `- Delete` / `Rename` bekerja; `Load` mengambil isi layer dari device.
-- [ ] `Save` menulis ke flash; **matikan dan nyalakan device** → konfigurasi tetap.
-- [ ] `Reset` mengembalikan ke default.
-- [ ] Macro panjang (47 karakter) tidak membuat device gagal. Perhatikan log.
+- [ ] Pressing each key → the **app** (not the OS) receives the action, matching
+      its type: text, combo, macro, application, consumer/media.
+- [ ] Per-key notifications appear in the app (`[KEY] layer,row,col,type,value`).
+- [ ] `+ Layer` / `- Delete` / `Rename` work; `Load` fetches the layer from the
+      device.
+- [ ] `Save` writes to flash; **power-cycle the device** → the config persists.
+- [ ] `Reset` restores defaults.
+- [ ] A long macro (47 characters) does not make the device fail. Watch the log.
 
 #### Rotary encoder
 
-- [ ] Putar knob searah jarum jam → layer naik. Searah jarum jam → turun. **Tidak terbalik.**
-- [ ] Knob diam → **tidak ada** langkah acak (filter waktu belum ada, jadi kalau muncul
-     aba-ababa, catat sebagai bug — jangan dianggap normal).
-- [ ] Tekan knob → `[ENC_BTN] Knob i:` muncul di log.
-- [ ] Tahan Escape ≥ 3.5 detik → `[EVT:ESCAPE]`.
-- [ ] Tahan layer switch ≥ 1 detik → `[EVT:LAYER:N]`.
+- [ ] Rotating the knob clockwise → layer up. Counter-clockwise → layer down.
+      **Not inverted.**
+- [ ] Knob still → **no** random steps (the time filter does not exist yet, so if
+      jitter appears, record it as a bug — do not treat it as normal).
+- [ ] Pressing the knob → `[ENC_BTN] Knob i:` appears in the log.
+- [ ] Hold Escape ≥ 3.5 s → `[EVT:ESCAPE]`.
+- [ ] Hold the layer switch ≥ 1 s → `[EVT:LAYER:N]`.
 
-#### Adaptive Key Bind
+#### Adaptive key bind
 
-- [ ] Scan daftar aplikasi; aplikasi yang sedang foreground terdeteksi.
-- [ ] Ikan .exe custom bisa ditambah/dihapus.
-- [ ] Preset bisa diaktifkan; preset yang berebut aplikasi yang sama otomatis dimatikan
-      dan diberi tahu.
-- [ ] Key yang ter-preset berubah otomatis saat pindah aplikasi.
-- [ ] `masterEnabled` bisa dimatikan → semua binding berhenti.
+- [ ] Scan the application list; the foreground application is detected.
+- [ ] A custom .exe can be added/removed.
+- [ ] Presets can be activated; presets competing for the same application are
+      disabled automatically and the user is told.
+- [ ] Preset-bound keys change automatically when switching applications.
+- [ ] `masterEnabled` can be turned off → all bindings stop.
 
-#### RGB Setting
+#### RGB settings
 
-- [ ] Slider enable, brightness, speed, warna, mode, random — semua diterima device
-      (`[OK] ...` di log).
-- [ ] `Save` → `RGB:SAVE`; matikan-nyalakan device → efek tersimpan.
-- [ ] `Dump` → app menampilkan 9 slot sesuai isi device.
-- [ ] Garis `[KEY]` 62 byte terburuk — pastikan device **tidak** reset saat macro
-      terisi penuh.
+- [ ] Enable, brightness, speed, colour, mode, random sliders — all accepted by
+      the device (`[OK] ...` in the log).
+- [ ] `Save` → `RGB:SAVE`; power-cycle the device → the effect persists.
+- [ ] `Dump` → the app shows 9 slots matching the device contents.
+- [ ] The worst-case 62-byte `[KEY]` line — make sure the device does **not**
+      reset when a macro is full.
 
-#### Setting
+#### Settings
 
-- [ ] Autostart: hidupkan → restart Windows → app jalan sendiri.
-- [ ] **Bahasa**: ganti ke English → **seluruh** UI berubah, termasuk pesan di log
-      dan notifikasi. Ganti balik ke Indonesia.
-- [ ] **Deteksi otomatis**: hapus pilihan bahasa dari localStorage, ganti bahasa
-      Windows, restart app → bahasa mengikuti bahasa Windows.
-- [ ] Setelah memilih manual, ganti bahasa Windows → **tidak boleh** berubah
-      (pilihan manual menang).
+- [ ] Autostart: enable it → restart Windows → the app starts by itself.
+- [ ] **Language**: switch to English → the **entire** UI changes, including log
+      messages and notifications. Switch back to Indonesian.
+- [ ] **Automatic detection**: remove the language choice from localStorage,
+      change the Windows language, restart the app → the language follows Windows.
+- [ ] After choosing manually, change the Windows language → it must **not**
+      change (the manual choice wins).
 
-### 2.4 Tingkat 4 — Uji aksesibilitas (Phase 9)
+### 2.4 Level 4 — Accessibility testing (Phase 9)
 
-- [ ] `Tab` bisa menjangkau sidebar, tiap layer, grid, knob, tombol.
-- [ ] `ArrowUp`/`ArrowDown` memindah fokus antar-item sidebar; `Enter` mengaktifkan.
-- [ ] `ArrowLeft`/`ArrowRight` ganti layer di tab bar.
-- [ ] Modal: fokus masuk ke modal, **terjebak** di dalam (Tab tidak keluar), fokus
-      kembali ke pemicu setelah ditutup.
-- [ ] `Esc` menutup modal.
-- [ ] Focus ring terlihat di semua elemen interaktif (`:focus-visible`).
-- [ ] `role="status"` dan `role="log"` dibaca screen reader (uji dengan NVDA).
+- [ ] `Tab` reaches the sidebar, each layer, the grid, knobs, and buttons.
+- [ ] `ArrowUp`/`ArrowDown` move focus between sidebar items; `Enter` activates.
+- [ ] `ArrowLeft`/`ArrowRight` change layers in the tab bar.
+- [ ] Modal: focus moves into the modal and is **trapped** inside (Tab does not
+      escape), then returns to the trigger after closing.
+- [ ] `Esc` closes the modal.
+- [ ] A focus ring is visible on every interactive element (`:focus-visible`).
+- [ ] `role="status"` and `role="log"` are read by a screen reader (test with
+      NVDA).
 
-### 2.5 Tingkat 5 — Uji ketahanan (sudah otomatis, tapi tetap sadari)
+### 2.5 Level 5 — Resilience testing (automated, but stay aware)
 
-- [ ] **Data rusak**: paste baris acak ke parser (test `protocol-parser-test.mjs`
-      sudah mengcovernya).
-- [ ] **Device mati saat dump**: `DUMP_END` tidak pernah datang → waiter harus
-      timeout, app tidak menggantung.
-- [ ] **Buffer tidak terbatas**: data mengalir terus → tidak boleh memory naik
-      tanpa batas.
-- [ ] **Jendela putih**: tutup app paksa lalu jalankan lagi → harus normal
-      (watchdog `paint-watch.js`).
+- [ ] **Corrupt data**: paste random lines into the parser (the
+      `protocol-parser-test.mjs` suite already covers this).
+- [ ] **Device dies during a dump**: `DUMP_END` never arrives → the waiter must
+      time out and the app must not hang.
+- [ ] **Unbounded buffer**: data keeps flowing → memory must not grow without
+      bound.
+- [ ] **White window**: force-close the app then run it again → it must be normal
+      (the `paint-watch.js` watchdog).
 
-### 2.6 Tingkat 6 — Uji firmware
+### 2.6 Level 6 — Firmware testing
 
-Toolchain Arduino tersedia (`arduino-cli` + core esp32 3.3.8). Kedua sketsh
-sudah dikompilasi untuk `esp32:esp32:esp32s3`:
+The Arduino toolchain is available (`arduino-cli` + esp32 core 3.3.8). Both
+sketches have been compiled for `esp32:esp32:esp32s3`:
 
-| Sketsh | Flash | RAM statis |
+| Sketch | Flash | Static RAM |
 | --- | --- | --- |
-| FINAL v8 | 716.369 B (54%) | 112.364 B (34%) |
-| PROTOTYPE v8 | 700.857 B (53%) | 110.676 B (33%) |
+| FINAL v8 | 716,369 B (54%) | 112,364 B (34%) |
+| PROTOTYPE v8 | 700,857 B (53%) | 110,676 B (33%) |
 
-Verifikasi statis tetap dijalankan lewat suite Node
+Static verification still runs through Node suites
 (`firmware-compile-guard-test.js`, `firmware-final-contract-test.cjs`,
 `firmware-switch-iface-test.cjs`).
 
-Sebelum rilis ke device:
+Before releasing to a device:
 
-- [x] `arduino-cli compile` untuk **kedua** sketsh (PROTOTYPE & FINAL) tanpa error.
-- [x] Cek ukuran flash & RAM dipakai tidak mendekati batas.
-- [ ] Flash ke device dan ulangi seluruh uji di Bagian 2.3.
-- [ ] Uji FINAL saat VBUS terpasang -> `EVT:CHG:state=0/1/2` (tidak mengisi / mengisi /
-      selesai) benar.
-- [ ] Uji FINAL tanpa VBUS -> `usb=0`, `charging=0`, dan media otomatis pindah ke BLE
-      (`IFACE:link=ble`), lalu kembali ke USB saat kabel dipasang.
-- [ ] Verifikasi polaritas `EN_RGB` (GPIO15) dan `EN_VD` (GPIO17).
-- [ ] Verifikasi arah putaran kedua knob; kalau terbalik set `ENC_DIR_INVERT 1`
-      di sketsh FINAL (jangan mengubah tabel quadrature bersama).
-- [ ] Mesin efek RGB FINAL: breathing, rainbow, wave, snake, random, react jalan
-      dan tidak flicker; RGB off/brightness 0/warna hitam mematikan rail (ukur arus).
-- [ ] Gesture: pindah tier 1/tier 2 di app benar-benar mengubah knob dan durasinya,
-      dan tersimpan setelah reboot.
+- [x] `arduino-cli compile` for **both** sketches (PROTOTYPE & FINAL) without
+      errors.
+- [x] Check that flash & RAM usage is nowhere near the limit.
+- [ ] Flash to the device and repeat every test in Section 2.3.
+- [ ] Test FINAL with VBUS attached -> `EVT:CHG:state=0/1/2` (not charging /
+      charging / complete) is correct.
+- [ ] Test FINAL without VBUS -> `usb=0`, `charging=0`, and media switches
+      automatically to BLE (`IFACE:link=ble`), then back to USB when the cable is
+      plugged in.
+- [ ] Verify `EN_RGB` (GPIO15) and `EN_VD` (GPIO17) polarity.
+- [ ] Verify the rotation direction of both knobs; if inverted, set
+      `ENC_DIR_INVERT 1` in the FINAL sketch (do not change the shared quadrature
+      table).
+- [ ] FINAL RGB effect engine: breathing, rainbow, wave, snake, random, react run
+      without flicker; RGB off / brightness 0 / black colour turn the rail off
+      (measure current).
+- [ ] Gestures: changing tier 1/tier 2 in the app really changes the knob and its
+      duration, and persists across a reboot.
 
-### 2.7 Prosedur per-commit
+### 2.7 Per-commit procedure
 
-Sebelum setiap commit:
+Before every commit:
 
-1. `cargo test --lib` + `cargo check` → hijau.
-2. `npx vite build` → sukses.
-3. 21 skrip uji Node → semua PASS.
-4. `git status` — pastikan tidak ada file yang tidak sengaja ikut (mis. `dist/`,
-   `target/`, `node_modules/`).
+1. `cargo test --lib` + `cargo check` → green.
+2. `npx vite build` → succeeds.
+3. `npm test` → no new failures (40/44 is the current known baseline).
+4. `git status` — make sure no stray files are included (e.g. `dist/`, `target/`,
+   `node_modules/`).
 5. Update `CHANGELOG.md`: **Added / Changed / Fixed / Removed**.
-6. Commit dengan pesan yang menyebut nomor fase.
+6. Commit with a message that names the phase number.
 
-Kalau ada regresi setelah commit: `git revert <hash>` (jangan `reset --hard`,
-supaya riwayatnya tetap bisa ditelusuri).
+If a regression appears after committing: `git revert <hash>` (never
+`reset --hard`, so history stays traceable).
 
 ---
 
-## 3. Hasil verifikasi terakhir
+## 3. Latest verification results
 
-| Yang diuji | Hasil |
+| What was tested | Result |
 |---|---|
-| `cargo check --lib` | Bersih (0 error) |
+| `cargo check --lib` | Clean (0 errors) |
 | `cargo test --lib` | **84 passed**, 0 failed, 1 ignored |
-| `npx vite build` | Sukses |
-| Suite uji Node | **40/44 hijau** (4 known issue lama) |
-| `arduino-cli compile` FINAL v8 | 716.369 B flash (54%), 112.364 B RAM (34%) |
-| `arduino-cli compile` PROTOTYPE v8 | 700.857 B flash (53%), 110.676 B RAM (33%) |
+| `npx vite build` | Succeeds |
+| Node test suites | **40/44 green** (4 pre-existing known issues) |
+| `arduino-cli compile` FINAL v8 | 716,369 B flash (54%), 112,364 B RAM (34%) |
+| `arduino-cli compile` PROTOTYPE v8 | 700,857 B flash (53%), 110,676 B RAM (33%) |
 
-Empat suite Node yang masih merah sudah merah sebelum 0.9.0 dan tidak
-berhubungan dengan perubahan firmware FINAL: `ble-transport-test.mjs` (4
-assertion), `contract-chunk-test.cjs`, `diag-report-test.mjs`, dan satu assertion
-"upload penuh jalur teks" di `frame-transport-test.mjs`.
+The four remaining red Node suites were already red before 0.9.0 and are unrelated
+to the FINAL firmware changes: `ble-transport-test.mjs` (4 assertions),
+`contract-chunk-test.cjs`, `diag-report-test.mjs`, and one "full text-path upload"
+assertion in `frame-transport-test.mjs`.
 
-### Yang belum terverifikasi
+### Not yet verified
 
-- Perilaku nyata di device (tidak ada akses ke device dari lingkungan ini).
-- Polaritas `EN_RGB` (GPIO15) dan `EN_VD` (GPIO17).
-- Arah putaran kedua knob (`ENC_DIR_INVERT` bila terbalik).
-- Status charger MCP73831 sebenarnya, termasuk membedakan "selesai" dari
-  "tidak ada baterai" (keduanya high-Z pada pin STAT).
+- Real behaviour on the device (no device access from this environment).
+- `EN_RGB` (GPIO15) and `EN_VD` (GPIO17) polarity.
+- Rotation direction of both knobs (`ENC_DIR_INVERT` if inverted).
+- The actual MCP73831 charger status, including telling "complete" apart from
+  "no battery" (both are high-Z on the STAT pin).

@@ -1,146 +1,144 @@
-# Protokol device
+# Device protocol
 
-Referensi protokol antara firmware dan companion app: perintah baris ASCII,
-protokol frame biner v2, dan batasan yang harus dihormati kedua sisi.
+Protocol reference for the firmware and the companion app: ASCII line commands,
+the binary frame protocol v2, and the limits both sides must respect.
 
-## Protokol baris (utama)
+## Line protocol (primary)
 
-Format: **ASCII, satu baris per perintah, diakhiri newline**, 115200 baud
-(USB CDC). Semua nilai yang dikirim device bisa rusak (`abc` jadi NaN) sehingga
-app selalu memvalidasinya sebelum dipakai.
+Format: **ASCII, one command per line, terminated by newline**, 115200 baud
+(USB CDC). Any value coming from the device can be malformed (`abc` becomes
+NaN), so the app always validates before using it.
 
-### Konstanta yang harus cocok dengan firmware
+### Constants that must match the firmware
 
-| Konstanta app | Nilai | Sumber firmware |
+| App constant | Value | Firmware source |
 |---|---|---|
 | `APP_SLOTS` | 6 | `slotTable` |
-| `MACRO_MAX_LEN` | 47 byte (dipotong per karakter utuh) | `MACRO_MAX_LEN` = 48 termasuk terminator |
+| `MACRO_MAX_LEN` | 47 byte (truncated at whole characters) | `MACRO_MAX_LEN` = 48 including terminator |
 | RGB slots | 9 | `RGB_COUNT` |
 
-### Perintah (app ke device)
+### Commands (app to device)
 
-| Perintah | Bentuk | Balasan |
+| Command | Form | Reply |
 |---|---|---|
 | `PING` | - | `PONG` |
 | `WHOAMI` | - | `WHOAMI:MacroPad:v1:rows=..,cols=..,encoders=..,proto=line\|frame,frame=0xA5` |
 | `INFO` | - | `INFO:layerCount=..,currentLayer=..,maxLayers=..,rows=..,cols=..,encoders=..,context=..` |
 | `HWINFO` | - | `HWINFO:profile=..,encoders=..,statusLed=..,rgb=..,rgbSlots=..,vdiv=..,chg=..,simulated=..` |
 | `BATT` | - | `BATT:pin_mv=..,batt_mv=..,pct=..,charging=..,usb=..` |
-| `DUMP:<n>` | baca layer `n` | `DUMP_BEGIN:<n>` ... `DUMP_END` |
-| `DUMPNAMES` | baca nama layer | `NAMES_BEGIN` ... `NAMES_END` |
-| `DUMPENC` | baca binding encoder | `ENC_BEGIN:count=N` ... `ENC_END` |
-| `SET:<layer>:<r>:<c>:<type>:<value>` | tulis satu key | `[OK] Set ...` |
-| `GET:<layer>:<r>:<c>` | baca satu key | `L<n> R<n> C<n> -> type=.. value=..` |
-| `SETENC:<idx>:<CW\|CCW\|BTN>:<type>:<value>` | tulis binding encoder | `[OK] SetEnc ...` |
-| `GEST` | baca gesture tahan per knob | `GEST_BEGIN` ... `GEST:<idx>:<t1Type>,<t1Ms>,<t2Type>,<t2Ms>` ... `GEST_END` |
-| `SETGEST:<idx>:<1\|2>:<type>:<ms>` | atur satu tier gesture knob (disimpan di NVS `gestcfg`) | `[OK] Gesture knob n tier n ...` |
-| `ADDLAYER` | tambah layer | `[OK] Layer ditambah, total ...` |
-| `DELLAYER` | hapus layer aktif | `[OK] Layer dihapus, ...` |
-| `RENAMELAYER:<n>:<name>` | ganti nama | `[OK] Layer <n> diganti nama jadi ...` |
-| `MOVELAYER:<LEFT\|RIGHT>` | geser urutan | `[OK] Layer digeser ke posisi ...` |
-| `LAYER:<n>` | pindah layer aktif | `[LAYER] ...` + `EVT:LAYER:<n>` |
-| `SAVE` | tulis ke flash | `[OK]` / `[ERROR] SAVE gagal...` |
-| `LOAD` | muat ulang dari flash | `[OK] Config dimuat ulang` |
-| `RESET` | kembali ke default (perlu `SAVE` untuk permanen) | `[OK] Config direset...` |
-| `CONTEXT:DEFAULT\|APP:NEW\|APP:RESUME` | ganti konteks preset | `[OK] Context: ...` |
-| `SLOT:<n>:NEW\|USE` | cache slot preset | `[OK] Context: SLOT n (...)` |
-| `RGB:ON\|OFF` | nyalakan/matikan | `[OK] RGB on/off` |
-| `RGB:EN:<0\|1>` | status enable | `[OK] RGB ...` |
-| `RGB:MODE:<mode>:<random>:<r>:<g>:<b>:<speed>` | mode + warna + kecepatan | `[OK] RGB mode n` |
-| `RGB:BRI:<0-255>` | kecerahan | `[OK] RGB brightness n` |
-| `RGB:ALL:<r>:<g>:<b>` | semua LED satu warna | `[OK] RGB semua diset` |
-| `RGB:KEY:<r>:<c>:<r>:<g>:<b>` | satu key | `[OK] RGB r (Rr Cc) diset` |
-| `RGB:DUMP` | baca seluruh state | `RGB_DUMP:..` + `RGB_KEY:..` ... + `RGB_DUMP_END` |
-| `RGB:SAVE` | simpan ke flash | `[OK] RGB disimpan` |
-| `RGB:RESET` | kembali ke default | `[OK] RGB reset ke default` |
-| `DIAG` | laporan diagnosa 4 lapis | `DIAG:..` + `DIAGMEDIA:..` |
-| `DIAG:ZERO` | reset penghitung diagnosa | `[OK] DIAG counter direset` |
-| `SIG` | sidik jari config aktif | `SIG:%08lX` |
-| `SIG:ALL` | sidik jari semua slot | `SIGSLOT:<n>:%08lX,layers=..,active=..` (6 baris) |
-| `FRAME` | penghitung lapisan frame | `FRAME:mode=..,rx=..,tx=..,txDrop=..,txErr=..,crcErr=..,verErr=..,lenErr=..,unsup=..` |
-| `FRAME:LINE` | paksa kembali ke mode baris | `[OK] Frame mode dimatikan, kembali ke mode baris` |
-| `FRAMEIN:<nama>` | device menyusun frame sendiri lalu memprosesnya | byte frame + `ERR`/`EVT` |
+| `DUMP:<n>` | read layer `n` | `DUMP_BEGIN:<n>` ... `DUMP_END` |
+| `DUMPNAMES` | read layer names | `NAMES_BEGIN` ... `NAMES_END` |
+| `DUMPENC` | read encoder bindings | `ENC_BEGIN:count=N` ... `ENC_END` |
+| `SET:<layer>:<r>:<c>:<type>:<value>` | write one key | `[OK] Set ...` |
+| `GET:<layer>:<r>:<c>` | read one key | `L<n> R<n> C<n> -> type=.. value=..` |
+| `SETENC:<idx>:<CW\|CCW\|BTN>:<type>:<value>` | write an encoder binding | `[OK] SetEnc ...` |
+| `GEST` | read per-knob hold gestures | `GEST_BEGIN` ... `GEST:<idx>:<t1Type>,<t1Ms>,<t2Type>,<t2Ms>` ... `GEST_END` |
+| `SETGEST:<idx>:<1\|2>:<type>:<ms>` | set one knob gesture tier (stored in NVS `gestcfg`) | `[OK] Gesture knob n tier n ...` |
+| `ADDLAYER` | add a layer | `[OK] Layer ditambah, total ...` |
+| `DELLAYER` | delete the active layer | `[OK] Layer dihapus, ...` |
+| `RENAMELAYER:<n>:<name>` | rename a layer | `[OK] Layer <n> diganti nama jadi ...` |
+| `MOVELAYER:<LEFT\|RIGHT>` | reorder layers | `[OK] Layer digeser ke posisi ...` |
+| `LAYER:<n>` | switch the active layer | `[LAYER] ...` + `EVT:LAYER:<n>` |
+| `SAVE` | write to flash | `[OK]` / `[ERROR] SAVE gagal...` |
+| `LOAD` | reload from flash | `[OK] Config dimuat ulang` |
+| `RESET` | restore defaults (send `SAVE` to persist) | `[OK] Config direset...` |
+| `CONTEXT:DEFAULT\|APP:NEW\|APP:RESUME` | switch preset context | `[OK] Context: ...` |
+| `SLOT:<n>:NEW\|USE` | cache a preset slot | `[OK] Context: SLOT n (...)` |
+| `RGB:ON\|OFF` | turn RGB on/off | `[OK] RGB on/off` |
+| `RGB:EN:<0\|1>` | enabled flag | `[OK] RGB ...` |
+| `RGB:MODE:<mode>:<random>:<r>:<g>:<b>:<speed>` | mode + colour + speed | `[OK] RGB mode n` |
+| `RGB:BRI:<0-255>` | brightness | `[OK] RGB brightness n` |
+| `RGB:ALL:<r>:<g>:<b>` | all LEDs one colour | `[OK] RGB semua diset` |
+| `RGB:KEY:<r>:<c>:<r>:<g>:<b>` | one key | `[OK] RGB r (Rr Cc) diset` |
+| `RGB:DUMP` | read the whole state | `RGB_DUMP:..` + `RGB_KEY:..` ... + `RGB_DUMP_END` |
+| `RGB:SAVE` | save to flash | `[OK] RGB disimpan` |
+| `RGB:RESET` | restore defaults | `[OK] RGB reset ke default` |
+| `DIAG` | four-layer diagnostic report | `DIAG:..` + `DIAGMEDIA:..` |
+| `DIAG:ZERO` | reset diagnostic counters | `[OK] DIAG counter direset` |
+| `SIG` | fingerprint of the active config | `SIG:%08lX` |
+| `SIG:ALL` | fingerprint of every slot | `SIGSLOT:<n>:%08lX,layers=..,active=..` (6 lines) |
+| `FRAME` | frame layer counters | `FRAME:mode=..,rx=..,tx=..,txDrop=..,txErr=..,crcErr=..,verErr=..,lenErr=..,unsup=..` |
+| `FRAME:LINE` | force line mode again | `[OK] Frame mode dimatikan, kembali ke mode baris` |
+| `FRAMEIN:<name>` | device builds a frame itself, then processes it | frame bytes + `ERR`/`EVT` |
 
-`DIAG` menjawab dua baris: `DIAG:` (lapisan protokol: baris yang diparse,
-baris terlalu panjang, perintah tak dikenal, perintah terakhir, heap) dan
-`DIAGMEDIA:` (lapisan media: notify berhasil/gagal/retry, tinggi air ring
-buffer, byte yang dibuang, write tanpa koneksi/subscriber, MTU). Companion app
-mengirim `DIAG` tiap 30 detik dan menampilkan blok `=== DIAG ===` di panel log
-beserta satu kalimat vonis yang menyebut lapis penyebabnya. Lihat
-`src/diag-report.js`.
+`DIAG` answers with two lines: `DIAG:` (protocol layer: parsed lines, overlong
+lines, unknown commands, last command, heap) and `DIAGMEDIA:` (media layer:
+successful/failed/retried notifications, ring buffer fill, dropped bytes, writes
+without connection/subscriber, MTU). The companion app sends `DIAG` every 30
+seconds and shows a `=== DIAG ===` block in the log panel plus one verdict
+sentence naming the responsible layer. See `src/diag-report.js`.
 
-Tipe aksi (`type` pada SET/SETENC): `0` none, `1` teks, `2` kombinasi,
-`3` macro, `4` consumer/media, `5` buka aplikasi.
+Action types (`type` on SET/SETENC): `0` none, `1` text, `2` combo,
+`3` macro, `4` consumer/media, `5` open application.
 
-Tipe gesture (`type` pada SETGEST): `0` tidak ada, `1` layer berikutnya,
-`2` layer sebelumnya, `3` keluar preset. Gesture berlaku saat tombol knob
-ditahan: tier 1 = tahan lebih lama dari `<ms>` tier 1, tier 2 = lebih lama lagi.
-Tap singkat tetap menjalankan binding `BTN`. Durasi valid 100–20000 ms dan tier 2
-harus lebih lama dari tier 1. Pengaturan ini per knob dan tidak ikut payload preset.
+Gesture types (`type` on SETGEST): `0` none, `1` next layer, `2` previous layer,
+`3` exit preset. A gesture fires while the knob button is held: tier 1 = held
+longer than tier 1 `<ms>`, tier 2 = held longer still. A short tap still runs the
+`BTN` binding. Valid durations are 100-20000 ms and tier 2 must be longer than
+tier 1. This setting is per knob and is not part of the preset payload.
 
-## Protokol frame v2
+## Frame protocol v2
 
-Device sudah bisa berbicara dalam frame biner berdampingan dengan baris teks, dan
-mendeteksi mode-nya sendiri. Aturannya sesempit mungkin:
+The device can already speak binary frames alongside text lines, and detects the
+mode on its own. The rules are intentionally narrow:
 
 ```
-mode baris + byte PERTAMA baris = 0xA5  -> mode frame
-mode frame  + byte 0x0A saat perakit IDLE -> kembali ke mode baris
+line mode + FIRST byte of a line = 0xA5  -> frame mode
+frame mode + byte 0x0A while assembler IDLE -> back to line mode
 ```
 
-Format frame: `[SOF 0xA5][VER 0x02][TYPE][LEN u16 LE][PAYLOAD][CRC16 u16 LE]`,
-CRC16/CCITT-FALSE atas `TYPE+LEN+PAYLOAD`. Specifikasi otoritatif ada di
-`firmware/common/frame.h`; golden vectors di `tests/vectors/frames.vec` dibaca
-tiga runner independen (C, JS, dan dicocokkan silang lewat `cargo test`).
+Frame format: `[SOF 0xA5][VER 0x02][TYPE][LEN u16 LE][PAYLOAD][CRC16 u16 LE]`,
+CRC16/CCITT-FALSE over `TYPE+LEN+PAYLOAD`. The authoritative specification lives
+in `firmware/common/frame.h`; golden vectors in `tests/vectors/frames.vec` are
+read by three independent runners (C, JS, and cross-checked through `cargo test`).
 
-Perintah frame yang sudah ada di device:
+Frame commands already implemented on the device:
 
-| Frame | Balasan |
+| Frame | Reply |
 |---|---|
-| `HELLO` (0x01) | `HELLO_RSP` (0x81): versi fw, ukuran matriks, jumlah encoder, payload maksimum, jumlah slot, layer maksimum, slot aktif |
-| `CFG_QUERY` (0x13) | `CFG_META` (0x93): slot aktif + sidik jari & jumlah layer tiap slot |
-| `CFG_ACTIVATE` (0x14) | `CFG_ACT_RSP` (0x94): kode hasil, sidik jari yang aktif, slot |
-| `LINE` (0x02) | diperlakukan sebagai satu perintah protokol lama, jawabannya keluar sebagai teks |
-| lainnya | `ERR` (0x7F) dengan kode `UNSUPPORTED` - device mengatakannya terus terang |
+| `HELLO` (0x01) | `HELLO_RSP` (0x81): fw version, matrix size, encoder count, max payload, slot count, max layers, active slot |
+| `CFG_QUERY` (0x13) | `CFG_META` (0x93): active slot + fingerprint and layer count per slot |
+| `CFG_ACTIVATE` (0x14) | `CFG_ACT_RSP` (0x94): result code, active fingerprint, slot |
+| `LINE` (0x02) | treated as one legacy line command; the reply is emitted as text |
+| anything else | `ERR` (0x7F) with code `UNSUPPORTED` - the device says so plainly |
 
-**Serial Monitor selalu bisa mengirim perintah.** Device membaca USB CDC
-sebagai jalur perintah kedua, terpisah dari jalur protokol yang bisa pindah ke
-BLE NUS. Tanpa ini, begitu app mengirim `PROTO:NUS`, Serial Monitor jadi jalan
-buntu: mengetik apa pun di sana tidak menghasilkan apa pun - bukan error,
-keheningan - dan termasuk perintahnya sendiri untuk mengembalikan jalur
-(`PROTO:CDC`). Test `contract-logpath-test.cjs` menjaga bahwa core tetap
-dilarang **menulis** lewat `LOGS`; yang dibaca hanyalah input.
+**Serial Monitor can always send commands.** The device reads USB CDC as a second
+command path, separate from the protocol path that can move to BLE NUS. Without
+this, once the app sends `PROTO:NUS`, Serial Monitor becomes a dead end: typing
+anything there produces nothing - not an error, just silence - including the
+command to restore the path (`PROTO:CDC`). `contract-logpath-test.cjs` keeps the
+core forbidden from **writing** through `LOGS`; only input is read.
 
-Jawaban `SIG`, `SIG:ALL`, dan `FRAME` sengaja dicerminkan ke Serial Monitor,
-karena perintah itu dibuat untuk dibaca manusia. Jawaban frame (`HELLO_RSP`,
-`CFG_META`, `CFG_ACT_RSP`) tidak dicerminkan - itu jawaban protokol, dan
-menggandakannya akan membuat device yang membaca keduanya mengira ada dua
-jawaban untuk satu permintaan.
+Replies to `SIG`, `SIG:ALL`, and `FRAME` are deliberately mirrored to Serial
+Monitor because those commands exist to be read by a human. Frame replies
+(`HELLO_RSP`, `CFG_META`, `CFG_ACT_RSP`) are not mirrored - they are protocol
+replies, and duplicating them would make a device reading both believe there are
+two answers for one request.
 
-**Kenapa `LINE` dan `FRAMEIN` ada.** Serial Monitor tidak bisa mengirim byte
-biner. Tanpa `FRAMEIN` dan frame `LINE`, seluruh lapisan frame tidak akan pernah
-bisa diuji sampai app selesai - dan justru kasus yang paling sulit direproduksi
-dari app (CRC salah, versi salah, LEN monster) justru yang paling mudah diperiksa
-dari sini.
+**Why `LINE` and `FRAMEIN` exist.** Serial Monitor cannot send binary bytes.
+Without `FRAMEIN` and the `LINE` frame, the whole frame layer could never be
+tested until the app was finished - and the hardest cases to reproduce from the
+app (bad CRC, wrong version, monster LEN) are exactly the easiest ones to inspect
+from here.
 
-`FRAMEIN` punya dua bentuk. **Gunakan yang pertama:**
+`FRAMEIN` has two forms. **Use the first one:**
 
 ```
-FRAMEIN:CFG_QUERY           device menyusun frame-nya sendiri, CRC dihitung di device
+FRAMEIN:CFG_QUERY           device builds the frame itself, CRC computed on device
 FRAMEIN:HELLO
 FRAMEIN:CFG_ACTIVATE:3
-FRAMEIN:LINE:DIAG           perintah teks dibungkus frame LINE
+FRAMEIN:LINE:DIAG           text command wrapped in a LINE frame
 
-FRAMEIN:A5 02 13 00 00 ...  byte mentah apa adanya - hanya untuk menguji frame yang salah
+FRAMEIN:A5 02 13 00 00 ...  raw bytes as-is - only for testing malformed frames
 ```
 
-Bentuk kedua hanya berguna untuk menguji frame yang rusak dengan sengaja, dan
-memerlukan hitung CRC manual. Bentuk pertama tidak mungkin salah, jadi kalau
-bentuk pertama tidak menghasilkan frame, penyebabnya pasti di device - bukan di
-byte yang diketik. Device mencetak byte frame yang disusunnya sebelum memprosesnya,
-supaya bisa dibandingkan langsung dengan yang dikirim app nanti.
+The second form is only useful for deliberately broken frames and requires
+manual CRC calculation. The first form cannot be wrong, so if it produces no
+frame the cause is certainly on the device - not in the bytes you typed. The
+device prints the frame bytes it assembled before processing them, so they can be
+compared directly with what the app will send later.
 
-Contoh:
+Example:
 
 ```
 FRAMEIN:CFG_QUERY   -> [FRAME] CFG_QUERY (7 byte): a5 02 13 00 00 xx xx
@@ -148,101 +146,103 @@ FRAMEIN:CFG_QUERY   -> [FRAME] CFG_QUERY (7 byte): a5 02 13 00 00 xx xx
 FRAME                -> FRAME:mode=frame,rx=1,tx=1,txDrop=0,...,crcErr=0,...
 ```
 
-Kalau device tidak bisa keluar dari mode frame, tekan Enter di Serial Monitor
-(0x0A saat perakit sedang IDLE) atau kirim `FRAME:LINE`.
+If the device cannot leave frame mode, press Enter in Serial Monitor
+(0x0A while the assembler is IDLE) or send `FRAME:LINE`.
 
-**`CFG_SIG`.** Sidik jari konfigurasi dihitung dari bentuk kanonik, bukan
-`sizeof(struct)` mentah: hanya layer yang hidup, nilai action dihitung seluruh
-lebarnya, dan semua field berlebar tetap. Alasannya di `firmware/common/cfg_sig.h`.
-Perhitungannya diuji silang di C dan JS dari berkas vektor yang sama
-(`tests/vectors/cfg.vec`, dihasilkan `tools/gen-cfg-vectors.mjs`), karena kalau
-kedua sisi menghitung sidik jari yang berbeda, app akan mengunggah ulang preset
-yang sebenarnya sudah identik - setiap kali.
+**`CFG_SIG`.** The configuration fingerprint is computed from a canonical form,
+not raw `sizeof(struct)`: only live layers, action values counted at full width,
+and every field at fixed width. The reasoning lives in
+`firmware/common/cfg_sig.h`. The computation is cross-checked in C and JS from the
+same vector file (`tests/vectors/cfg.vec`, generated by
+`tools/gen-cfg-vectors.mjs`), because if both sides computed different
+fingerprints the app would re-upload presets that are already identical - every
+time.
 
-**Encoder dihitung dari layer terakhir, bukan layer pertama.** Ini bukan pilihan
-gaya. `SETENC` di firmware menulis ke `activeCfg->encCW[encIdx]` yang global,
-tanpa indeks layer sama sekali. Unggah preset mengirim `SETENC` untuk setiap layer
-berurutan, jadi lapisan terakhir menimpa semuanya dan device menyimpan satu set
-binding saja. `cfgSig()` juga hanya membaca `c.encCW[0]` satu kali, di luar loop
-layer. Kalau app menghitung sidik jari dari layer pertama, kedua angka itu tidak
-akan pernah sama - dan preset yang sebenarnya sudah ada akan selalu diunggah
-ulang, persis cacat yang seharusnya dihilangkan oleh CFG_SIG. Test
-`tests/suites/frame-transport-test.mjs` mengunci perilaku ini ke baris `SETENC`
-yang sesungguhnya di firmware.
+**Encoders are read from the last layer, not the first.** This is not a stylistic
+choice. `SETENC` on the firmware writes to `activeCfg->encCW[encIdx]`, which is
+global and has no layer index at all. Preset upload sends `SETENC` per layer in
+sequence, so the last layer overwrites everything and the device stores one set
+of bindings. `cfgSig()` also reads `c.encCW[0]` only once, outside the layer loop.
+If the app computed the fingerprint from the first layer, the two numbers would
+never match - and a preset that already exists would always be re-uploaded,
+exactly the defect CFG_SIG was meant to remove. The test
+`tests/suites/frame-transport-test.mjs` pins this behaviour to the `SETENC` lines
+that actually exist in the firmware.
 
-## Lapisan frame di sisi app
+## Frame layer on the app side
 
-App sudah memakai frame untuk jalur cepat preset switch. Berkasnya:
+The app already uses frames for the preset-switch fast path. The files:
 
-| Berkas | Isi |
+| File | Contents |
 |---|---|
-| `src/frame-codec.js` | encoder/decoder biner; tipe jawaban diturunkan dari `RESP_BIT`, bukan literal |
-| `src/cfg-layout.js` | konstanta layout yang **harus** sama dengan `firmware/common/limits.h` |
-| `src/frame-dispatch.js` | decoder persisten + antrean penunggu per tipe frame |
-| `src/frame-transport.js` | percakapan frame: `sendFrame`, `queryFrameSlots`, `activateFrameSlot`, `ensureLineMode` |
-| `src/pong-probe.js` | registry probe PONG (satu slot) |
+| `src/frame-codec.js` | binary encoder/decoder; reply type derived from `RESP_BIT`, not a literal |
+| `src/cfg-layout.js` | layout constants that **must** match `firmware/common/limits.h` |
+| `src/frame-dispatch.js` | persistent decoder + waiter queue per frame type |
+| `src/frame-transport.js` | frame conversation: `sendFrame`, `queryFrameSlots`, `activateFrameSlot`, `ensureLineMode` |
+| `src/pong-probe.js` | PONG probe registry (single slot) |
 
-**Byte masuk dialirkan ke dua jalur sekaligus** - perakit frame dan parser baris.
-Model "ganti" (alihkan seluruh byte ke frame decoder begitu ada yang menunggu)
-salah: device tetap mengirim event **teks** di mode frame, dan `EVT:LAYER:0` yang
-keluar tepat setelah `CFG_ACTIVATE` ikut hilang kalau parser baris dimatikan.
-Decoder frame hanya bereaksi pada `0xA5`, jadi teks tidak merusaknya.
+**Incoming bytes flow into two paths at once** - the frame assembler and the line
+parser. The "switch" model (route every byte to the frame decoder as soon as
+something is waiting) is wrong: the device keeps sending **text** events in frame
+mode, and the `EVT:LAYER:0` emitted right after `CFG_ACTIVATE` would be lost if
+the line parser were switched off. The frame decoder only reacts to `0xA5`, so
+text cannot corrupt it.
 
-**Kembali ke jalur teks diverifikasi, bukan diasumsikan.** Setelah frame
-selesai, app mengirim newline lalu **`PING` dan menunggu `PONG`**. Versi pertama
-mengirim baris kosong lalu langsung melangkah; kalau device ternyata tidak keluar
-dari mode frame, `INFO` dan `DUMPENC` dibaca sebagai payload frame rusak,
-`crcErr` naik, dan grid tidak pernah terisi.
+**Returning to the text path is verified, not assumed.** After a frame finishes,
+the app sends a newline and then **`PING` and waits for `PONG`**. The first
+version sent an empty line and moved on immediately; if the device had not left
+frame mode, `INFO` and `DUMPENC` were read as corrupted frame payloads, `crcErr`
+rose, and the grid never filled in.
 
-**Format frame dinegosiasi, bukan dibaca dari nomor versi.** `proto=frame` pada
-jawaban `WHOAMI` hanya PETUNJUK: device baru masuk mode frame setelah menerima
-SOF `0xA5`, jadi `WHOAMI` pertama hampir selalu melaporkan `proto=line` bahkan
-pada device yang mendukung frame. Kalau jawaban itu dipakai sebagai gerbang,
-fast path tidak akan pernah terpakai. App mencoba frame; kalau gagal, jalur teks
-dipakai dan kegagalan dicatat per sesi supaya tidak diulang.
+**The frame format is negotiated, not read from a version number.** `proto=frame`
+in the `WHOAMI` reply is only a HINT: the device enters frame mode only after
+receiving SOF `0xA5`, so the first `WHOAMI` almost always reports `proto=line`
+even on a frame-capable device. Using that reply as a gate would mean the fast
+path is never used. The app tries frames; on failure it falls back to the text
+path and records the failure per session so it is not repeated.
 
-**`batchUploadInFlight()` bukan lagi tebakan waktu.** `markBatchSettling(4000)`
-dihapus: jendela tetap 4 detik itu menahan watchdog dump hampir 4 detik sia-sia
-untuk batch kecil, dan habis terlalu cepat untuk batch besar pada link lambat -
-dua-duanya berbohong. Penggantinya flag eksplisit (`beginCfgTransfer` /
-`endCfgTransfer`) plus jendela yang diturunkan dari jumlah perintah nyata.
+**`batchUploadInFlight()` is no longer a timing guess.** `markBatchSettling(4000)`
+was removed: that fixed 4-second window held the dump watchdog for almost 4
+seconds for nothing on small batches, and expired too early for large batches on
+slow links - both lied. Its replacement is an explicit flag
+(`beginCfgTransfer` / `endCfgTransfer`) plus a window derived from the actual
+number of commands.
 
-Yang **sudah** ada: `CFG_BEGIN`/`CFG_WRITE`/`CFG_COMMIT` (bulk upload, Fase 4)
-dan credit flow control (Fase 5). `CFG_BEGIN` → `CFG_READY{credit u16}`;
-`CFG_WRITE` dikirim via WriteWithoutResponse (BLE) / sendRaw (serial); device
-mengirim `CREDIT` untuk menambah ruang staging. Minta `UNSUPPORTED` jika device
-belum mengenali salah satu tipe ini.
+What **already** exists: `CFG_BEGIN`/`CFG_WRITE`/`CFG_COMMIT` (bulk upload,
+Phase 4) and credit flow control (Phase 5). `CFG_BEGIN` -> `CFG_READY{credit u16}`;
+`CFG_WRITE` is sent via WriteWithoutResponse (BLE) / sendRaw (serial); the device
+sends `CREDIT` to grow staging space. Expect `UNSUPPORTED` if the device does not
+recognise one of these types yet.
 
-## Baris dari device
+## Lines from the device
 
-| Awalan | Arti |
+| Prefix | Meaning |
 |---|---|
-| `INFO:` | metadata device (dipakai juga setelah `RESET`) |
-| `HWINFO:` | profil + kapabilitas; `simulated=1` berarti angka baterai/RGB adalah simulasi |
-| `BATT:` | jawaban `BATT`; `EVT:BATT:` = event berkala |
-| `EVT:CHG:state=N` | status charger: 0 tidak mengecas, 1 mengecas, 2 selesai |
-| `EVT:LAYER:N` | user memindah layer dari device (long-press knob) |
-| `EVT:ESCAPE` | gestur escape (tahan 3.5 detik atau lebih) |
-| `EVT:ENC:N:CW\|CCW` | knob diputar |
-| `EVT:APP:<nama>` | minta app membuka aplikasi; jika companion tidak terhubung, device mengetik lewat Windows Search |
-| `DUMP_BEGIN:<n>` ... `DUMP_END` | isi layer `n`, satu baris `<row>,<col>,<type>,<value>` per key |
-| `IDX:<i>` + `CW\|CCW\|BTN,<type>,<value>` | binding encoder ke-`i` |
-| `NAMES_BEGIN` ... `NAMES_END` | nama layer, dipisah `\|` |
-| `[KEY] <layer>,<row>,<col>,<type>,<value>` | notifikasi per key ditekan |
-| `[ENC_BTN] Knob <i>:` | tombol knob ditekan |
-| `[OK] ...` / `[ERROR] ...` | hasil perintah |
-| `[FLASH] ...` | status penyimpanan ke NVS |
+| `INFO:` | device metadata (also used after `RESET`) |
+| `HWINFO:` | profile + capabilities; `simulated=1` means battery/RGB values are simulated |
+| `BATT:` | reply to `BATT`; `EVT:BATT:` = periodic event |
+| `EVT:CHG:state=N` | charger state: 0 not charging, 1 charging, 2 complete |
+| `EVT:LAYER:N` | user changed layer on the device (knob long-press) |
+| `EVT:ESCAPE` | escape gesture (held 3.5 seconds or more) |
+| `EVT:ENC:N:CW\|CCW` | knob rotated |
+| `EVT:APP:<name>` | ask the app to open an application; if the companion is not connected, the device types it via Windows Search |
+| `DUMP_BEGIN:<n>` ... `DUMP_END` | contents of layer `n`, one `<row>,<col>,<type>,<value>` line per key |
+| `IDX:<i>` + `CW\|CCW\|BTN,<type>,<value>` | binding of encoder `i` |
+| `NAMES_BEGIN` ... `NAMES_END` | layer names, separated by `\|` |
+| `[KEY] <layer>,<row>,<col>,<type>,<value>` | notification for each key press |
+| `[ENC_BTN] Knob <i>:` | knob button pressed |
+| `[OK] ...` / `[ERROR] ...` | command result |
+| `[FLASH] ...` | NVS persistence status |
 
-## Batasan yang harus dihormati
+## Limits to respect
 
-- **`[KEY]` maksimal 62 byte.** `7,2,2,3,` + 47 char + newline = 62, masih di
-  bawah buffer stack 64 byte `vprintf`. Format verbose yang lebih panjang akan
-  memicu alokasi `malloc` di dalam `vprintf`.
-- **`currentLayer` ikut tersimpan ke flash** karena berada di struct `cfg` yang
-  sama. Save di layer 4 membuat device boot kembali di layer 4. App karena itu
-  mengirim `LAYER:0` tepat setelah connect.
-- **`DUMP:<n>` tidak memindahkan layer aktif**, jadi jalur baca aman tanpa
-  mengirim `LAYER:`.
+- **`[KEY]` is at most 62 bytes.** `7,2,2,3,` + 47 chars + newline = 62, still
+  below the 64-byte `vprintf` stack buffer. A longer verbose format would trigger
+  a `malloc` inside `vprintf`.
+- **`currentLayer` is persisted to flash** because it lives in the same `cfg`
+  struct. Saving on layer 4 makes the device boot on layer 4. The app therefore
+  sends `LAYER:0` right after connecting.
+- **`DUMP:<n>` does not move the active layer**, so the read path is safe without
+  sending `LAYER:`.
 
 ---
-

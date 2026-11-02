@@ -1,144 +1,146 @@
-# Catatan rilis (arsip)
+# Release notes (archive)
 
-Catatan rilis panjang yang dulu tinggal di README. Untuk ringkasan per versi,
-lihat [CHANGELOG.md](../CHANGELOG.md).
+Long-form release notes that used to live in the README. For a per-version
+summary, see [CHANGELOG.md](../CHANGELOG.md).
 
-## v0.9.0 — firmware FINAL, gesture per knob, media otomatis
+## v0.9.0 — FINAL firmware, per-knob gestures, automatic media
 
-Rilis ini mengubah FINAL dari "prototype yang diberi label final" menjadi
-firmware perangkat sebenarnya.
+This release turns FINAL from "a prototype with a final label" into real device
+firmware.
 
-**Firmware FINAL v8.** 2 knob, strip RGB 9 LED (urutan serpentine
-`RGB_INDEX`), baterai 100k/100k di `VD` dengan switch `EN_VD`, deteksi kabel
-`VD_VB`, dan status charger. Media dipilih otomatis: kabel terpasang → USB,
-tanpa kabel → BLE. Tombol BOOT/GPIO0 tidak dipakai lagi.
+**FINAL firmware v8.** 2 knobs, a 9-LED RGB strip (serpentine order in
+`RGB_INDEX`), a 100k/100k battery divider on `VD` with an `EN_VD` switch,
+`VD_VB` cable detection, and charger status. Media is selected automatically:
+cable attached → USB, no cable → BLE. The BOOT/GPIO0 button is no longer used.
 
-**Yang tidak terlihat dari catatan pinout tapi wajib** (lihat CHANGELOG 0.9.0
-untuk detail):
+**Things the pinout notes did not show but that are required** (see CHANGELOG
+0.9.0 for details):
 
-- GPIO21 bukan pin ADC di ESP32-S3 → deteksi USB harus `digitalRead`.
-- FINAL harus benar-benar mengompilasi BLE (`HID_BLE_SUPPORT 1`).
-- Payload biner preset 2 knob butuh 6014 byte; staging lama 5120 membuat setiap
-  upload biner ditolak dan app diam-diam turun ke jalur teks.
-- `cfgSig()` harus menyusun encoder kanonik per knob, kalau tidak cache preset
-  tidak pernah cocok.
-- RGB off / brightness 0 / warna hitam harus mematikan MOSFET `EN_RGB`.
-- `rgb_effects.h` sebelumnya tidak bisa dikompilasi sama sekali (`%` pada float).
+- GPIO21 is not an ADC pin on the ESP32-S3 → USB detection must use `digitalRead`.
+- FINAL must actually compile BLE (`HID_BLE_SUPPORT 1`).
+- A 2-knob preset binary payload needs 6014 bytes; the old 5120-byte staging made
+  every binary upload fail and the app silently fell back to the text path.
+- `cfgSig()` must arrange encoders canonically per knob, otherwise the preset
+  cache never matches.
+- RGB off / brightness 0 / black colour must turn off the `EN_RGB` MOSFET.
+- `rgb_effects.h` previously did not compile at all (`%` on a float).
 
-**Gesture tahan kini per knob** dan diatur dari app (`GEST`/`SETGEST`, dua tier,
-100–20000 ms), disimpan di NVS sehingga tidak ikut payload preset.
+**Hold gestures are now per knob** and configured from the app
+(`GEST`/`SETGEST`, two tiers, 100–20000 ms), stored in NVS so they are not part
+of the preset payload.
 
-**Audio:** buffer tetap 30 ms + kandidat fallback menggantikan "default driver"
-yang bisa 200–2000 ms di endpoint virtual.
+**Audio:** a fixed 30 ms buffer + fallback candidates replaces "driver default",
+which can be 200–2000 ms on virtual endpoints.
 
-## v0.6.6 (perbaikan)
+## v0.6.6 (fixes)
 
-### Switch preset tidak konsisten ("tidak selalu berhasil")
+### Inconsistent preset switching ("not always working")
 
-Akar masalahnya satu keputusan yang salah tempat di `frame-transport.js`:
+The root cause was one misplaced decision in `frame-transport.js`:
 
 ```js
-if (!r.ok) { frameUsable = false; return null; }   // timeout biasa
+if (!r.ok) { frameUsable = false; return null; }   // ordinary timeout
 ```
 
-Dua masalah sekaligus:
+Two problems at once:
 
-1. Timeout 2 detik — hal **normal** di link dengan `rtt p50=293ms` — langsung
-   mematikan fast path.
-2. "Mati" berarti **permanen** sampai disconnect.
+1. A 2-second timeout — **normal** on a link with `rtt p50=293ms` — immediately
+   disabled the fast path.
+2. "Disabled" meant **permanently**, until disconnect.
 
-Efeknya berantai: fast path mati → semua switch berikutnya jatuh ke jalur teks
-yang mengirim ratusan baris `SET:` → link makin jenuh → RTT naik → timeout makin
-sering → fast path makin sering mati.
+The effect was a chain reaction: fast path disabled → every later switch fell
+back to the text path that sends hundreds of `SET:` lines → the link got more
+saturated → RTT rose → timeouts became more frequent → the fast path was
+disabled more often.
 
-Perbaikannya:
+The fix:
 
-- Timeout sesaat **tidak lagi** mematikan fast path. Hanya 3 kegagalan
-  berturut-turut, atau bukti nyata (`ERR UNSUPPORTED`), yang mematikannya.
-- Fast path yang mati diberi **jeda 4 detik** lalu dicoba lagi, bukan mati
-  permanen sampai disconnect.
-- Jalur teks (ratusan `SET:`) punya **cooldown 8 detik** — jadi tidak lagi
-  dipakai sebagai respons otomatis setiap frame timeout.
-- `RTT_MS` 2 → 6 detik. 2 detik terlalu pendek untuk link yang RTT-nya 293ms,
-  jadi setiap jawaban yang masih dalam perjalanan dianggap gagal.
+- A momentary timeout **no longer** disables the fast path. Only 3 consecutive
+  failures, or real evidence (`ERR UNSUPPORTED`), disable it.
+- A disabled fast path gets a **4-second pause** and is retried, instead of
+  staying off permanently until disconnect.
+- The text path (hundreds of `SET:`) has an **8-second cooldown** — so it is no
+  longer used as the automatic response to every frame timeout.
+- `RTT_MS` 2 → 6 seconds. 2 seconds is too short for a link whose RTT is 293 ms,
+  so every reply still in flight was treated as a failure.
 
-### Di mana RTT 293ms berasal
+### Where the 293 ms RTT came from
 
-Firmware meminta `BLE_CONN_INTERVAL_MIN/MAX_MS 50/100`. Pada interval itu satu
-hop = satu connection event = sampai 100ms, dan satu round trip = 2 hop. Angka
-yang terukur persis di rentang itu.
+The firmware requested `BLE_CONN_INTERVAL_MIN/MAX_MS 50/100`. At that interval
+one hop = one connection event = up to 100 ms, and one round trip = 2 hops. The
+measured number sits exactly in that range.
 
-Firmware sekarang meminta **15/30 ms**. Supervision timeout 10 detik memberi
-ruang yang sangat lapang untuk connection event yang hilang, dan perangkat ini
-USB-powered sehingga konsekuensi dayanya tidak terasa.
+The firmware now requests **15/30 ms**. A 10-second supervision timeout leaves
+plenty of room for missed connection events, and this device is USB-powered so
+the power cost is not felt.
 
-> Catatan: angka ini hanya *permintaan*; Windows yang memutuskan. Kalau setelah
-> flash RTT tetap ~300ms, berarti Windows mengabaikan permintaan itu.
+> Note: these numbers are only a *request*; Windows decides. If RTT is still
+> ~300 ms after flashing, Windows ignored the request.
 
-### PING adaptif
+### Adaptive PING
 
-PING 1500ms adalah ~80 pasang PING/PONG per 2 menit — traffic tetap yang memakai
-link yang sama dengan upload preset. Sekarang: **idle 5 detik** (supervision
-timeout 10 detik, jadi keepalive tetap aman), **1,5 detik** selama 6 detik
-setelah ada aktivitas.
+A 1500 ms PING is ~80 PING/PONG pairs per 2 minutes — constant traffic on the
+same link used for preset uploads. Now: **5 seconds idle** (supervision timeout
+is 10 seconds, so keepalive remains safe), **1.5 seconds** for 6 seconds after
+activity.
 
-### DIAG: lapis L5 LOSS
+### DIAG: the L5 LOSS layer
 
-`notifyOk` (L4) menghitung chunk yang diterima stack BLE device, sedangkan
-`notify_events` (L1) menghitung notifikasi yang sampai di host. Keduanya
-menghitung hal **berbeda**, jadi tidak boleh dibandingkan — kesalahan baca ini
-sudah menyesatkan sekali.
+`notifyOk` (L4) counts chunks accepted by the device BLE stack, while
+`notify_events` (L1) counts notifications that reach the host. They count
+**different things**, so they must not be compared — misreading this has been
+misleading once already.
 
-L5 LOSS sekarang melaporkan `rx_dropped_bytes`, satu-satunya angka lintas-lapis
-yang benar-benar bisa dipercaya: kalau nol, link **tidak** dropping di host.
+L5 LOSS now reports `rx_dropped_bytes`, the only cross-layer number that can
+really be trusted: if it is zero, the link is **not** dropping at the host.
 
 ## v0.6.6
 
-Migrasi protokol ke **frame biner v2** (Fase 0-5 `PLAN_BLE_Migration.md`).
-Preset runtime sekarang diunggah lewat `CFG_BEGIN` / `CFG_WRITE` / `CFG_COMMIT`
-dengan flow control `T_CREDIT`, bukan ratusan baris `SET:`.
+Protocol migration to **binary frame v2** (Phases 0-5 of
+`PLAN_BLE_Migration.md`). Runtime presets are now uploaded through `CFG_BEGIN` /
+`CFG_WRITE` / `CFG_COMMIT` with `T_CREDIT` flow control, not hundreds of `SET:`
+lines.
 
-**Perubahan utama**
+**Main changes**
 
-- Layer frame biner di sisi app: `frame-codec.js` (encode/decode),
-  `frame-dispatch.js` (perakit RX), `frame-transport.js` (soal + upload bulk).
-- Fast path perpindahan preset: `CFG_SIG` + `CFG_QUERY` + `CFG_ACTIVATE`.
-  Kalau device sudah punya slot dengan sig yang sama, perpindahan cukup satu
-  frame 8 byte.
-- `WHOAMI` sekarang melaporkan `frame=0xA5` sebagai **kemampuan** (bertahan
-  melewati disconnect), bukan `proto=frame` yang hanya mencerminkan mode
-  sesaat. Gate frame-path memakai yang former supaya device yang tersesat ke
-  mode frame tidak lagi membuat deadlock.
-- Jalur `BLE` ditulis ulang: `Drop for BleTransport` di Rust,
-  disconnect-before-connect, backpressure `sendBatch`, retry ladder
-  186ms -> 7ms, dan `onWrite()` tidak lagi `printf` blocking.
-- Sesi protokol firmware di-reset di `onConnect`/`onDisconnect`
-  (`PROTO_LINK_RESET`), jadi device yang kembali connect tidak diam-diam
-  tertinggal dalam mode frame.
+- Binary frame layer on the app side: `frame-codec.js` (encode/decode),
+  `frame-dispatch.js` (RX assembler), `frame-transport.js` (queries + bulk
+  upload).
+- Preset switch fast path: `CFG_SIG` + `CFG_QUERY` + `CFG_ACTIVATE`. If the
+  device already has a slot with the same sig, switching takes a single 8-byte
+  frame.
+- `WHOAMI` now reports `frame=0xA5` as a **capability** (persists across
+  disconnects), rather than `proto=frame` which only reflects the current mode.
+  The frame-path gate uses the former so a device that wanders into frame mode no
+  longer causes a deadlock.
+- The `BLE` path was rewritten: `Drop for BleTransport` in Rust,
+  disconnect-before-connect, `sendBatch` backpressure, 186ms -> 7ms retry ladder,
+  and `onWrite()` no longer blocks in `printf`.
+- The firmware protocol session is reset in `onConnect`/`onDisconnect`
+  (`PROTO_LINK_RESET`), so a device that reconnects does not silently stay in
+  frame mode.
 
-**Perbaikan**
+**Fixes**
 
-- Reset state protokol saat BLE connect/disconnect (_app_ dan firmware).
-- Filter karakter pengganti `U+FFFD` yang berasal dari frame biner yang ikut
-  dibaca sebagai teks.
-- `CONTEXT:DEFAULT` di-clamp `currentLayer`, jadi tidak lagi menunjuk layer
-  yang tidak ada setelah kembali ke default preset.
-- `handleDeviceLost()` memanggil `ble_disconnect` supaya handle WinRT tidak
-  menumpuk pada setiap reconnect.
+- Reset protocol state on BLE connect/disconnect (_app_ and firmware).
+- Filter `U+FFFD` replacement characters coming from binary frames read as text.
+- `CONTEXT:DEFAULT` clamps `currentLayer`, so it no longer points at a missing
+  layer after returning to the default preset.
+- `handleDeviceLost()` calls `ble_disconnect` so WinRT handles do not pile up on
+  every reconnect.
 
-**Known issues (masih terbuka)**
+**Known issues (still open)**
 
-- `notifyFail=3` dan latensi radio tinggi (`RTT p50=175ms`) dilaporkan pada
-  host Windows. `ringDropped=0` sudah sehat, jadi ini sisi radio/host, bukan
+- `notifyFail=3` and high radio latency (`RTT p50=175ms`) reported on the Windows
+  host. `ringDropped=0` is already healthy, so this is the radio/host side, not
   software.
-- Fase 6 (pembersihan jalur teks: watchdog dump, `slotTable`, `SET:`) belum
-  dikerjakan. Jalur `0x02 LINE`, `SET:`, `SLOT:`, `DUMP:` masih hidup sebagai
-  diagnostic escape hatch.
+- Phase 6 (text path cleanup: dump watchdog, `slotTable`, `SET:`) is not done.
+  The `0x02 LINE`, `SET:`, `SLOT:`, `DUMP:` paths are still alive as diagnostic
+  escape hatches.
 
-**Verifikasi**
+**Verification**
 
-Firmware diverifikasi dengan `arduino-cli` di lingkungan build (kedua sketsh
-dikompilasi) dan lewat suite kontrak statis. Uji di device tetap wajib untuk
-perilaku yang tidak bisa dibuktikan statis. Lihat
+The firmware is verified with `arduino-cli` in the build environment (both
+sketches compile) and through the static contract suites. On-device testing is
+still required for behaviour that cannot be proven statically. See
 [STATUS-AND-TESTING.md](STATUS-AND-TESTING.md).
-
