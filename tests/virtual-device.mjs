@@ -10,8 +10,8 @@
 //   - Mode dual: baris <-> frame lewat auto-detect faRoute()
 //   - Fault injection untuk testing L1-L3 (CRC rusak, LEN overflow, dsb.)
 //
-// Digunakan oleh testing strategy L1-L3 (lihat PLAN_BLE_Migration.md bagian
-// "Strategi Pengujian") untuk memverifikasi app behavior tanpa hardware.
+// Digunakan oleh strategi pengujian L1-L3 untuk memverifikasi app behavior
+// tanpa hardware.
 //
 // Jalankan: node tests/virtual-device.mjs
 //

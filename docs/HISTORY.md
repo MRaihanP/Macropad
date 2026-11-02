@@ -96,8 +96,8 @@ really be trusted: if it is zero, the link is **not** dropping at the host.
 
 ## v0.6.6
 
-Protocol migration to **binary frame v2** (Phases 0-5 of
-`PLAN_BLE_Migration.md`). Runtime presets are now uploaded through `CFG_BEGIN` /
+Protocol migration to **binary frame v2** (Phases 0-5, details in the git
+history). Runtime presets are now uploaded through `CFG_BEGIN` /
 `CFG_WRITE` / `CFG_COMMIT` with `T_CREDIT` flow control, not hundreds of `SET:`
 lines.
 
